@@ -1,0 +1,20 @@
+/* Add any custom styles beyond Tailwind here */
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+}
+
+.status-dot.connected {
+    background-color: #10B981;
+}
+
+.status-dot.disconnected {
+    background-color: #EF4444;
+}
+
+.status-dot.pending {
+    background-color: #F59E0B;
+}

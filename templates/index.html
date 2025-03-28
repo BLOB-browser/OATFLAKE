@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <script>
+        // Add immediate console log to verify script loading
+        console.log('HTML loaded, waiting for DOM...');
+    </script>
+    <style>
+        /* Add styles to ensure login status is always visible */
+        #loginStatus {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background-color: rgba(0, 0, 0, 0.8);
+            border-radius: 0.5rem;
+        }
+    </style>
+</head>
+<body class="bg-black text-white min-h-screen">
+    <!-- Add login status indicator -->
+    <div id="loginStatus" class="absolute top-4 right-4 flex items-center gap-2">
+        <span id="loginStatusText" class="text-sm"></span>
+        <button id="logoutButton" onclick="handleLogout()" 
+                class="hidden px-3 py-1 text-sm bg-red-600 hover:bg-red-700 rounded">
+            Logout
+        </button>
+    </div>
+
+    <!-- Add login section before main content -->
+    <div id="loginSection" class="container mx-auto px-4 py-8 text-center">
+        <h2 class="text-2xl font-semibold mb-6">Login</h2>
+        <div class="max-w-md mx-auto bg-neutral-800 p-6 rounded-lg">
+            <input type="email" id="emailInput" placeholder="Email" 
+                   class="w-full mb-4 bg-gray-700 px-4 py-2 rounded">
+            <input type="password" id="passwordInput" placeholder="Password" 
+                   class="w-full mb-4 bg-gray-700 px-4 py-2 rounded">
+            <button type="button" id="loginButton" onclick="console.log('Button clicked'); handleLoginClick();" 
+                    class="w-full bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded">
+                Login
+            </button>
+        </div>
+    </div>
+
+    <!-- Main content (initially hidden) -->
+    <div id="mainContent" class="container mx-auto px-4 py-8 hidden">
+        <h1 class="text-4xl font-bold text-center mb-24 mt-12 py-4">Blob Backend</h1>
+        
+        <!-- Status Section -->
+        <div class="mb-6 flex flex-col gap-6">
+            <h2 class="text-xl font-semibold mb-4">Status</h2>
+            <div class="grid grid-cols-4 gap-6">
+                <!-- Server Status -->
+                <div id="serverStatus" class="flex flex-col items-center text-center">
+                    <div class="w-12 h-12 mb-2">
+                        <img src="/static/icons/BLOBLOGO.png" class="w-full h-full text-green-500" />
+                    </div>
+                    <span class="text-sm font-medium">Server: Running</span>
+                </div>
+                <!-- Ollama Status -->
+                <div id="ollamaStatus" class="flex flex-col items-center text-center">
+                    <div class="w-12 h-12 mb-2">
+                        <img src="/static/icons/OLLAMALOGO.png" class="w-full h-full text-gray-500" />
+                    </div>
+                    <span class="text-sm font-medium">Ollama: Checking...</span>
+                </div>
+                <!-- Tunnel Status -->
+                <div id="tunnelStatus" class="flex flex-col items-center text-center">
+                    <div class="w-12 h-12 mb-2">
+                        <img src="/static/icons/NGROKLOGO.png" class="w-full h-full text-gray-500" />
+                    </div>
+                    <span class="text-sm font-medium">Tunnel: Checking...</span>
+                </div>
+                <!-- Group Status -->
+                <div id="groupStatus" class="flex flex-col items-center text-center">
+                    <div class="w-12 h-12 mb-2 relative overflow-hidden">
+                        <img src="/static/icons/GROUPLOGO.png" 
+                             class="w-full h-full object-cover transition-opacity duration-300"
+                             onerror="this.onerror=null; this.src='/static/icons/GROUPLOGO.png'; console.error('Image load failed:', this.src);"
+                             onload="console.log('Image loaded:', this.src); this.style.opacity='1';"
+                             style="opacity: 0;"
+                             crossorigin="anonymous"
+                             loading="lazy"
+                             referrerpolicy="no-referrer" />
+                    </div>
+                    <span class="text-sm font-medium">Group: Not Connected</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Domain Section -->
+        <div class="mb-6">
+            <h2 class="text-xl font-semibold mb-4">Domain</h2>
+            <div class="flex space-x-4">
+                <input id="domainInput" type="text" readonly 
+                       class="flex-1 bg-gray-700 px-4 py-2 rounded border border-gray-600">
+                <button onclick="copyDomain()" class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded">
+                    Copy
+                </button>
+            </div>
+        </div>
+        
+        <!-- Data Storage Section -->
+        <div class="mb-6">
+            <h2 class="text-xl font-semibold mb-4">Data Storage</h2>
+            <div class="flex space-x-4">
+                <input id="dataPath" type="text" readonly 
+                       class="flex-1 bg-gray-700 px-4 py-2 rounded border-2 border-gray-300">
+                <input type="file" id="folderPicker" webkitdirectory directory 
+                       class="hidden" onchange="handleFolderSelect(this)">
+                <button onclick="selectFolder()" 
+                        class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded">
+                    Browse
+                </button>
+            </div>
+        </div>
+        <div class="mb-6">
+            <div class="flex justify-between items-center mt-4">
+                <h2 class="text-xl font-semibold mb-4">Blob OS</h2>
+                <span id="updateStatus" class="text-neutral-400 text-sm"></span>
+                <button 
+                    onclick="checkForUpdates()" 
+                    class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded transition-colors flex items-center gap-2"
+                >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Check for Updates
+                </button>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/app.js?v=1"></script>
+    <script>
+        async function selectFolder() {
+            try {
+                if ('showDirectoryPicker' in window) {
+                    const dirHandle = await window.showDirectoryPicker();
+                    // Get the folder name only
+                    const folderName = dirHandle.name;
+                    
+                    // Get OS information for platform-aware paths
+                    const platform = navigator.platform.toLowerCase();
+                    let fullPath;
+                    
+                    // Create appropriate paths based on OS
+                    if (platform.includes('mac') || platform.includes('darwin')) {
+                        // macOS path
+                        fullPath = `/Users/${navigator.userInfo?.username || 'mars'}/Documents/${folderName}`;
+                    } else if (platform.includes('linux')) {
+                        // Linux/Raspberry Pi path
+                        fullPath = `/home/pi/${folderName}`;
+                    } else if (platform.includes('win')) {
+                        // Windows path
+                        fullPath = `C:\\Users\\${navigator.userInfo?.username || 'user'}\\Documents\\${folderName}`;
+                    } else {
+                        // Generic fallback - relative path
+                        fullPath = folderName;
+                    }
+                    
+                    // Update UI with the folder path
+                    document.getElementById('dataPath').value = fullPath;
+                    
+                    // Store locally for UI consistency
+                    localStorage.setItem('dataPath', fullPath);
+                    
+                    // Send full path to server
+                    const response = await fetch('/api/storage/set', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ path: fullPath })
+                    });
+                    
+                    const result = await response.json();
+                    console.log('Data path update result:', result);
+                    
+                    // Use the path returned by the server (it might be adjusted for permissions)
+                    if (result.success && result.path) {
+                        document.getElementById('dataPath').value = result.path;
+                        localStorage.setItem('dataPath', result.path);
+                    }
+                    
+                    // Refresh status
+                    updateStatus();
+                } else {
+                    // Fallback for browsers without directory picker API
+                    document.getElementById('folderPicker').click();
+                }
+            } catch (error) {
+                console.error('Error selecting folder:', error);
+                
+                // If user canceled, don't show error
+                if (error.name !== 'AbortError') {
+                    alert('Could not select folder: ' + error.message);
+                }
+            }
+        }
+
+        // Handle file input fallback
+        function handleFolderSelect(input) {
+            if (input.files && input.files.length > 0) {
+                const folderName = input.files[0].webkitRelativePath.split('/')[0];
+                
+                // Create a full path - Use home directory as base
+                const fullPath = `/Users/${navigator.userInfo?.username || 'mars'}/Documents/${folderName}`;
+                
+                document.getElementById('dataPath').value = fullPath;
+                localStorage.setItem('dataPath', fullPath);
+                
+                // Also send to server
+                fetch('/api/storage/set', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ path: fullPath })
+                }).catch(err => console.error('Error updating path:', err));
+            }
+        }
+    </script>
+</body>
+</html>

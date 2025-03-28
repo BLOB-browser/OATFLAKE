@@ -1,0 +1,10 @@
+{
+  "data_path": "/Users/mars/Documents/MDEF_data",
+  "version": "0.1.0",
+  "training_schedule": {
+    "start_hour": 0,
+    "start_minute": 0,
+    "stop_hour": 2,
+    "stop_minute": 0
+  }
+}
