@@ -1,0 +1,34 @@
+OATFLAKE - A RAG-based assistant platform
+Copyright (c) 2025 Marius Schairer
+
+This software is licensed under a modified MIT license for non-commercial use only.
+
+==============================================================================
+Attribution Requirements
+==============================================================================
+
+When using or redistributing this software, you must include:
+
+1. The copyright notice: "Copyright (c) 2025 Marius Schairer"
+2. A statement that the software is "Powered by OATFLAKE"
+3. A link to the original repository: https://github.com/blob/OATFLAKE
+
+These attribution requirements must be clearly visible in your:
+- Documentation
+- User interface (about/credits section)
+- README files
+- Any other appropriate locations based on your use case
+
+==============================================================================
+Non-Commercial Use Limitation
+==============================================================================
+
+This software may not be used for commercial purposes, including but not limited to:
+- Selling access to the software or services based on it
+- Using the software in a for-profit business context
+- Including the software as part of a commercial product
+
+Academic, research, personal, and non-profit use is permitted, provided all
+other license conditions are met.
+
+For inquiries about commercial licensing options, please contact the author.
