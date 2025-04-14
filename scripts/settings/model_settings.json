@@ -1,0 +1,1 @@
+{"provider":"ollama","model_name":"llama3.2:1b","openrouter_model":"openai/gpt-3.5-turbo","system_prompt":"You are an AI assistant for a Local Knwledgebase.","temperature":0.7,"max_tokens":2000,"top_p":0.9,"top_k":40,"num_ctx":256,"num_thread":4,"stop_sequences":null,"custom_parameters":null,"training":{"start":"01:00","stop":"08:00"}}

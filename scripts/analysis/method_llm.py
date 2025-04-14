@@ -13,6 +13,13 @@ import requests
 import time
 from typing import Dict, List, Any, Optional, Union
 
+# Add import for interruptible requests
+from scripts.analysis.interruptible_llm import (
+    interruptible_post, is_interrupt_requested, 
+    setup_interrupt_handling, restore_interrupt_handling,
+    clear_interrupt
+)
+
 logger = logging.getLogger(__name__)
 
 class MethodLLM:
@@ -46,6 +53,11 @@ class MethodLLM:
         Returns:
             Parsed structured response (JSON object, list, or text)
         """
+        # Check for interruption
+        if is_interrupt_requested():
+            logger.warning("Skipping method extraction due to interrupt request")
+            return None
+        
         # Verify model exists
         try:
             model_check_response = requests.get(f"{self.base_url}/api/tags")
@@ -83,10 +95,14 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
         try:
             logger.info(f"Generating structured response for method extraction")
             
-            start_time = time.time()
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json={
+            # Set up interrupt handling
+            setup_interrupt_handling()
+            
+            try:
+                start_time = time.time()
+                
+                # Replace standard request with interruptible version - fix how we pass parameters
+                api_params = {
                     "model": self.model,
                     "prompt": prompt.strip(),
                     "stream": False,
@@ -100,38 +116,54 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                     "num_keep": self.model_config["num_keep"],
                     "repeat_penalty": self.model_config["repeat_penalty"],
                     "parallel": self.model_config["parallel"]
-                },
-                timeout=3600.0  # Extended to 1 hour for Raspberry Pi (from 1000 seconds)
-            )
-            
-            elapsed = time.time() - start_time
-            logger.info(f"LLM response time: {elapsed:.2f} seconds")
-            
-            if response.status_code != 200:
-                logger.error(f"Error from LLM API: {response.status_code}")
-                return None
-            
-            result = response.json()
-            if not result or 'response' not in result:
-                logger.error("Invalid response format from API")
-                return None
-            
-            # Extract the raw response text
-            raw_response = result['response']
-            
-            # Process based on expected format
-            if format_type == "json":
-                try:
-                    return self._parse_json_response(raw_response)
-                except Exception as e:
-                    logger.error(f"Error parsing JSON response: {e}")
-                    return None
-            else:
-                return raw_response
+                }
                 
+                response = interruptible_post(
+                    f"{self.base_url}/api/generate",
+                    json=api_params,
+                    timeout=3600.0  # Extended to 1 hour for Raspberry Pi
+                )
+                
+                elapsed = time.time() - start_time
+                logger.info(f"LLM response time: {elapsed:.2f} seconds")
+                
+                # Check if interrupted
+                if is_interrupt_requested():
+                    logger.warning("Method extraction was interrupted")
+                    return None
+                
+                if response.status_code != 200:
+                    logger.error(f"Error from LLM API: {response.status_code}")
+                    return None
+                
+                result = response.json()
+                if not result or 'response' not in result:
+                    logger.error("Invalid response format from API")
+                    return None
+                
+                # Extract the raw response text
+                raw_response = result['response']
+                
+                # Process based on expected format
+                if format_type == "json":
+                    try:
+                        return self._parse_json_response(raw_response)
+                    except Exception as e:
+                        logger.error(f"Error parsing JSON response: {e}")
+                        return None
+                else:
+                    return raw_response
+                
+            except KeyboardInterrupt:
+                logger.warning("Method extraction interrupted by user")
+                return None
+            
         except Exception as e:
             logger.error(f"Error generating structured response: {e}")
             return None
+        finally:
+            # Restore interrupt handling
+            restore_interrupt_handling()
     
     def extract_methods(self, title: str, url: str, content: str) -> List[Dict]:
         """

@@ -36,12 +36,14 @@ async def process_all(request: Request, options: ProcessingOptions = None):
             force_update = options.force_update
             
         # Import and redirect to the more comprehensive knowledge processing endpoint
-        logger.info(f"Redirecting to stats/knowledge/process endpoint with force_update={force_update}")
+        logger.info(f"Redirecting to knowledge/process endpoint with force_update={force_update}")
         
-        from api.routes.stats import process_knowledge_base
+        # FIX: Import from knowledge instead of stats
+        from api.routes.knowledge import process_knowledge_base
         
-        # Forward the request to the stats endpoint with appropriate parameters
+        # Forward the request to the knowledge endpoint with appropriate parameters
         result = await process_knowledge_base(
+            request=request,  # Make sure to include request parameter
             force_update=force_update,
             analyze_resources=True,
             analyze_all_resources=force_update,  # Only analyze all if force_update is true

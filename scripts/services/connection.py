@@ -29,12 +29,17 @@ async def save_connection(uuid: str, group_info: dict) -> dict:
             cover_image = DEFAULT_GROUP_IMAGE
             logger.info("Using local default image")
 
-        # Generate a display name from available fields
+        # Generate a display name from available fields - prioritize actual name
         group_name = (
-            group_info.get('institution_type') or 
-            group_info.get('type') or 
-            'Unknown Group'
+            group_info.get('name') or  # First try to use the explicit name field
+            group_info.get('group_name') or  # Then try group_name field
+            group_info.get('institution_name') or  # Then try institution_name
+            'Group ' + uuid[:6]  # Fallback to abbreviated UUID
         )
+        
+        # Log all possible name sources for debugging
+        logger.info(f"Name sources - name: {group_info.get('name')}, institution_name: {group_info.get('institution_name')}, institution_type: {group_info.get('institution_type')}, type: {group_info.get('type')}")
+        logger.info(f"Selected group name: '{group_name}' (not using institution_type anymore)")
 
         config_path = Path.home() / '.blob' / 'config.json'
         
@@ -49,9 +54,11 @@ async def save_connection(uuid: str, group_info: dict) -> dict:
             'group_id': uuid,
             'group_name': group_name,
             'group_image': cover_image,
+            # Store institution_type separately but not as the main group name
             'group_type': group_info.get('type'),
+            'group_institution_type': group_info.get('institution_type'),  # Store as separate field
             'group_description': group_info.get('description'),
-            'group_institution': group_info.get('institution_type'),
+            'group_institution': group_info.get('institution_name'),  # Store institution name
             'group_backend_url': group_info.get('backend_url'),
             'group_fields': group_info.get('fields', []),
             'last_connected': datetime.now().isoformat()
@@ -73,7 +80,9 @@ async def save_connection(uuid: str, group_info: dict) -> dict:
             "group_name": group_name,
             "group_image": cover_image,
             "group_backend_url": group_info.get('backend_url'),
-            "group_type": group_info.get('type', 'unknown')
+            "group_type": group_info.get('type', 'unknown'),
+            # Include institution_type as a separate field, not as the name
+            "institution_type": group_info.get('institution_type')
         }
         
     except Exception as e:

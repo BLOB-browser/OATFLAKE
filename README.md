@@ -1,200 +1,123 @@
-# BLOB - RAG Assistant Platform
-
-A Retrieval-Augmented Generation (RAG) platform for building AI assistants with context from your own data.
+# OATFLAKE
 
 ## Overview
-
-BLOB enables you to:
-- Process and index various document formats
-- Ask questions against your knowledge base
-- Use both local and cloud LLM providers
-- Interact via API, web interface, or Slack
+OATFLAKE is a RAG-based (Retrieval-Augmented Generation) assistant platform that helps process, analyze, and interact with your data. It features integrations with Slack, OpenRouter, Supabase, and other services to provide a comprehensive solution for knowledge management and AI assistance.
 
 ## Features
+- Knowledge processing and extraction
+- Goal-based analysis
+- Slack integration for communication
+- Vector-based search capabilities
+- API endpoints for various functionalities
+- Web-based user interface
 
-- **Document Processing**: Upload and process documents to create a knowledge base
-- **Vector Storage**: FAISS-based vector database for efficient similarity search
-- **Multiple LLM Providers**: 
-  - Local models via Ollama (default: llama3.2:1b)
-  - Cloud models via OpenRouter (Claude, GPT-4, etc.)
-- **Web Interface**: Simple management UI
-- **Slack Integration**: Chat with your assistant directly in Slack
-- **API Access**: FastAPI endpoints for programmatic interaction
+## Prerequisites
+- Python 3.10 or higher
+- Poetry (for dependency management)
+- Ollama (optional, for local model hosting)
+- Slack workspace (for Slack integration)
+- Supabase account (for data storage)
+- OpenRouter account (for model access)
 
-## Setup
+## Installation
 
-### Prerequisites
-
-- Python 3.9+
-- Ollama (for local models)
-- Supabase account (for authentication and storage)
-- OpenRouter API key (optional, for cloud models)
-- Slack API credentials (optional, for Slack integration)
-
-### Installation
-
-1. Clone the repository:
+### 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/blob.git
-cd blob/blob-test-backend
+git clone https://github.com/blob/OATFLAKE.git
+cd OATFLAKE
 ```
 
-2. Install dependencies:
+### 2. Create a virtual environment and install dependencies using Poetry
 ```bash
-pip install -r requirements.txt
+# Create a virtual environment
+python -m venv .venv
+
+# Activate the virtual environment
+# On Windows:
+# .venv\Scripts\activate
+# On macOS/Linux:
+source .venv/bin/activate
+
+# Install dependencies using Poetry
+poetry install
 ```
 
-3. Create a `.env` file with required environment variables:
+### 3. Create a `.env` file
+Create a `.env` file in the root directory with the following content (replace with your actual credentials):
 ```
-# Required
-SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_key
+# Server Configuration
+LOCAL_HOST=127.0.0.1
+LOCAL_PORT=8999
+UI_PORT=3000
 
-# Optional
-OPENROUTER_API_KEY=your_openrouter_api_key
-SLACK_BOT_TOKEN=your_slack_bot_token
-SLACK_SIGNING_SECRET=your_slack_signing_secret
-SLACK_BOT_USER_ID=your_slack_bot_user_id
-```
+# Central Server
+BASE_DOMAIN=your-base-domain
+API_KEY=your-api-key-here
 
-4. Configure your LLM provider in `settings/model_settings.json`
+# Ollama Configuration
+OLLAMA_HOST=localhost
+OLLAMA_PORT=11434
 
-### Model Settings
+# Slack Configuration (Required)
+SLACK_BOT_TOKEN=your-slack-bot-token
+SLACK_SIGNING_SECRET=your-slack-signing-secret
+SLACK_BOT_USER_ID=your-slack-bot-user-id
 
-The application's LLM behavior is configured in `settings/model_settings.json`:
+# Supabase Configuration
+SUPABASE_URL=your-supabase-url
+SUPABASE_KEY=your-supabase-key
 
-```json
-{
-  "provider": "ollama",              // "ollama" for local, "openrouter" for cloud
-  "model_name": "llama3.2:1b",       // Model name for Ollama
-  "openrouter_model": "anthropic/claude-3-haiku", // Model for OpenRouter
-  "system_prompt": "You are an assistant...",
-  "temperature": 0.7,               // Higher = more creative, lower = more deterministic
-  "max_tokens": 1000,               // Maximum tokens in LLM response
-  "top_p": 0.9,                     // Nucleus sampling parameter
-  "top_k": 40,                      // Top-k sampling parameter
-  "num_ctx": 2048,                  // Context window size
-  "num_thread": 4,                  // CPU threads to use
-  "stop_sequences": null,           // Optional sequences to stop generation
-  "custom_parameters": null         // Provider-specific parameters
-}
-```
-
-### Hardware Optimization
-
-#### CPU Configuration
-
-The application is optimized for CPU usage with these guidelines:
-
-- `num_thread` setting controls CPU thread allocation:
-  - 2 threads: Low CPU usage, good for background processing
-  - 4 threads: Balanced performance (default)
-  - 8 threads: Faster but more CPU intensive
-
-- For low-powered devices (like Raspberry Pi):
-  - Reduce `num_thread` to 2
-  - Set smaller `num_ctx` (e.g., 1024)
-  - Use smaller models (e.g., tinyllama)
-
-- For powerful workstations:
-  - Increase `num_thread` up to your CPU core count
-  - Use larger models for better responses
-
-#### GPU Support
-
-The application primarily uses CPU for inference. GPU acceleration depends on:
-
-1. Using Ollama with GPU support enabled
-2. Having compatible CUDA/ROCm drivers installed
-3. Using models optimized for your specific GPU
-
-### Running the Application
-
-Start the server:
-```bash
-python run.py
-```
-
-The application will be available at http://localhost:8999
-
-## Ollama Setup (for local models)
-
-1. Install Ollama:
-```bash
-curl https://ollama.ai/install.sh | sh
-```
-
-2. Start Ollama service:
-```bash
-ollama serve
-```
-
-3. Pull the default model:
-```bash
-ollama pull llama3.2:1b
+# OpenRouter Configuration
+OPENROUTER_API_KEY=your-openrouter-api-key
 ```
 
 ## Usage
 
-### Processing Documents
-
-Upload documents through the web interface or add them to your configured data directory.
-
+### Running the Application
+To start the application:
 ```bash
-# Process all knowledge in the configured directories
+python run.py
+```
+
+This will:
+1. Start the FastAPI server
+2. Set up a ngrok tunnel for external access (if configured)
+3. Open the web interface in your default browser
+
+### Processing Knowledge
+To run the knowledge processing workflow:
+```bash
 python run_complete_processing.py
 ```
 
-### Asking Questions
-
-Use the web interface or API to ask questions against your knowledge base:
-
-1. Through the web UI at http://localhost:8999
-2. Via API endpoints:
-   ```
-   POST /api/questions/ask
-   {
-     "question": "Your question here",
-     "project_id": "your_project_id"
-   }
-   ```
-3. Using the included test script:
-   ```bash
-   python test_questions.py
-   ```
-
-### Performance Monitoring
-
-The application includes performance tracking for resource-intensive operations:
-
-- Vector embedding generation shows progress and timing information
-- Document processing displays batch processing metrics
-- Retrieval operations provide timing and match score details
-
-For long-running operations, check the console output for real-time performance data.
-
-### Slack Integration
-
-If configured, interact with your assistant directly in Slack using the `/ask` command:
+### Extracting Goals
+To run the goal extraction:
+```bash
+python run_goal_extraction.py
 ```
-/ask What information do you have about project X?
+
+### Running Analysis
+To run analysis on your data:
+```bash
+python run_analysis.py
 ```
 
 ## Project Structure
-
-- `api/`: FastAPI routes and endpoints
-- `models/`: Pydantic schemas
-- `scripts/groups/`: Core RAG implementation
-- `services/`: Backend services and connections
+- `api/`: API endpoints and routes
+- `scripts/`: Core processing and analysis scripts
 - `settings/`: Configuration files
+- `static/`: Static assets for the web interface
+- `templates/`: HTML templates
+- `utils/`: Utility functions
 
+## Future Development
+- In-app token management through the interface (under development)
+- Additional integration options
+- Enhanced analysis capabilities
 
-## Acknowledgements
+## License
+This project is licensed under the MIT License (Modified for Non-Commercial Use) - with the following key restrictions:
+1. The software cannot be used for commercial purposes
+2. Proper attribution to the origin of the software stack is required
 
-Built with:
-- FastAPI
-- Supabase
-- FAISS
-- LangChain
-- Ollama
-- OpenRouter
+See the LICENSE file for full details.

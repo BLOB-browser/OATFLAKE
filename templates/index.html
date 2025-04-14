@@ -54,181 +54,329 @@
 
     <!-- Main content (initially hidden) -->
     <div id="mainContent" class="container mx-auto px-4 py-8 hidden">
-        <h1 class="text-4xl font-bold text-center mb-24 mt-12 py-4">Blob Backend</h1>
-        
-        <!-- Status Section -->
-        <div class="mb-6 flex flex-col gap-6">
-            <h2 class="text-xl font-semibold mb-4">Status</h2>
-            <div class="grid grid-cols-4 gap-6">
+        <!-- Main Status Section - Server and Title Together -->
+        <div class="mb-10 flex flex-col items-center">
+            <!-- OATFLAKE Title -->
+            <div class="flex flex-col items-center">
+                <div class="w-12 h-12 mb-4">
+                    <img src="/static/icons/BLOBLOGO.png" class="w-full h-full" alt="Blob Logo" />
+                </div>
+                <h1 class="text-4xl font-bold mb-4">OATFLAKE</h1>
                 <!-- Server Status -->
-                <div id="serverStatus" class="flex flex-col items-center text-center">
-                    <div class="w-12 h-12 mb-2">
-                        <img src="/static/icons/BLOBLOGO.png" class="w-full h-full text-green-500" />
-                    </div>
-                    <span class="text-sm font-medium">Server: Running</span>
+                <div id="serverWidget" class="flex flex-col items-center">
+                    <h3 class="text-lg font-medium">Server</h3>
+                    <p id="serverStatusText" class="text-sm text-green-500">Running</p>
+                    <div id="serverStatusIcon" class="w-4 h-4 rounded-full bg-green-500 mt-2"></div>
                 </div>
-                <!-- Ollama Status -->
-                <div id="ollamaStatus" class="flex flex-col items-center text-center">
-                    <div class="w-12 h-12 mb-2">
-                        <img src="/static/icons/OLLAMALOGO.png" class="w-full h-full text-gray-500" />
-                    </div>
-                    <span class="text-sm font-medium">Ollama: Checking...</span>
-                </div>
-                <!-- Tunnel Status -->
-                <div id="tunnelStatus" class="flex flex-col items-center text-center">
-                    <div class="w-12 h-12 mb-2">
-                        <img src="/static/icons/NGROKLOGO.png" class="w-full h-full text-gray-500" />
-                    </div>
-                    <span class="text-sm font-medium">Tunnel: Checking...</span>
-                </div>
-                <!-- Group Status -->
-                <div id="groupStatus" class="flex flex-col items-center text-center">
-                    <div class="w-12 h-12 mb-2 relative overflow-hidden">
-                        <img src="/static/icons/GROUPLOGO.png" 
-                             class="w-full h-full object-cover transition-opacity duration-300"
-                             onerror="this.onerror=null; this.src='/static/icons/GROUPLOGO.png'; console.error('Image load failed:', this.src);"
-                             onload="console.log('Image loaded:', this.src); this.style.opacity='1';"
-                             style="opacity: 0;"
-                             crossorigin="anonymous"
-                             loading="lazy"
-                             referrerpolicy="no-referrer" />
-                    </div>
-                    <span class="text-sm font-medium">Group: Not Connected</span>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Domain Section -->
-        <div class="mb-6">
-            <h2 class="text-xl font-semibold mb-4">Domain</h2>
-            <div class="flex space-x-4">
-                <input id="domainInput" type="text" readonly 
-                       class="flex-1 bg-gray-700 px-4 py-2 rounded border border-gray-600">
-                <button onclick="copyDomain()" class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded">
-                    Copy
-                </button>
-            </div>
-        </div>
-        
-        <!-- Data Storage Section -->
-        <div class="mb-6">
-            <h2 class="text-xl font-semibold mb-4">Data Storage</h2>
-            <div class="flex space-x-4">
-                <input id="dataPath" type="text" readonly 
-                       class="flex-1 bg-gray-700 px-4 py-2 rounded border-2 border-gray-300">
-                <input type="file" id="folderPicker" webkitdirectory directory 
-                       class="hidden" onchange="handleFolderSelect(this)">
-                <button onclick="selectFolder()" 
-                        class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded">
-                    Browse
-                </button>
-            </div>
-        </div>
-        <div class="mb-6">
-            <div class="flex justify-between items-center mt-4">
-                <h2 class="text-xl font-semibold mb-4">Blob OS</h2>
-                <span id="updateStatus" class="text-neutral-400 text-sm"></span>
-                <button 
-                    onclick="checkForUpdates()" 
-                    class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded transition-colors flex items-center gap-2"
-                >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    Check for Updates
-                </button>
             </div>
         </div>
     </div>
-    <script src="/static/js/app.js?v=1"></script>
-    <script>
-        async function selectFolder() {
-            try {
-                if ('showDirectoryPicker' in window) {
-                    const dirHandle = await window.showDirectoryPicker();
-                    // Get the folder name only
-                    const folderName = dirHandle.name;
+        
+        <!-- Service Widgets Section -->
+        <div class="mb-10 p-6">
+            <h2 class="text-2xl font-semibold mb-6">Services</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Ollama Widget -->
+                <div id="ollamaWidget" class="bg-neutral-800 rounded-lg p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-12 h-12 mr-4">
+                                <img src="/static/icons/OLLAMALOGO.png" class="w-full h-full" alt="Ollama Logo" />
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Ollama</h3>
+                                <div class="flex items-center mt-1">
+                                    <div id="ollamaStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
+                                    <p id="ollamaStatus" class="text-sm text-neutral-400">Checking status...</p>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Fix refresh button position -->
+                        <button id="ollamaRefreshBtn" class="text-neutral-400 hover:text-white transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                        </button>
+                    </div>
                     
-                    // Get OS information for platform-aware paths
-                    const platform = navigator.platform.toLowerCase();
-                    let fullPath;
+                    <!-- Fix model selector display -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Available Models</label>
+                        <select id="ollamaModelSelect" class="w-full bg-neutral-700 text-white p-2 rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                            <option value="loading">Loading models...</option>
+                        </select>
+                    </div>
                     
-                    // Create appropriate paths based on OS
-                    if (platform.includes('mac') || platform.includes('darwin')) {
-                        // macOS path
-                        fullPath = `/Users/${navigator.userInfo?.username || 'mars'}/Documents/${folderName}`;
-                    } else if (platform.includes('linux')) {
-                        // Linux/Raspberry Pi path
-                        fullPath = `/home/pi/${folderName}`;
-                    } else if (platform.includes('win')) {
-                        // Windows path
-                        fullPath = `C:\\Users\\${navigator.userInfo?.username || 'user'}\\Documents\\${folderName}`;
-                    } else {
-                        // Generic fallback - relative path
-                        fullPath = folderName;
-                    }
+                    <div id="ollamaModelsContainer" class="mt-4">
+                        <div id="ollamaModelList" class="text-sm text-neutral-400">
+                            <p>No models found</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- OpenRouter Widget -->
+                <div id="openrouterWidget" class="bg-neutral-800 rounded-lg p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-12 h-12 mr-4">
+                                <img src="/static/icons/OPENROUTERLOGO.png" class="w-full h-full" alt="OpenRouter Logo" 
+                                     onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDVNMTIgMmwxMCA1LTEwIDVNMiAxN2wxMCA1IDEwLTUiLz48L3N2Zz4='" />
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">OpenRouter</h3>
+                                <div class="flex items-center mt-1">
+                                    <div id="openrouterStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
+                                    <p id="openrouterStatus" class="text-sm text-neutral-400">Checking status...</p>
+                                </div>
+                            </div>
+                        </div>
+                        <button id="openrouterRefreshBtn" class="text-neutral-400 hover:text-white transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                        </button>
+                    </div>
                     
-                    // Update UI with the folder path
-                    document.getElementById('dataPath').value = fullPath;
+                    <!-- API Token input field -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">API Token</label>
+                        <div class="flex space-x-2">
+                            <input id="openrouterTokenInput" type="password" placeholder="Enter your OpenRouter API Token" 
+                                   class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                            <button onclick="OpenRouterWidget.saveToken()" 
+                                    class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="text-xs text-neutral-400 mt-1"><a href="https://openrouter.ai/keys" target="_blank" class="text-indigo-400 hover:underline">Get your API key here</a></p>
+                    </div>
                     
-                    // Store locally for UI consistency
-                    localStorage.setItem('dataPath', fullPath);
+                    <!-- Model selection -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Available Models</label>
+                        <select id="openrouterModelSelect" class="w-full bg-neutral-700 text-white p-2 rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                            <option value="loading">Loading models...</option>
+                        </select>
+                    </div>
                     
-                    // Send full path to server
-                    const response = await fetch('/api/storage/set', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ path: fullPath })
-                    });
+                    <div id="openrouterModelsContainer" class="mt-4">
+                        <div id="openrouterModelList" class="text-sm text-neutral-400">
+                            <p>No models found</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tunnel Widget -->
+                <div id="tunnelWidget" class="bg-neutral-800 rounded-lg p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-12 h-12 mr-4">
+                                <img src="/static/icons/NGROKLOGO.png" class="w-full h-full" alt="Ngrok Logo" />
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Tunnel</h3>
+                                <p id="tunnelStatusText" class="text-sm text-neutral-400">Checking status...</p>
+                            </div>
+                        </div>
+                        <div id="tunnelStatusIcon" class="w-4 h-4 rounded-full bg-yellow-500"></div>
+                    </div>
                     
-                    const result = await response.json();
-                    console.log('Data path update result:', result);
+                    <!-- Token input field -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Authentication Token</label>
+                        <div class="flex space-x-2">
+                            <input id="ngrokTokenInput" type="text" placeholder="Enter your Ngrok Auth Token" 
+                                   class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                            <button onclick="TunnelWidget.saveToken()" 
+                                    class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="text-xs text-neutral-400 mt-1"><a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" class="text-indigo-400 hover:underline">Get your token here</a></p>
+                    </div>
                     
-                    // Use the path returned by the server (it might be adjusted for permissions)
-                    if (result.success && result.path) {
-                        document.getElementById('dataPath').value = result.path;
-                        localStorage.setItem('dataPath', result.path);
-                    }
-                    
-                    // Refresh status
-                    updateStatus();
-                } else {
-                    // Fallback for browsers without directory picker API
-                    document.getElementById('folderPicker').click();
-                }
-            } catch (error) {
-                console.error('Error selecting folder:', error);
+                    <!-- Domain display -->
+                    <div id="tunnelDomainDisplay" class="mt-3 hidden">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Domain</label>
+                        <div class="flex space-x-2">
+                            <input id="widgetTunnelUrl" readonly type="text" 
+                                   class="flex-1 bg-neutral-900 px-3 py-2 text-sm rounded border border-neutral-700 focus:outline-none">
+                            <button onclick="TunnelWidget.copyTunnelUrl()" 
+                                    class="bg-neutral-700 hover:bg-neutral-600 px-3 py-2 rounded flex items-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                          d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Group Widget -->
+                <div id="groupWidget" class="bg-neutral-800 rounded-lg p-6 shadow-lg border border-neutral-700">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <div class="w-12 h-12 mr-4 relative overflow-hidden">
+                                <img src="/static/icons/GROUPLOGO.png" 
+                                    class="w-full h-full object-cover transition-opacity duration-300"
+                                    onerror="this.onerror=null; this.src='/static/icons/GROUPLOGO.png';"
+                                    style="opacity: 0.7;"
+                                    alt="Group" />
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Group</h3>
+                                <p id="groupStatusText" class="text-sm text-neutral-400">Not connected</p>
+                            </div>
+                        </div>
+                        <div id="groupStatusIcon" class="w-4 h-4 rounded-full bg-neutral-500"></div>
+                    </div>
+                    <!-- Group actions menu will be dynamically added here when needed -->
+                </div>
                 
-                // If user canceled, don't show error
-                if (error.name !== 'AbortError') {
-                    alert('Could not select folder: ' + error.message);
+                <!-- Data Storage Widget -->
+                <div id="storageWidget" class="bg-neutral-800 rounded-lg p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-12 h-12 mr-4">
+                                <img src="/static/icons/FOLDERLOGO.png" class="w-full h-full" alt="Storage Logo" 
+                                     onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZT0iY3VycmVudENvbG9yIj48cGF0aCBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGQ9Ik0yLjI1IDEyLjc1VjEyQTIuMjUgMi4yNSAwIDAxNC41IDkuNzVoMTVBMi4yNSAyLjI1IDAgMDEyMS43NSAxMnYuNzVtLTguNjktMy43NWwtMi4yNS0yLjI1bTAsMGwtMi4yNSAyLjI1bTAgMFY5bTAgMGgzIi8+PC9zdmc+'" />
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Data Storage</h3>
+                                <p id="storageStatusText" class="text-sm text-neutral-400">Select a folder</p>
+                            </div>
+                        </div>
+                        <div id="storageStatusIcon" class="w-4 h-4 rounded-full bg-yellow-500"></div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Storage Location</label>
+                        <div class="flex space-x-2">
+                            <input id="dataPath" type="text" readonly 
+                                  class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:outline-none">
+                            <input type="file" id="folderPicker" webkitdirectory directory 
+                                  class="hidden" onchange="handleFolderSelect(this)">
+                            <button onclick="selectFolder()" 
+                                   class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="text-xs text-neutral-400">
+                        <p>Select a folder where data will be stored locally</p>
+                        <p class="mt-1" id="storageSpaceInfo"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script src="/static/js/widgets/ollama-widget.js"></script>
+        <script src="/static/js/widgets/openrouter-widget.js"></script>
+        <script src="/static/js/widgets/tunnel-widget.js"></script>
+        <script src="/static/js/widgets/group-widget.js"></script>
+        <script src="/static/js/app.js?v=1"></script>
+    <script>
+        // Status update interval in milliseconds
+        const STATUS_UPDATE_INTERVAL = 5000;
+        let statusUpdateTimer = null;
+
+        // Function to update all service status indicators
+        async function updateAllStatus() {
+            try {
+                const response = await fetch('/api/status');
+                if (!response.ok) {
+                    console.error('Error fetching status:', response.statusText);
+                    return;
                 }
+
+                const statusData = await response.json();
+                console.log('Raw status data:', statusData);
+                
+                // Update Ollama status using the widget module
+                OllamaWidget.updateStatus(statusData.ollama === 'connected');
+                
+                // Update tunnel status using the widget module
+                TunnelWidget.updateStatus(statusData.tunnel === 'connected', statusData.ngrok_url);
+                
+                // Enhance group data for display - NEVER use institution_type as group_name
+                const groupData = {
+                    group_id: statusData.group_id,
+                    // Only use actual name fields, never institution_type
+                    group_name: statusData.group_name,
+                    name: statusData.name,
+                    // Other fields
+                    group_members: statusData.group_members || statusData.members || [],
+                    group_image: statusData.group_image || null
+                };
+                
+                // Enhanced logging for debugging group data
+                if (statusData.group_id) {
+                    console.log("Prepared group data for widget:", groupData);
+                }
+                
+                // Update group status using the widget module with enhanced data
+                GroupWidget.updateStatus(!!statusData.group_id, groupData);
+                
+                // Update data path and storage status
+                if (statusData.data_path) {
+                    document.getElementById('dataPath').value = statusData.data_path;
+                    updateStorageStatus(statusData.data_path);
+                } else {
+                    updateStorageStatus(false);
+                }
+                
+                // Add OpenRouter status update using the widget module
+                try {
+                    const response = await fetch('/api/openrouter/status');
+                    if (response.ok) {
+                        const data = await response.json();
+                        OpenRouterWidget.updateStatus(data.status === 'connected');
+                    } else {
+                        OpenRouterWidget.updateStatus(false);
+                    }
+                } catch (error) {
+                    console.error('Error checking OpenRouter status:', error);
+                    OpenRouterWidget.updateStatus(false);
+                }
+                
+                // Schedule next update
+                scheduleNextStatusUpdate();
+            } catch (error) {
+                console.error('Error updating status:', error);
+                scheduleNextStatusUpdate();
             }
         }
 
-        // Handle file input fallback
-        function handleFolderSelect(input) {
-            if (input.files && input.files.length > 0) {
-                const folderName = input.files[0].webkitRelativePath.split('/')[0];
-                
-                // Create a full path - Use home directory as base
-                const fullPath = `/Users/${navigator.userInfo?.username || 'mars'}/Documents/${folderName}`;
-                
-                document.getElementById('dataPath').value = fullPath;
-                localStorage.setItem('dataPath', fullPath);
-                
-                // Also send to server
-                fetch('/api/storage/set', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ path: fullPath })
-                }).catch(err => console.error('Error updating path:', err));
+        // Helper function to schedule the next status update
+        function scheduleNextStatusUpdate() {
+            if (statusUpdateTimer) {
+                clearTimeout(statusUpdateTimer);
             }
+            statusUpdateTimer = setTimeout(updateAllStatus, STATUS_UPDATE_INTERVAL);
         }
+
+        // Wire up event listeners
+        function wireUpEventListeners() {
+            // Event listeners for other widgets
+            // (Ollama, OpenRouter, and Tunnel event listeners are now handled by their respective modules)
+        }
+
+        // Call this when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize the status update
+            updateAllStatus();
+            
+            // Set up event listeners
+            wireUpEventListeners();
+        });
     </script>
 </body>
 </html>

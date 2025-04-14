@@ -6,6 +6,7 @@ import logging
 import os
 import glob
 from datetime import datetime
+from typing import Optional
 from scripts.data.data_processor import DataProcessor
 from scripts.data.markdown_processor import MarkdownProcessor
 from scripts.services.data_analyser import DataAnalyser
@@ -20,21 +21,80 @@ from .stats import check_for_file_changes
 # there might be another direct import somewhere else in the code
 from scripts.services.storage import DataSaver  # Import DataSaver directly instead of individual methods
 
+# Add imports for process cancellation
+import threading
+import time
+
+# Global flag for cancellation
+_processing_active = False
+_processor_cancel_event = threading.Event()
+
 # Create router with a completely different prefix to avoid conflicts
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 logger = logging.getLogger(__name__)
+
+@router.post("/cancel")
+async def cancel_knowledge_processing(force: bool = False):
+    """
+    Cancel any running knowledge processing jobs.
+    
+    Args:
+        force: If True, attempt to forcefully terminate processing
+    """
+    global _processing_active, _processor_cancel_event
+    
+    logger.info(f"Knowledge processing cancellation requested (force={force})")
+    
+    if not _processing_active:
+        return {
+            "status": "success", 
+            "message": "No active processing to cancel"
+        }
+    
+    # Set cancellation flag
+    _processor_cancel_event.set()
+    logger.info("Cancellation flag set for knowledge processing")
+    
+    if force:
+        # Send termination signal to MainProcessor if we can find a reference
+        try:
+            from scripts.analysis.main_processor import MainProcessor
+            logger.info("Sending cancellation signal to all MainProcessor instances")
+            
+            # Set global cancellation flag if present
+            if hasattr(MainProcessor, '_cancel_processing'):
+                MainProcessor._cancel_processing = True
+                logger.info("Set MainProcessor._cancel_processing = True")
+        except Exception as e:
+            logger.warning(f"Could not signal MainProcessor: {e}")
+    
+    # Wait a short time for processing to stop
+    waited_time = 0
+    max_wait_time = 5  # seconds
+    check_interval = 0.5  # seconds
+    
+    while _processing_active and waited_time < max_wait_time:
+        time.sleep(check_interval)
+        waited_time += check_interval
+    
+    return {
+        "status": "success",
+        "message": "Cancellation signal sent" if _processing_active else "Processing stopped",
+        "processing_stopped": not _processing_active
+    }
 
 @router.post("/process")  # Now the full path will be /api/knowledge/process
 async def process_knowledge_base(
     request: Request,
     group_id: str = None, 
     skip_markdown_scraping: bool = True, 
-    analyze_resources: bool = True,  # Set default to True to always analyze 
-    analyze_all_resources: bool = False,  # Default to only analyzing new resources
+    analyze_resources: bool = True,
+    analyze_all_resources: bool = False,
     batch_size: int = 5,
-    resource_limit: int = None,    # Default to None (no limit)
-    force_update: bool = False,     # If True, forces full update regardless of changes
-    skip_vector_generation: bool = False  # New parameter
+    resource_limit: Optional[int] = None,
+    force_update: bool = False,
+    skip_vector_generation: bool = False,
+    check_unanalyzed: bool = True  # New parameter to check for unanalyzed resources
 ):
     """
     Process all knowledge base files and generate embeddings.
@@ -66,7 +126,15 @@ async def process_knowledge_base(
         resource_limit: Maximum number of resources to process
         force_update: If True, forces a full update regardless of changes
         skip_vector_generation: If True, skip vector generation in this step (for when it will be done later)
+        check_unanalyzed: If True, always processes resources that haven't been analyzed yet,
+                          even when no file changes are detected
     """
+    global _processing_active, _processor_cancel_event
+    
+    # Reset cancellation flag at the start of processing
+    _processor_cancel_event.clear()
+    _processing_active = True
+    
     logger.info(f"Starting comprehensive knowledge base processing... group_id={group_id}, force_update={force_update}")
     try:
         # Get data path from config
@@ -76,6 +144,8 @@ async def process_knowledge_base(
         
         # Step 0: Check for changes to determine if processing is needed
         process_all_steps = True  # Default to processing all steps
+        unanalyzed_resources_exist = False
+        
         if not force_update:
             logger.info("STEP 0: CHECKING FOR CHANGES SINCE LAST PROCESSING")
             logger.info("=================================================")
@@ -111,14 +181,39 @@ async def process_knowledge_base(
             # Check for changes
             changes_detected, changed_files = check_for_file_changes(data_path, patterns_to_check, last_processed_time)
             
-            # Even if no changes, we'll still regenerate vectors but skip content processing
-            if not changes_detected:
-                logger.info("No changes detected since last processing - skipping content processing steps")
-                logger.info("BUT still generating vector stores as requested")
+            # Even if no file changes, check for unanalyzed resources if requested
+            if not changes_detected and check_unanalyzed and analyze_resources:
+                logger.info("No file changes detected, checking for unanalyzed resources...")
                 
-                # We'll skip content processing steps but still do vector generation
-                process_all_steps = False
+                resources_path = data_path / "resources.csv"
+                if resources_path.exists():
+                    try:
+                        df = pd.read_csv(resources_path)
+                        # Check how many resources need analysis (analysis_completed is False)
+                        needs_analysis = []
+                        for _, row in df.iterrows():
+                            # Convert to boolean and check if analysis_completed is False
+                            if pd.isna(row.get('analysis_completed')) or row.get('analysis_completed') == False:
+                                needs_analysis.append(row)
+                        
+                        unanalyzed_count = len(needs_analysis)
+                        if unanalyzed_count > 0:
+                            logger.info(f"Found {unanalyzed_count} resources with incomplete analysis")
+                            unanalyzed_resources_exist = True
+                            # We'll do partial processing - just for resources
+                            process_all_steps = False
+                        else:
+                            logger.info("All resources have been analyzed")
+                            
+                    except Exception as e:
+                        logger.error(f"Error checking for unanalyzed resources: {e}")
                 
+                if not unanalyzed_resources_exist:
+                    logger.info("No changes detected since last processing and all resources are analyzed - skipping content processing steps")
+                    logger.info("BUT still generating vector stores as requested")
+                    # We'll skip content processing steps but still do vector generation
+                    process_all_steps = False
+                    
                 # Even if no changes, update the last check time
                 try:
                     from scripts.services.training_scheduler import save_file_state
@@ -127,9 +222,10 @@ async def process_knowledge_base(
                 except Exception as e:
                     logger.error(f"Error updating file state: {e}")
             else:
-                logger.info(f"Changes detected in {len(changed_files)} files - proceeding with full processing")
-                if len(changed_files) <= 5:  # Only log all files if there aren't too many
-                    logger.info(f"Changed files: {changed_files}")
+                if changes_detected:
+                    logger.info(f"Changes detected in {len(changed_files)} files - proceeding with full processing")
+                    if len(changed_files) <= 5:  # Only log all files if there aren't too many
+                        logger.info(f"Changed files: {changed_files}")
         else:
             logger.info("Force update requested - proceeding with full processing regardless of changes")
         
@@ -139,10 +235,26 @@ async def process_knowledge_base(
             "content_processing": {"status": "skipped" if not process_all_steps else "pending"}
         }
         
-        # Only process content if changes detected or force_update is True
-        if process_all_steps:
+        # Check for cancellation before starting processing
+        if _processor_cancel_event.is_set():
+            logger.info("Knowledge processing cancelled before starting")
+            _processing_active = False
+            return {
+                "status": "cancelled",
+                "message": "Knowledge processing cancelled before starting",
+                "data": result
+            }
+        
+        # Only process content if changes detected or force_update is True OR unanalyzed resources exist
+        if process_all_steps or unanalyzed_resources_exist:
+            # Add check for cancellation before each major step
+            
             # Step 1: Process PDFs and Methods first (highest priority content)
-            # These are typically the most valuable learning materials and should be processed first
+            if _processor_cancel_event.is_set():
+                logger.info("Knowledge processing cancelled before step 1")
+                _processing_active = False
+                return {"status": "cancelled", "message": "Processing cancelled", "data": result}
+                
             logger.info("STEP 1: PROCESSING CRITICAL CONTENT (PDFs AND METHODS)")
             logger.info("=====================================================")
             processor = DataProcessor(data_path, group_id_to_use)
@@ -150,6 +262,11 @@ async def process_knowledge_base(
             logger.info(f"Critical content processing completed: {critical_content_result}")
             
             # Step 2: Process markdown files to extract resources
+            if _processor_cancel_event.is_set():
+                logger.info("Knowledge processing cancelled before step 2")
+                _processing_active = False
+                return {"status": "cancelled", "message": "Processing cancelled", "data": result}
+                
             markdown_result = {}
             markdown_path = data_path / "markdown"
             markdown_files = list(markdown_path.glob("**/*.md")) if markdown_path.exists() else []
@@ -172,7 +289,12 @@ async def process_knowledge_base(
                 logger.info("No markdown files found to process")
                 markdown_result = {"status": "skipped", "data_extracted": {}}
             
-            # Step 3: Analyze resources (after markdown processing, and even if no markdown files)
+            # Step 3: Analyze resources
+            if _processor_cancel_event.is_set():
+                logger.info("Knowledge processing cancelled before step 3")
+                _processing_active = False
+                return {"status": "cancelled", "message": "Processing cancelled", "data": result}
+                
             resource_analysis_result = {}
             resources_path = data_path / "resources.csv"
             
@@ -197,7 +319,7 @@ async def process_knowledge_base(
                         needs_analysis_count = len(needs_analysis)
                         logger.info(f"Found {needs_analysis_count} resources with analysis_completed=False that need analysis")
                     
-                    # Skip analysis if nothing needs analysis and not forcing analysis of all
+                    # Skip analysis ONLY if nothing needs analysis AND we're not forcing reanalysis
                     if needs_analysis_count == 0 and not analyze_all_resources and not force_update:
                         logger.info("All resources already have analysis results - skipping resource analysis")
                         resource_analysis_result = {
@@ -206,10 +328,14 @@ async def process_knowledge_base(
                             "resources_analyzed": 0
                         }
                     else:
-                        # Always analyze resources regardless of existing analysis
+                        # Analyze resources if any need it or we're forcing reanalysis
                         logger.info("STEP 3: ANALYZING RESOURCES WITH LLM")
                         logger.info("===================================")
                         analyzer = DataAnalyser()
+                        
+                        # If we're only processing due to unanalyzed resources, adjust the message
+                        if unanalyzed_resources_exist and not process_all_steps:
+                            logger.info("Processing ONLY resources with incomplete analysis (skipping other steps)")
                         
                         try:
                             logger.info(f"Starting resource analysis with LLM analyzer")
@@ -276,32 +402,34 @@ async def process_knowledge_base(
                     logger.info("Resource analysis disabled by parameter, skipping")
                     resource_analysis_result = {"status": "skipped", "reason": "analyze_resources=False"}
             
-            # Step 4: Process remaining knowledge base documents for vector database
-            logger.info("STEP 4: PROCESSING REMAINING KNOWLEDGE BASE DOCUMENTS")
-            logger.info("====================================================")
-            
-            # We already created the processor in Step 1, so reuse it
-            # Process the remaining content (definitions, projects, etc)
-            # Pass skip_vector_generation flag to avoid redundant processing
-            # We want to do vector generation in one place - at the end of this method
-            logger.info("Processing remaining knowledge base content")
-            logger.info("💡 Force update mode: " + ("Enabled" if force_update else "Disabled"))
-            
-            # Use incremental mode as specified by the force_update parameter
-            # Skip vector generation in MainProcessor since we'll do it here
-            result = await processor.process_knowledge_base(incremental=not force_update, skip_vector_generation=True)
-            
-            # Add markdown processing results to the overall result
-            result["markdown_processing"] = markdown_result
-            
-            # Add resource analysis results
-            result["resource_analysis"] = resource_analysis_result
-            
-            # After processing all content, update result
-            result["content_processing"] = {"status": "success"}
+            # Only continue with other steps if full processing is needed
+            if process_all_steps:
+                # Step 4: Process remaining knowledge base documents
+                logger.info("STEP 4: PROCESSING REMAINING KNOWLEDGE BASE DOCUMENTS")
+                logger.info("====================================================")
+                
+                # We already created the processor in Step 1, so reuse it
+                # Process the remaining content (definitions, projects, etc)
+                # Pass skip_vector_generation flag to avoid redundant processing
+                # We want to do vector generation in one place - at the end of this method
+                logger.info("Processing remaining knowledge base content")
+                logger.info("💡 Force update mode: " + ("Enabled" if force_update else "Disabled"))
+                
+                # Use incremental mode as specified by the force_update parameter
+                # Skip vector generation in MainProcessor since we'll do it here
+                result = await processor.process_knowledge_base(incremental=not force_update, skip_vector_generation=True)
+                
+                # Add markdown processing results to the overall result
+                result["markdown_processing"] = markdown_result
+                
+                # Add resource analysis results
+                result["resource_analysis"] = resource_analysis_result
+                
+                # After processing all content, update result
+                result["content_processing"] = {"status": "success"}
         
-        # Generate vector stores at the end of the full process if not explicitly skipped
-        if not skip_vector_generation:
+        # Generate vector stores if not cancelled
+        if not skip_vector_generation and not _processor_cancel_event.is_set():
             logger.info("STEP 5: GENERATING VECTOR STORES FROM PROCESSED CONTENT")
             logger.info("======================================================")
             try:
@@ -447,6 +575,9 @@ async def process_knowledge_base(
                 processor._cleanup_temporary_files()
             except Exception as ce:
                 logger.error(f"Error during cleanup: {ce}")
+        elif _processor_cancel_event.is_set():
+            logger.info("Vector generation skipped due to cancellation")
+            result["vector_generation"] = {"status": "cancelled"}
         else:
             logger.info("Vector generation explicitly skipped")
             result["vector_generation"] = {"status": "skipped", "reason": "explicitly skipped"}
@@ -472,7 +603,7 @@ async def process_knowledge_base(
                     "duration_seconds": goals_result.get("stats", {}).get("duration_seconds", 0)
                 }
             else:
-                logger.warning(f"Goal extraction issue: {goals_result.get('message')}")
+                logger.warning(f"Goal extraction issue: {goals_result.get("message")}")
                 result["goals"] = {
                     "status": "warning",
                     "message": goals_result.get("message", "Unknown issue during goal extraction")
@@ -555,6 +686,7 @@ async def process_knowledge_base(
             logger.error(f"Error saving file state: {e}")
         
         logger.info(f"Knowledge base processing completed: {result}")
+        _processing_active = False
         return {
             "status": "success",
             "message": "Knowledge base processed successfully",
@@ -563,6 +695,7 @@ async def process_knowledge_base(
 
     except Exception as e:
         logger.error(f"Error processing knowledge base: {e}", exc_info=True)
+        _processing_active = False
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/extract-goals")  # Now the full path will be /api/knowledge/extract-goals

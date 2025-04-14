@@ -11,11 +11,27 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Class-level cancellation flag
+_cancel_processing = False
+
+# Import interruptible handling
+from scripts.analysis.interruptible_llm import is_interrupt_requested, clear_interrupt
+
 class MainProcessor:
     """
     Simplified main processor that coordinates content fetching, analysis, and storage.
     Vectors are only generated at the end of processing all resources.
     """
+    
+    @classmethod
+    def reset_cancellation(cls):
+        """Reset the cancellation flag"""
+        cls._cancel_processing = False
+    
+    @classmethod
+    def check_cancellation(cls):
+        """Check if processing should be cancelled"""
+        return cls._cancel_processing or is_interrupt_requested()
     
     def __init__(self, data_folder: str):
         """
@@ -48,15 +64,17 @@ class MainProcessor:
         # Track processing state
         self.vector_generation_needed = False
         
+        # Reset cancellation flag when creating a new instance
+        MainProcessor.reset_cancellation()
+        
         logger.info(f"MainProcessor initialized with data folder: {data_folder}")
     
     def process_resources(self, csv_path: str = None, max_resources: int = None, force_reanalysis: bool = False, skip_vector_generation: bool = False) -> Dict[str, Any]:
         # Process resources from a CSV file
         
-        # Reads resources CSV file
-        # Filters resources based on analysis_completed
-        # Processes each resource
-        # Manages vector store generation
+        # Reset cancellation flag when starting new processing
+        MainProcessor.reset_cancellation()
+        
         # Set default CSV path if not provided
         if csv_path is None:
             csv_path = os.path.join(self.data_folder, 'resources.csv')
@@ -136,6 +154,11 @@ class MainProcessor:
                 resource = row.to_dict()
                 resource_id = f"#{idx+1}/{len(df)}"
                 
+                # Check for cancellation
+                if MainProcessor.check_cancellation():
+                    logger.info("Resource processing cancelled by external request")
+                    break
+                
                 logger.info(f"Processing resource {resource_id}: {resource.get('title', 'Unnamed')}")
                 
                 try:
@@ -161,6 +184,11 @@ class MainProcessor:
                 except Exception as e:
                     logger.error(f"Error processing resource {resource_id}: {e}")
                     stats["error_count"] += 1
+                
+                # Check for cancellation again after processing each resource
+                if MainProcessor.check_cancellation():
+                    logger.info("Resource processing cancelled after processing resource")
+                    break
             
             # Calculate duration
             stats["duration_seconds"] = (datetime.now() - stats["start_time"]).total_seconds()
@@ -226,6 +254,9 @@ class MainProcessor:
             Dictionary with processing results
         """
         start_time = datetime.now()
+        
+        # Reset interruption state at start of processing each resource
+        clear_interrupt()
         
         # Initialize result structure
         result = {
@@ -295,18 +326,74 @@ class MainProcessor:
             # STEP 2: Process main page
             logger.info(f"[{resource_id}] Analyzing main page")
             
+            # Check for cancellation before extraction starts
+            if MainProcessor.check_cancellation():
+                logger.info(f"[{resource_id}] Resource processing cancelled")
+                return result
+            
             # Extract definitions, projects, and methods
-            main_definitions = self.llm_analyzer.extract_definitions(
-                f"{resource_title} - main", resource_url, main_page_text
-            )
+            try:
+                # Extract definitions if requested
+                main_definitions = self.llm_analyzer.extract_definitions(
+                    f"{resource_title} - main", resource_url, main_page_text
+                )
+                if main_definitions and not MainProcessor.check_cancellation():
+                    for definition in main_definitions:
+                        definition['source'] = resource_url
+                        definition['resource_url'] = resource_url
+                    all_definitions.extend(main_definitions)
+                    logger.info(f"[{resource_id}] Found {len(main_definitions)} definitions on main page")
+                    # Save to CSV using DataSaver instead of function call
+                    self.data_saver.save_definition(main_definitions)
+                
+                # Identify projects if requested
+                main_projects = self.llm_analyzer.identify_projects(
+                    f"{resource_title} - main", resource_url, main_page_text
+                )
+                if main_projects and not MainProcessor.check_cancellation():
+                    for project in main_projects:
+                        # Only set source if not already set by the extractor
+                        if 'source' not in project:
+                            project['source'] = resource_url
+                        # Always set resource_url (main page URL)
+                        project['resource_url'] = resource_url
+                        # Ensure origin_title is set if not already
+                        if 'origin_title' not in project:
+                            project['origin_title'] = resource_title
+                    all_projects.extend(main_projects)
+                    logger.info(f"[{resource_id}] Found {len(main_projects)} projects on main page")
+                    
+                    # Save to CSV using DataSaver
+                    self.data_saver.save_project(main_projects)
+                
+                # Extract methods if requested
+                main_methods = self.method_llm.extract_methods(
+                    f"{resource_title} - main", resource_url, main_page_text
+                )
+                if main_methods and not MainProcessor.check_cancellation():
+                    for method in main_methods:
+                        # Only set source if not already set by the extractor
+                        if 'source' not in method:
+                            method['source'] = resource_url
+                        # Always set resource_url (main page URL)
+                        method['resource_url'] = resource_url
+                        # Ensure origin_title is set if not already
+                        if 'origin_title' not in method:
+                            method['origin_title'] = resource_title
+                    all_methods.extend(main_methods)
+                    logger.info(f"[{resource_id}] Found {len(main_methods)} methods on main page")
+                    
+                    # Save to CSV using DataSaver
+                    self.data_saver.save_method(main_methods)
+                
+                # Check for cancellation before finalizing
+                if MainProcessor.check_cancellation():
+                    logger.info(f"[{resource_id}] Resource processing cancelled during extraction")
+                    return result
             
-            main_projects = self.llm_analyzer.identify_projects(
-                f"{resource_title} - main", resource_url, main_page_text
-            )
-            
-            main_methods = self.method_llm.extract_methods(
-                f"{resource_title} - main", resource_url, main_page_text
-            )
+            except KeyboardInterrupt:
+                logger.warning(f"[{resource_id}] Processing interrupted by keyboard interrupt")
+                return result
             
             # Store results and add source information
             page_results['main'] = {
@@ -317,43 +404,9 @@ class MainProcessor:
                 "content": main_page_text[:500] + "..." if len(main_page_text) > 500 else main_page_text
             }
             
-            # Process main page definitions
-            if main_definitions:
-                for definition in main_definitions:
-                    definition['source'] = resource_url
-                    definition['resource_url'] = resource_url
-                all_definitions.extend(main_definitions)
-                logger.info(f"[{resource_id}] Found {len(main_definitions)} definitions on main page")
-                
-                # Save to CSV using DataSaver instead of function call
-                self.data_saver.save_definition(main_definitions)
-                
-            # Process main page projects
-            if main_projects:
-                for project in main_projects:
-                    project['source'] = resource_url
-                    project['resource_url'] = resource_url
-                all_projects.extend(main_projects)
-                logger.info(f"[{resource_id}] Found {len(main_projects)} projects on main page")
-                
-                # Save to CSV using DataSaver
-                self.data_saver.save_project(main_projects)
-            
-            # Process main page methods
-            if main_methods:
-                for method in main_methods:
-                    method['source'] = resource_url
-                    method['resource_url'] = resource_url
-                all_methods.extend(main_methods)
-                logger.info(f"[{resource_id}] Found {len(main_methods)} methods on main page")
-                
-                # Save to CSV using DataSaver
-                self.data_saver.save_method(main_methods)
-            
             # STEP 3: Process additional pages
             logger.info(f"[{resource_id}] Processing {len(additional_urls)} additional pages")
             headers = main_data.get("headers", {})
-            
             for idx, additional_url in enumerate(additional_urls):
                 try:
                     # Fetch page content
@@ -385,11 +438,9 @@ class MainProcessor:
                     page_definitions = self.llm_analyzer.extract_definitions(
                         f"{resource_title} - {page_name}", additional_url, page_text
                     )
-                    
                     page_projects = self.llm_analyzer.identify_projects(
                         f"{resource_title} - {page_name}", additional_url, page_text
                     )
-                    
                     page_methods = self.method_llm.extract_methods(
                         f"{resource_title} - {page_name}", additional_url, page_text
                     )
@@ -397,7 +448,7 @@ class MainProcessor:
                     # Store results for this page
                     page_results[page_name] = {
                         "definitions": page_definitions,
-                        "projects": page_projects, 
+                        "projects": page_projects,
                         "methods": page_methods,
                         "url": additional_url,
                         "content": page_text[:500] + "..." if len(page_text) > 500 else page_text
@@ -406,26 +457,46 @@ class MainProcessor:
                     # Process and add source information
                     if page_definitions:
                         for definition in page_definitions:
-                            definition['source'] = additional_url
+                            # Only set source if not already set by the extractor
+                            if 'source' not in definition:
+                                definition['source'] = additional_url
+                            # Always set resource_url (main page URL)
                             definition['resource_url'] = resource_url
+                            # Ensure origin_title is set if not already
+                            if 'origin_title' not in definition:
+                                definition['origin_title'] = f"{resource_title} - {page_name}"
                         all_definitions.extend(page_definitions)
                         # Use DataSaver
                         self.data_saver.save_definition(page_definitions)
                         logger.info(f"[{resource_id}] Found {len(page_definitions)} definitions on page '{page_name}'")
                     
+                    # Process page-specific projects
                     if page_projects:
                         for project in page_projects:
-                            project['source'] = additional_url
+                            # Only set source if not already set by the extractor
+                            if 'source' not in project:
+                                project['source'] = additional_url
+                            # Always set resource_url (main page URL)
                             project['resource_url'] = resource_url
+                            # Ensure origin_title is set if not already  
+                            if 'origin_title' not in project:
+                                project['origin_title'] = f"{resource_title} - {page_name}"
                         all_projects.extend(page_projects)
                         # Use DataSaver
                         self.data_saver.save_project(page_projects)
                         logger.info(f"[{resource_id}] Found {len(page_projects)} projects on page '{page_name}'")
                     
+                    # Process page-specific methods
                     if page_methods:
                         for method in page_methods:
-                            method['source'] = additional_url
+                            # Only set source if not already set by the extractor
+                            if 'source' not in method:
+                                method['source'] = additional_url
+                            # Always set resource_url (main page URL)
                             method['resource_url'] = resource_url
+                            # Ensure origin_title is set if not already
+                            if 'origin_title' not in method:
+                                method['origin_title'] = f"{resource_title} - {page_name}"
                         all_methods.extend(page_methods)
                         # Use DataSaver
                         self.data_saver.save_method(page_methods)
@@ -459,7 +530,7 @@ class MainProcessor:
             
             if not isinstance(resource['analysis_results'], dict):
                 resource['analysis_results'] = {}
-                
+                    
             # Store all the page results in the resource
             resource['analysis_results']['pages'] = page_results
             resource['analysis_results']['definitions'] = all_definitions
@@ -523,7 +594,7 @@ class MainProcessor:
                     resource_title, resource_url, tag_context,
                     resource.get('description', ''), existing_tags
                 )
-                
+                    
                 resource['tags'] = tags
                 logger.info(f"[{resource_id}] Generated tags: {tags}")
             

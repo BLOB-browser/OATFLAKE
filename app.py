@@ -8,6 +8,7 @@ from typing import List, Optional, Dict
 from langchain.schema import Document
 from api.routes import auth_router, data_router, system_router, training_router, slack, questions, markdown_router, knowledge
 from api.routes.openrouter import router as openrouter_router
+from api.routes.openrouter_models import router as openrouter_models_router  # Import OpenRouter models router
 # Add import for goals router
 from api.routes.goals import router as goals_router
 from scripts.models.schemas import Definition, JsonRequest, ConnectionRequest, ConnectionResponse, Project, Method, Resource, WebRequest, WebResponse, AnswerRequest  # Add AnswerRequest
@@ -30,6 +31,12 @@ import logging
 import json
 import shutil
 from datetime import datetime
+
+# Import the proper FastAPI router from api.routes.ollama
+from api.routes.ollama import router as ollama_router
+
+# Import the search router
+from api.routes.search import router as search_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -209,7 +216,43 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup server components"""
     try:
-        training_scheduler.stop()
+        # Stop the training scheduler first
+        logger.info("Stopping training scheduler...")
+        try:
+            # Stop with more verbose logging
+            from scripts.services.training_scheduler import _running, _scheduler_thread
+            logger.info(f"Scheduler status before stopping: Running={_running}, Thread alive={_scheduler_thread and _scheduler_thread.is_alive()}")
+            
+            # Stop the scheduler with a longer timeout for keyboard interrupt cases
+            training_scheduler.stop(timeout=30.0)  # Give more time during intentional shutdown
+            
+            # Double-check it stopped
+            import time
+            time.sleep(1)  # Give it a moment
+            
+            # Check if thread is still running
+            if _running or (_scheduler_thread and _scheduler_thread.is_alive()):
+                logger.warning(f"Scheduler still running after stop attempt: Running={_running}, Thread alive={_scheduler_thread and _scheduler_thread.is_alive()}")
+                # Force stop as a last resort
+                if _scheduler_thread:
+                    logger.warning("Attempting to force thread termination...")
+                    import ctypes
+                    if hasattr(ctypes, 'pythonapi'):
+                        try:
+                            thread_id = _scheduler_thread.ident
+                            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                                ctypes.c_long(thread_id), 
+                                ctypes.py_object(SystemExit)
+                            )
+                            logger.info("Force termination command sent")
+                        except Exception as force_error:
+                            logger.error(f"Error in force termination: {force_error}")
+            else:
+                logger.info("Scheduler successfully stopped")
+        except Exception as stop_error:
+            logger.error(f"Error stopping scheduler: {stop_error}")
+        
+        # Stop other services
         logger.info("Stopped all services")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
@@ -222,9 +265,16 @@ app.include_router(training_router)
 app.include_router(questions.router)  # Add questions router
 app.include_router(slack.router, prefix="")  # Remove any prefix when including the router
 app.include_router(openrouter_router)  # Add OpenRouter router
+app.include_router(openrouter_models_router, prefix="/api/openrouter", tags=["openrouter"])  # Include OpenRouter models router
 app.include_router(markdown_router)  # Add Markdown router
 app.include_router(knowledge.router)  # This router now uses prefix="/api/knowledge"
 app.include_router(goals_router)  # Add goals router
+
+# Register the Ollama router properly for FastAPI
+app.include_router(ollama_router)
+
+# Add the search router
+app.include_router(search_router)
 
 # Routes
 @app.get("/")
@@ -422,6 +472,33 @@ async def answers_alias(request: Request):
             content={"detail": str(e)}
         )
 
+# Define main function for Poetry entry point
+def main():
+    """Entry point for the application."""
+    host = os.environ.get("APP_HOST", "127.0.0.1")
+    port = int(os.environ.get("APP_PORT", 8999))
+    
+    # Set up signal handlers for keyboard interrupts
+    import signal
+    
+    def handle_keyboard_interrupt(sig, frame):
+        """Handle Ctrl+C by triggering a clean shutdown"""
+        logger.info("Keyboard interrupt received, shutting down server...")
+        print("\nShutting down server due to keyboard interrupt...")
+        
+        # We just return and let uvicorn handle the shutdown
+        # This will trigger the shutdown event which cleans up resources
+        pass
+    
+    signal.signal(signal.SIGINT, handle_keyboard_interrupt)
+    
+    try:
+        logger.info(f"Starting server on {host}:{port}...")
+        uvicorn.run(app, host=host, port=port)
+    except KeyboardInterrupt:
+        logger.info("Shutting down due to keyboard interrupt")
+        # The shutdown event will be triggered automatically
+
 # For local development
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8999)
+    main()

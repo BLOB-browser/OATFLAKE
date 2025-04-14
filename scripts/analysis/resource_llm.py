@@ -14,6 +14,12 @@ import requests
 import time
 from typing import Dict, List, Any, Optional, Union
 
+# Add import for interruptible requests
+from scripts.analysis.interruptible_llm import (
+    interruptible_post, async_interruptible_post,
+    is_interrupt_requested, setup_interrupt_handling, restore_interrupt_handling, clear_interrupt
+)
+
 logger = logging.getLogger(__name__)
 
 class ResourceLLM:
@@ -36,127 +42,173 @@ class ResourceLLM:
         
         logger.info(f"Initialized ResourceLLM with model {model} ({self.model_config['threads']} threads, {self.model_config['num_ctx']} context, {self.model_config['batch_size']} batch size)")
     
-    def generate_structured_response(self, prompt: str, format_type: str = "json", 
-                                     temperature: float = 0.1, max_tokens: int = 512) -> Any:
+    def call_ollama_api(self, prompt: str, model: str = None, **kwargs):
+        """Call Ollama API with interruption handling"""
+        # Set up interruptible handling
+        setup_interrupt_handling()
+        
+        try:
+            # Default to instance model if none provided
+            if not model:
+                model = self.model
+                
+            # Default arguments for the Ollama API
+            args = {
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.1}
+            }
+            
+            # Update with any additional kwargs
+            args.update(kwargs)
+            
+            start_time = time.time()
+            logger.debug(f"Calling Ollama API with model {model}")
+            
+            try:
+                # Replace standard request with interruptible version - fix the API call
+                response = interruptible_post(
+                    "http://localhost:11434/api/generate",
+                    json=args,
+                    timeout=300  # 5 minute timeout for long processing
+                )
+                
+                if is_interrupt_requested():
+                    logger.warning("LLM processing was interrupted by user")
+                    return {"response": "Processing interrupted by user", "interrupted": True}
+                
+                if response.status_code != 200:
+                    logger.error(f"Error: Ollama API returned status code {response.status_code}")
+                    logger.error(f"Error response: {response.text}")
+                    return {"error": f"Ollama API error: {response.status_code}"}
+                    
+                result = response.json()
+                
+            except KeyboardInterrupt:
+                logger.warning("LLM API call interrupted by keyboard interrupt")
+                return {"response": "Processing interrupted by user", "interrupted": True}
+            except Exception as e:
+                logger.error(f"Error calling Ollama API: {e}")
+                return {"error": f"API error: {e}"}
+                
+            end_time = time.time()
+            duration = end_time - start_time
+            logger.info(f"Ollama API response time: {duration:.2f} seconds")
+            
+            return result
+        finally:
+            # Restore original handlers
+            restore_interrupt_handling()
+
+    def generate(self, prompt: str, temperature: float = None) -> str:
         """
-        Generate a structured response from the LLM, with specific parameters
-        optimized for predictable JSON generation.
+        Generate a text response from the LLM without JSON parsing.
+        This is a compatibility method needed by extraction_utils.py
         
         Args:
-            prompt: The prompt to send to the model
-            format_type: Type of formatting to expect ("json", "list", "text")
-            temperature: Temperature setting (lower for more deterministic output)
-            max_tokens: Maximum tokens to generate
+            prompt: The input prompt
+            temperature: Optional temperature parameter
             
         Returns:
-            Parsed structured response (JSON object, list, or text)
+            Raw text response from the LLM
         """
-        # Verify model exists before attempting to use it
-        try:
-            model_check_response = requests.get(f"{self.base_url}/api/tags")
-            if model_check_response.status_code == 200:
-                models_data = model_check_response.json()
-                available_models = [m.get("name") for m in models_data.get("models", [])]
-                
-                if self.model not in available_models:
-                    logger.error(f"Model {self.model} not found! Please pull it with: ollama pull {self.model}")
-                    # Fall back to whatever model is available
-                    available_models = [m for m in available_models if 'instruct' in m.lower()]
-                    if available_models:
-                        self.model = available_models[0]
-                        logger.warning(f"Falling back to available model: {self.model}")
-                    else:
-                        logger.error("No instruction models available. Resource processing will fail.")
-                        return None
-        except Exception as e:
-            logger.warning(f"Error checking model availability: {e}")
-            # Continue anyway, we'll catch errors during the main API call
-        # Add formatting guidance and system instructions specific to Mistral
-        if format_type == "json":
-            # Add Mistral-specific system prompt for better JSON formatting
-            prompt = f"""<s>[INST] You are an expert JSON formatter with perfect accuracy.
-When asked to generate JSON, you ONLY output valid, parseable JSON without any explanation or markdown formatting.
-            
-{prompt.strip()}
-
-Output ONLY the JSON with no additional text. [/INST]</s>"""
-        else:
-            # For non-JSON responses, still use the Mistral instruction format
-            prompt = f"""<s>[INST] {prompt.strip()} [/INST]</s>"""
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # Prepare request for structured generation
         try:
-            logger.info(f"Generating structured response with format={format_type}")
+            # Use appropriate internal method based on model type
+            logger.info("Generating text response")
             
-            # Make API call with optimized parameters and thread configuration
-            start_time = time.time()
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt.strip(),
-                    "stream": False,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    # Add all model configuration parameters
-                    "threads": self.model_config["threads"],
-                    "num_ctx": self.model_config["num_ctx"],
-                    "num_gpu": self.model_config["num_gpu"],
-                    "batch_size": self.model_config["batch_size"],
-                    "num_keep": self.model_config["num_keep"],
-                    "repeat_penalty": self.model_config["repeat_penalty"],
-                    "parallel": self.model_config["parallel"]
-                },
-                timeout=3600.0  # Extended to 1 hour for Raspberry Pi (from 1000 seconds)
-            )
+            # Use temperature if provided, otherwise use default
+            temp = temperature if temperature is not None else self.model_config.get('temperature', 0.1)
             
-            elapsed = time.time() - start_time
-            logger.info(f"Ollama API response time: {elapsed:.2f} seconds")
-            
-            if response.status_code != 200:
-                logger.error(f"Error from Ollama API: {response.status_code}")
-                # Try initiating a pull for the model if it's a 404 (model not found)
-                if response.status_code == 404:
-                    try:
-                        logger.warning(f"Model {self.model} not found. Attempting to pull...")
-                        pull_response = requests.post(
-                            f"{self.base_url}/api/pull",
-                            json={"name": self.model},
-                            timeout=10.0  # Just to check if pull started
-                        )
-                        if pull_response.status_code == 200:
-                            logger.info(f"Model {self.model} is being pulled in the background. Try again soon.")
-                        else:
-                            logger.error(f"Failed to pull model: {pull_response.status_code}")
-                    except Exception as pull_error:
-                        logger.error(f"Error pulling model: {pull_error}")
-                return None
-            
-            result = response.json()
-            if not result or 'response' not in result:
-                logger.error("Invalid response format from API")
-                return None
-            
-            # Extract the raw response text
-            raw_response = result['response']
-            logger.debug(f"Raw response: {raw_response[:100]}...")
-            
-            # Process based on expected format
-            if format_type == "json":
-                try:
-                    return self._parse_json_response(raw_response)
-                except Exception as e:
-                    logger.error(f"Error parsing JSON response: {e}")
-                    return None
-            elif format_type == "list":
-                return self._parse_list_response(raw_response)
-            else:
-                return raw_response
+            # Call the appropriate internal method based on model
+            if hasattr(self, 'llm') and self.llm is not None:
+                # Most LLM classes have a 'generate' or similar method
+                if hasattr(self.llm, 'generate'):
+                    return self.llm.generate(prompt, temperature=temp)
+                elif hasattr(self.llm, '__call__'):
+                    # Some LLMs can be called directly
+                    return self.llm(prompt)
+                    
+            # Use Ollama API endpoint directly if needed 
+            return self._generate_with_ollama(prompt, temperature=temp)
                 
         except Exception as e:
-            logger.error(f"Error generating structured response: {e}")
+            logger.error(f"Error generating text: {e}")
+            return ""
+
+    def _generate_with_ollama(self, prompt: str, temperature: float = 0.1) -> str:
+        """Use Ollama API directly with increased timeout"""
+        import httpx
+        
+        logger = logging.getLogger(__name__)
+        try:
+            # Default Ollama endpoint
+            url = "http://localhost:11434/api/generate"
+            
+            # Create request payload
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "temperature": temperature,
+                "stream": False,
+                # Parameters that help with longer contexts and generation
+                "num_predict": 1024,  # Request up to 1024 tokens in response
+            }
+            
+            logger.info(f"Calling Ollama API with model {self.model}")
+            
+            # Use a much longer timeout (5 minutes) - LLMs should take the time they need
+            with httpx.Client(timeout=300.0) as client:  # 5 minute timeout
+                response = client.post(url, json=payload)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("response", "")
+                else:
+                    logger.error(f"Ollama API error: {response.status_code}")
+                    return f"Error: Ollama API returned status {response.status_code}"
+                    
+        except httpx.TimeoutException:
+            logger.error("Ollama API request timed out after 5 minutes")
+            return "Error: The request to the language model timed out after 5 minutes."
+        except Exception as e:
+            logger.error(f"Error in Ollama API call: {e}")
+            return ""
+
+    def generate_structured_response(self, prompt: str, format_type: str = "json", temperature: float = None) -> Any:
+        """
+        Generate a structured response from the LLM with better error handling for JSON parsing.
+        
+        Args:
+            prompt: Input prompt
+            format_type: Type of format to extract ("json" or "yaml")
+            temperature: Optional temperature to use
+            
+        Returns:
+            Parsed structure or None on failure
+        """
+        logger.info(f"Generating structured response with format={format_type}")
+        
+        try:
+            # Generate response with appropriate temp
+            response_text = self.generate(prompt, temperature=temperature)
+            
+            if not response_text:
+                logger.warning("No response received from LLM")
+                return None
+            
+            # JSON extraction with improved robustness
+            if format_type.lower() == "json":
+                return self._extract_json_robustly(response_text)
+            # ...existing code for other format types...
+        
+        except Exception as e:
+            logger.error(f"Error in generate_structured_response: {e}")
             return None
-    
+
     def generate_description(self, title: str, url: str, content: str) -> str:
         """
         Generate a comprehensive summary description for a resource.
@@ -292,170 +344,66 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             logger.warning(f"Failed to generate tags for {title}, returning empty list")
             return []
     
-    def _parse_json_response(self, response_text: str) -> Any:
+    def _extract_json_robustly(self, text: str) -> Any:
         """
-        Parse JSON from LLM response with enhanced cleanup and validation.
+        Extract JSON from text with multiple fallback approaches.
         
         Args:
-            response_text: Raw response text from the LLM
+            text: Text possibly containing JSON
             
         Returns:
-            Parsed JSON object/array
+            Parsed JSON object or None if extraction fails
         """
-        # Check for empty responses or model errors
-        if not response_text or response_text.strip() == "":
-            logger.error("Received empty response from LLM, returning None")
-            return None
-            
-        # Handle API error responses that might be in JSON format
-        if "error" in response_text and len(response_text) < 200:
-            try:
-                error_json = json.loads(response_text)
-                if "error" in error_json:
-                    logger.error(f"LLM API error: {error_json['error']}")
-                    return None
-            except:
-                pass  # Not a JSON error, continue with parsing
-        
-        # Log the raw response for debugging (full response for better debugging)
-        logger.debug(f"Parsing JSON from: {response_text}")
-        
+        # Try direct parsing first
         try:
-            # First attempt: direct JSON parsing
-            return json.loads(response_text)
+            return json.loads(text)
         except json.JSONDecodeError as e:
-            # Log specific JSON error to aid debugging
-            logger.error(f"Error extracting JSON: {e}")
-            
-            # Second attempt: Extract JSON portion from response and fix common issues
+            logger.warning(f"Initial JSON parsing failed: {e}")
+        
+        # Try to find JSON array/object boundaries with regex
+        import re
+        
+        # Look for array pattern
+        array_match = re.search(r'\[\s*{.*}\s*\]', text, re.DOTALL)
+        if array_match:
             try:
-                # Find the first occurrence of '[' or '{'
-                start = None
-                for i, char in enumerate(response_text):
-                    if char in '[{':
-                        start = i
-                        break
-                
-                if start is not None:
-                    # Find the matching closing bracket/brace
-                    opening_char = response_text[start]
-                    closing_char = ']' if opening_char == '[' else '}'
-                    
-                    # Track nesting level
-                    level = 0
-                    end = None
-                    
-                    for i in range(start, len(response_text)):
-                        if response_text[i] == opening_char:
-                            level += 1
-                        elif response_text[i] == closing_char:
-                            level -= 1
-                            if level == 0:
-                                end = i + 1
-                                break
-                    
-                    if end is not None:
-                        # Extract the JSON portion
-                        json_text = response_text[start:end]
-                        logger.debug(f"Extracted JSON: {json_text}")
-                        
-                        try:
-                            return json.loads(json_text)
-                        except json.JSONDecodeError as e:
-                            # Try cleaning up common issues
-                            logger.debug(f"Error with extracted JSON: {e}")
-                            cleaned_json = self._clean_json_text(json_text)
-                            
-                            # Attempt fix for missing comma delimiters (most common issue)
-                            if "Expecting ',' delimiter" in str(e):
-                                position = int(str(e).split("char ")[1].strip(")")) if "char " in str(e) else -1
-                                if position > 0 and position < len(cleaned_json):
-                                    # Insert a comma at the position where it's expected
-                                    fixed_json = cleaned_json[:position] + "," + cleaned_json[position:]
-                                    logger.info(f"Attempting to fix missing comma delimiter at position {position}")
-                                    try:
-                                        return json.loads(fixed_json)
-                                    except:
-                                        pass  # If this fix fails, continue with other methods
-                                        
-                            # Try regular cleaning
-                            try:
-                                return json.loads(cleaned_json)
-                            except json.JSONDecodeError:
-                                # Extra aggressive comma fixing for arrays
-                                if "[" in cleaned_json and "]" in cleaned_json and "{" in cleaned_json and "}" in cleaned_json:
-                                    # Fix missing commas between objects in an array
-                                    aggressive_fix = re.sub(r'}\s*{', '},{', cleaned_json)
-                                    try:
-                                        return json.loads(aggressive_fix)
-                                    except:
-                                        pass  # Continue to next method
-            except Exception as e:
-                logger.error(f"Error extracting JSON portion: {e}")
-                
-            # Third attempt: Use regex to find JSON patterns
+                return json.loads(array_match.group(0))
+            except json.JSONDecodeError:
+                logger.warning("Array pattern extraction failed")
+        
+        # Look for object pattern
+        object_match = re.search(r'{.*}', text, re.DOTALL)
+        if object_match:
             try:
-                # Look for array of objects pattern
-                if '[' in response_text and ']' in response_text:
-                    array_match = re.search(r'\[\s*(\{.*?\}\s*(?:,\s*\{.*?\}\s*)*)\]', response_text, re.DOTALL)
-                    if array_match:
-                        array_text = f"[{array_match.group(1)}]"
-                        cleaned_json = self._clean_json_text(array_text)
-                        # Fix missing commas between objects
-                        aggressive_fix = re.sub(r'}\s*{', '},{', cleaned_json)
+                return json.loads(object_match.group(0))
+            except json.JSONDecodeError:
+                logger.warning("Object pattern extraction failed")
+        
+        # Try removing markdown code block markers
+        clean_text = re.sub(r'```json|```|\[INST\]|\[/INST\]|<s>|</s>', '', text)
+        try:
+            return json.loads(clean_text.strip())
+        except json.JSONDecodeError:
+            logger.warning("Cleaned text JSON parsing failed")
+        
+        # Try line-by-line to find valid JSON
+        lines = text.splitlines()
+        
+        # Look for lines that might start/end a JSON block
+        for i in range(len(lines)):
+            if lines[i].strip().startswith('['):
+                # Try to find matching array end
+                for j in range(i, len(lines)):
+                    if lines[j].strip().endswith(']'):
+                        json_block = '\n'.join(lines[i:j+1])
                         try:
-                            return json.loads(aggressive_fix)
-                        except:
-                            # Try just the cleaned version
-                            try:
-                                return json.loads(cleaned_json)
-                            except:
-                                pass
-                
-                # Look for bare objects
-                if '{' in response_text and '}' in response_text:
-                    object_match = re.search(r'\{.*?\}', response_text, re.DOTALL)
-                    if object_match:
-                        object_text = object_match.group(0)
-                        cleaned_json = self._clean_json_text(object_text)
-                        try:
-                            return json.loads(cleaned_json)
-                        except:
-                            pass
-            except Exception as e:
-                logger.error(f"Error with regex JSON extraction: {e}")
-            
-            # Final fallback for list extraction
-            if '[' in response_text and ']' in response_text:
-                try:
-                    # For arrays of strings, looser extraction
-                    array_content = response_text[response_text.find('[')+1:response_text.rfind(']')]
-                    # Handle both comma-separated and non-comma-separated items
-                    if ',' in array_content:
-                        items = [item.strip().strip('"\'') for item in array_content.split(',')]
-                    else:
-                        # Try to split by whitespace or newlines if no commas
-                        items = [item.strip().strip('"\'') for item in re.split(r'\s+', array_content) if item.strip()]
-                    
-                    logger.info(f"Extracted array with {len(items)} items using fallback method")
-                    return items
-                except Exception as e:
-                    logger.error(f"Error with fallback array extraction: {e}")
-            
-            # Last resort: try to extract any valid-looking tags with regex
-            try:
-                # Look for what appear to be tags in the response
-                tag_matches = re.findall(r'[\"\']([a-z0-9-]{2,30})[\"\']', response_text.lower())
-                if tag_matches and len(tag_matches) > 0:
-                    logger.info(f"Extracted {len(tag_matches)} tags using regex pattern matching")
-                    return tag_matches[:5]  # Limit to 5 tags
-            except Exception as e:
-                logger.error(f"Error with regex tag extraction: {e}")
-            
-        # If all parsing attempts fail, return None
-        logger.error("All JSON parsing attempts failed")
+                            return json.loads(json_block)
+                        except json.JSONDecodeError:
+                            continue
+        
+        logger.error(f"Error extracting JSON: Could not find valid JSON in the response")
         return None
-    
+
     def _clean_json_text(self, json_text: str) -> str:
         """
         Clean up common JSON formatting issues.

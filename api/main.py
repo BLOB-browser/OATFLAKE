@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from .routes import stats, knowledge  # Import the knowledge router
+from .routes import ngrok  # Import the ngrok router
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,15 @@ app.include_router(stats.router)
 
 logger.info("Including knowledge router with prefix: " + knowledge.router.prefix)
 app.include_router(knowledge.router)
+
+# Include the ngrok router
+logger.info("Including ngrok router with prefix: " + ngrok.router.prefix)
+app.include_router(ngrok.router)
+
+# Import and include the new Ollama router
+from .routes import ollama
+logger.info("Including ollama router with prefix: " + ollama.router.prefix)
+app.include_router(ollama.router)
 
 # Import the goals router with better logging
 from api.routes.goals import router as goals_router

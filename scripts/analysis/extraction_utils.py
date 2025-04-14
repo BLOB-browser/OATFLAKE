@@ -10,6 +10,9 @@ import logging
 import json
 from typing import Dict, List, Any, Optional
 
+# Add import for interrupt handling
+from scripts.analysis.interruptible_llm import is_interrupt_requested
+
 logger = logging.getLogger(__name__)
 
 class ExtractionUtils:
@@ -58,6 +61,11 @@ class ExtractionUtils:
         Returns:
             List of definition dictionaries with term and definition keys
         """
+        # Check for interruption
+        if is_interrupt_requested():
+            logger.warning(f"Skipping definitions extraction for {title} due to interrupt")
+            return []
+        
         logger.info(f"Extracting definitions from {title}")
         try:
             # First step: Extract key topics from the entire content
@@ -133,33 +141,109 @@ class ExtractionUtils:
                
             3. Each definition should explain what the technical term means in its field
             
-            4. If the website doesn't contain enough technical terms, it's BETTER to return fewer high-quality 
+            4. For each term, try to include:
+               - The specific category or field it belongs to
+               - A short excerpt from the original text that contains the term (if available)
+            
+            5. If the website doesn't contain enough technical terms, it's BETTER to return fewer high-quality 
                definitions or even an empty array than to create definitions for non-technical terms
             
             EXTREMELY IMPORTANT FORMATTING INSTRUCTIONS:
             1. Your response must be ONLY a valid JSON array containing term-definition pairs
-            2. Each JSON object MUST have exactly these two fields with these exact names: "term" and "definition"
-            3. "term" should be a short, specific phrase (1-5 words)
-            4. "definition" should be a clear, concise explanation (1-3 sentences)
-            5. Format response as a valid JSON array containing objects with these two fields
-            6. Include no explanation, just the JSON array
-            7. If no definitions found, return ONLY an empty array: []
+            2. Each JSON object MUST have these fields:
+               - "term": The technical term being defined (string, 1-5 words)
+               - "definition": A clear, concise explanation (string, 1-3 sentences)
+               - "category": The field this term belongs to (optional string)
+               - "source_text": A brief excerpt from the original content containing this term (optional string)
+            3. Format response as a valid JSON array containing objects with these fields
+            4. Include no explanation, just the JSON array
+            5. If no definitions found, return ONLY an empty array: []
             
             REQUIRED FORMAT EXAMPLE:
             [
               {{
                 "term": "Design Fiction",
-                "definition": "A design practice that combines elements of science fiction with product design to explore possible futures and their implications."
+                "definition": "A design practice that combines elements of science fiction with product design to explore possible futures and their implications.",
+                "category": "Design Methodology",
+                "source_text": "Design fiction uses narrative elements to envision and explain possible futures for design."
               }},
               {{
                 "term": "Speculative Design",
-                "definition": "An approach that uses design to provoke questions about possible futures and alternative presents."
+                "definition": "An approach that uses design to provoke questions about possible futures and alternative presents.",
+                "category": "Design Research",
+                "source_text": "Through speculative design, we question existing paradigms and imagine alternative scenarios."
               }}
             ]
             """
             
-            # Use JSON format for definitions
+            # Use JSON format for definitions - DIRECTLY use generate_structured_response
+            # instead of trying to call generate first
             response = self.resource_llm.generate_structured_response(prompt, format_type="json", temperature=0.1)
+            
+            # Robust JSON extraction (only if response is None or empty)
+            if not response:
+                logger.warning("Initial JSON extraction failed, trying fallback parsing")
+                try:
+                    import re
+                    import json
+                    
+                    # Try to get raw text directly from ollama
+                    try:
+                        # Try the direct generate method we just added
+                        if hasattr(self.resource_llm, 'generate'):
+                            response_text = self.resource_llm.generate(prompt, temperature=0.1)
+                            logger.info("Used resource_llm.generate() for fallback")
+                        # Try fallback to direct Ollama API
+                        else:
+                            logger.info("Attempting direct Ollama API call fallback")
+                            import httpx
+                            # Default Ollama endpoint and model
+                            url = "http://localhost:11434/api/generate"
+                            model = getattr(self.resource_llm, 'model', 'mistral')
+                            
+                            # Create request payload
+                            payload = {
+                                "model": model,
+                                "prompt": prompt,
+                                "temperature": 0.1,
+                                "stream": False
+                            }
+                            
+                            # Send request to Ollama
+                            response = httpx.post(url, json=payload)
+                            
+                            if response.status_code == 200:
+                                data = response.json()
+                                response_text = data.get("response", "")
+                                logger.info("Got response from direct Ollama API call")
+                            else:
+                                logger.error(f"Ollama API error: {response.status_code}")
+                                return []
+                    except Exception as direct_err:
+                        logger.error(f"All fallback methods failed: {direct_err}")
+                        return []
+                    
+                    # Try to find JSON array in the response
+                    array_match = re.search(r'\[\s*{.*}\s*\]', response_text, re.DOTALL)
+                    if array_match:
+                        try:
+                            response = json.loads(array_match.group(0))
+                            logger.info("Successfully extracted JSON with regex")
+                        except json.JSONDecodeError:
+                            logger.warning("JSON array extraction failed")
+                    
+                    # Try removing markdown code block markers
+                    if not response:
+                        clean_text = re.sub(r'```json|```|\[INST\]|\[/INST\]|<s>|</s>', '', response_text)
+                        try:
+                            response = json.loads(clean_text.strip())
+                            logger.info("Successfully extracted JSON after cleaning markdown")
+                        except json.JSONDecodeError:
+                            logger.warning("Cleaned text JSON parsing failed")
+                            response = []
+                except Exception as json_err:
+                    logger.error(f"Error parsing JSON response: {json_err}")
+                    response = []
             
             if response and isinstance(response, list):
                 # Validate the structure of each definition
@@ -172,10 +256,23 @@ class ExtractionUtils:
                             definition = str(item['definition']).strip()
                             
                             if term and definition:
-                                validated_definitions.append({
+                                # Create a new definition object with required fields
+                                definition_obj = {
                                     'term': term,
-                                    'definition': definition
-                                })
+                                    'definition': definition,
+                                    # Add source information
+                                    'source': url,  # The URL this definition was extracted from
+                                    'resource_url': url,  # The main resource URL (same in this case)
+                                    'origin_title': title  # The title of the content source
+                                }
+                                
+                                # Add optional fields if they exist in the response
+                                if 'category' in item and item['category']:
+                                    definition_obj['category'] = str(item['category']).strip()
+                                if 'source_text' in item and item['source_text']:
+                                    definition_obj['source_text'] = str(item['source_text']).strip()
+                                
+                                validated_definitions.append(definition_obj)
                     except Exception as item_err:
                         logger.warning(f"Error validating definition item: {item_err}")
                         continue
@@ -191,6 +288,48 @@ class ExtractionUtils:
             logger.error(f"Error extracting definitions: {e}")
             return []  # Return empty list in case of any error
     
+    def _create_definitions_prompt(self, title: str, url: str, content: str) -> str:
+        """
+        Create a prompt for extracting definitions/terminology from content.
+        
+        Args:
+            title: Resource title
+            url: Resource URL
+            content: Resource content text
+            
+        Returns:
+            Prompt string for the LLM
+        """
+        # Truncate content to reasonable size
+        max_content_length = 4000
+        truncated_content = content[:max_content_length] if content else ""
+        
+        # Create prompt focused on identifying technical terminology and definitions
+        prompt = f"""Analyze the following content from '{title}' and extract all definitions, 
+terminology, and technical concepts that would be valuable to learn.
+
+URL: {url}
+
+Content:
+{truncated_content}
+
+Extract terms and their definitions in a structured format. For each term:
+1. Identify the term or concept
+2. Extract or formulate a clear, concise definition
+3. Identify category/field (e.g., "programming", "design", "mathematics")
+
+ONLY include actual terminology with meaningful definitions, not general phrases.
+
+Format your response as a JSON array of objects with these fields:
+- "term": The term or concept being defined
+- "definition": A clear, concise definition
+- "category": The field or category this term belongs to
+- "source_text": The relevant excerpt from the original content (if available)
+
+If no definitions are found, return an empty array.
+"""
+        return prompt
+    
     def identify_projects(self, title: str, url: str, content: str) -> List[Dict]:
         """
         Identify projects from resource content.
@@ -203,6 +342,11 @@ class ExtractionUtils:
         Returns:
             List of project dictionaries
         """
+        # Check for interruption
+        if is_interrupt_requested():
+            logger.warning(f"Skipping projects identification for {title} due to interrupt")
+            return []
+        
         logger.info(f"Identifying projects from {title}")
         
         try:
@@ -298,12 +442,17 @@ class ExtractionUtils:
                             
                             # Only add if we have the required fields with content
                             if title_str and desc_str:
-                                validated_projects.append({
+                                project_obj = {
                                     'title': title_str,
                                     'description': desc_str,
                                     'goals': goals_str,
-                                    'fields': fields_list
-                                })
+                                    'fields': fields_list,
+                                    # Add source information
+                                    'source': url,  # The specific URL this project was found on
+                                    'resource_url': url,  # The main resource URL (same in this case)
+                                    'origin_title': title  # The title of the content source
+                                }
+                                validated_projects.append(project_obj)
                     except Exception as item_err:
                         logger.warning(f"Error validating project item: {item_err}")
                         continue
@@ -331,6 +480,11 @@ class ExtractionUtils:
         Returns:
             List of method dictionaries
         """
+        # Check for interruption
+        if is_interrupt_requested():
+            logger.warning(f"Skipping methods extraction for {title} due to interrupt")
+            return []
+        
         # If a separate MethodLLM is available, use it
         try:
             from scripts.analysis.method_llm import MethodLLM
@@ -410,12 +564,16 @@ class ExtractionUtils:
                             else:
                                 tags_list = [str(method['tags']).strip().lower()]
                         
-                        # Add the validated method
+                        # Add the validated method with source information
                         valid_methods.append({
                             'title': str(method['title']).strip(),
                             'description': str(method['description']).strip(),
                             'steps': steps_list,
-                            'tags': tags_list
+                            'tags': tags_list,
+                            # Add source information
+                            'source': url,  # The specific URL this method was found on
+                            'resource_url': url,  # The main resource URL (same in this case) 
+                            'origin_title': title  # The title of the content source
                         })
                         
                 logger.info(f"Extracted {len(valid_methods)} methods from {title}")

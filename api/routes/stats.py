@@ -75,8 +75,14 @@ async def get_knowledge_stats(group_id: str = None):
 
         # Get embedding stats for each store, including topic stores
         stores_stats = {
-            "reference_store": None,
-            "content_store": None,
+            "reference_store": {
+                "embedding_count": 0,  # Default values to prevent KeyError
+                "chunk_count": 0
+            },
+            "content_store": {
+                "embedding_count": 0,  # Default values to prevent KeyError
+                "chunk_count": 0
+            },
             "topic_stores": {}
         }
         
@@ -111,11 +117,8 @@ async def get_knowledge_stats(group_id: str = None):
                         total_chunks += store_chunks
                 except Exception as store_error:
                     logger.error(f"Error reading stats for {store}: {store_error}")
-                    stores_stats[store] = {
-                        "embedding_count": 0,
-                        "chunk_count": 0,
-                        "updated_at": datetime.now().isoformat()
-                    }
+                    # Keep the default values in stores_stats
+                    stores_stats[store]["updated_at"] = datetime.now().isoformat()
         
         # Now add stats for all topic stores
         topic_embeddings = 0
@@ -147,7 +150,7 @@ async def get_knowledge_stats(group_id: str = None):
         total_embeddings += topic_embeddings
         total_chunks += topic_chunks
         
-        # Calculate and log chunk-to-embedding ratio
+        # Calculate and log chunk-to-embedding ratio - prevent division by zero
         ratio = total_chunks / total_embeddings if total_embeddings > 0 else 0
         logger.info(f"Found total of {total_embeddings} embeddings and {total_chunks} chunks across all stores")
         logger.info(f"Chunk-to-embedding ratio: {ratio:.2f} (ideally should be close to 1.0 for 1:1 mapping)")
@@ -162,9 +165,9 @@ async def get_knowledge_stats(group_id: str = None):
                     return store_stats[field]
             return None
         
-        # Prepare topic stores stats
+        # Prepare topic stores stats - Make sure this works even with no topic stores
         topic_store_stats = {}
-        if "topic_stores" in stores_stats:
+        if stores_stats.get("topic_stores", {}):
             for topic_name, topic_stats in stores_stats["topic_stores"].items():
                 topic_store_stats[topic_name] = {
                     "total_documents": topic_stats.get("document_count", 0),
@@ -172,6 +175,11 @@ async def get_knowledge_stats(group_id: str = None):
                     "chunks": topic_stats.get("chunk_count", 0),  # Add chunk count
                     "last_updated": get_timestamp(topic_stats)
                 }
+        
+        # Ensure reference_store and content_store always have required fields
+        for store_key in ["reference_store", "content_store"]:
+            if store_key not in stores_stats or not isinstance(stores_stats[store_key], dict):
+                stores_stats[store_key] = {"embedding_count": 0, "chunk_count": 0}
         
         # Combine all stats
         knowledge_stats = {
@@ -185,14 +193,14 @@ async def get_knowledge_stats(group_id: str = None):
             "stores": {
                 "reference_store": {
                     "total_documents": reference_total,
-                    "embeddings": stores_stats["reference_store"]["embedding_count"] if stores_stats["reference_store"] else 0,
-                    "chunks": stores_stats["reference_store"].get("chunk_count", 0) if stores_stats["reference_store"] else 0,
+                    "embeddings": stores_stats["reference_store"].get("embedding_count", 0),
+                    "chunks": stores_stats["reference_store"].get("chunk_count", 0),
                     "last_updated": get_timestamp(stores_stats["reference_store"])
                 },
                 "content_store": {
                     "total_documents": content_total,
-                    "embeddings": stores_stats["content_store"]["embedding_count"] if stores_stats["content_store"] else 0,
-                    "chunks": stores_stats["content_store"].get("chunk_count", 0) if stores_stats["content_store"] else 0,
+                    "embeddings": stores_stats["content_store"].get("embedding_count", 0),
+                    "chunks": stores_stats["content_store"].get("chunk_count", 0),
                     "last_updated": get_timestamp(stores_stats["content_store"])
                 },
                 "topic_stores": topic_store_stats
@@ -215,8 +223,44 @@ async def get_knowledge_stats(group_id: str = None):
         }
 
     except Exception as e:
-        logger.error(f"Error getting knowledge stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting knowledge stats: {e}", exc_info=True)
+        # Return a valid fallback response instead of raising an exception
+        return {
+            "status": "error",
+            "data": {
+                "sources": {
+                    "definitions": 0,
+                    "methods": 0,
+                    "materials": 0,
+                    "projects": 0,
+                    "resources": 0
+                },
+                "stores": {
+                    "reference_store": {
+                        "total_documents": 0,
+                        "embeddings": 0,
+                        "chunks": 0,
+                        "last_updated": None
+                    },
+                    "content_store": {
+                        "total_documents": 0,
+                        "embeddings": 0,
+                        "chunks": 0,
+                        "last_updated": None
+                    },
+                    "topic_stores": {}
+                },
+                "totals": {
+                    "documents": 0,
+                    "embeddings": 0,
+                    "chunks": 0,
+                    "topic_stores": 0
+                },
+                "last_updated": datetime.now().isoformat(),
+                "group_id": group_id,
+                "error": str(e)
+            }
+        }
 
 @router.post("/knowledge/analyze-resources")
 async def analyze_resources(group_id: str = None, batch_size: int = 5, max_resources: int = None, analyze_all: bool = False):

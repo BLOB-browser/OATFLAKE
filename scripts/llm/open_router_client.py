@@ -8,15 +8,59 @@ from scripts.services.settings_manager import SettingsManager
 from scripts.models.settings import ModelSettings
 from .ollama_embeddings import OllamaEmbeddings
 import os
+from dotenv import load_dotenv
+import time  # Import time for tracking connection check timestamps
 
 logger = logging.getLogger(__name__)
 
+# Global cache to store connection status and models list across instances
+_connection_cache = {
+    "last_check_time": 0,
+    "check_interval": 300,  # 5 minutes between connection checks
+    "models": [],
+    "is_connected": False,
+    "status_message": "",
+    "instances": 0
+}
+
 class OpenRouterClient:
     def __init__(self, api_key: Optional[str] = None, base_url: str = "https://openrouter.ai/api/v1"):
+        global _connection_cache
         self.base_url = base_url
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        _connection_cache["instances"] += 1
+        
+        # First try to use the provided API key
+        self.api_key = api_key
+        
+        # If no key provided, try to load from ~/.blob/.env first
         if not self.api_key:
-            logger.warning("No OpenRouter API key provided. Set OPENROUTER_API_KEY environment variable.")
+            blob_env_path = Path.home() / ".blob" / ".env"
+            if blob_env_path.exists():
+                logger.debug(f"Loading environment from ~/.blob/.env")
+                # Create a temporary env to not affect other variables
+                try:
+                    with open(blob_env_path) as f:
+                        for line in f:
+                            if line.strip() and not line.startswith('#'):
+                                try:
+                                    key, value = line.strip().split('=', 1)
+                                    if key == "OPENROUTER_API_KEY":
+                                        self.api_key = value.strip().strip('"\'')
+                                        logger.debug("OPENROUTER_API_KEY found in ~/.blob/.env")
+                                        break
+                                except ValueError:
+                                    continue
+                except Exception as e:
+                    logger.warning(f"Error reading from ~/.blob/.env: {e}")
+        
+        # If still not found, try environment variable (loaded by .env in project root)
+        if not self.api_key:
+            self.api_key = os.environ.get("OPENROUTER_API_KEY")
+            if self.api_key:
+                logger.debug("OPENROUTER_API_KEY found in environment variables")
+
+        if not self.api_key:
+            logger.warning("No OpenRouter API key provided. Set OPENROUTER_API_KEY in ~/.blob/.env or environment variable.")
         
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.load_settings()
@@ -30,7 +74,7 @@ class OpenRouterClient:
         self.content_store = None
         self.load_vector_stores()
         
-        logger.info("Initialized OpenRouter client")
+        logger.debug(f"Initialized OpenRouter client (instance #{_connection_cache['instances']})")
     
     def get_config_path(self):
         """Get the path to the config file in the project directory"""
@@ -317,12 +361,22 @@ class OpenRouterClient:
             
     async def check_connection(self) -> Tuple[bool, str]:
         """Check if OpenRouter API is accessible and verify model availability"""
+        global _connection_cache
+        
+        # Use cached connection check if it's recent enough
+        current_time = time.time()
+        if current_time - _connection_cache["last_check_time"] < _connection_cache["check_interval"]:
+            logger.debug("Using cached OpenRouter connection status")
+            return _connection_cache["is_connected"], _connection_cache["status_message"]
+            
         try:
             if not self.api_key:
+                _connection_cache["is_connected"] = False
+                _connection_cache["status_message"] = "No API key provided"
                 return False, "No API key provided"
                 
+            logger.info("Checking OpenRouter connection...")
             async with httpx.AsyncClient(timeout=10.0) as client:
-                logger.info("Checking OpenRouter connection...")
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
                     "HTTP-Referer": "https://blob.iaac.net",  # Replace with your site
@@ -334,16 +388,23 @@ class OpenRouterClient:
                 )
                 
                 if response.status_code != 200:
+                    _connection_cache["is_connected"] = False
+                    _connection_cache["status_message"] = f"API error: {response.status_code}"
+                    _connection_cache["last_check_time"] = current_time
                     return False, f"API error: {response.status_code}"
                     
                 # Check available models
                 models_data = response.json()
                 
                 if not models_data.get("data"):
+                    _connection_cache["is_connected"] = False
+                    _connection_cache["status_message"] = "No models available"
+                    _connection_cache["last_check_time"] = current_time
                     return False, "No models available"
                 
                 # Check if our configured model is available
                 self.available_models = [model.get("id") for model in models_data.get("data", [])]
+                _connection_cache["models"] = self.available_models
                 logger.info(f"Connected to OpenRouter, found {len(self.available_models)} models")
                 
                 # Check current model setting
@@ -351,15 +412,23 @@ class OpenRouterClient:
                 configured_model = settings.openrouter_model
                 
                 # Validate that the configured model is in the available models
+                message = "Connected to OpenRouter API"
                 if configured_model not in self.available_models:
                     logger.warning(f"Configured model '{configured_model}' not found in available models")
-                    # We'll still return success but warn about the model
-                    return True, f"Connected to OpenRouter, but configured model '{configured_model}' may not be available"
+                    message = f"Connected to OpenRouter, but configured model '{configured_model}' may not be available"
+                
+                # Update cache
+                _connection_cache["is_connected"] = True
+                _connection_cache["status_message"] = message
+                _connection_cache["last_check_time"] = current_time
                     
-                return True, "Connected to OpenRouter API"
+                return True, message
 
         except Exception as e:
             logger.error(f"Connection check failed: {str(e)}")
+            _connection_cache["is_connected"] = False
+            _connection_cache["status_message"] = str(e)
+            _connection_cache["last_check_time"] = current_time
             return False, str(e)
 
     async def generate_response(self, prompt: str, model: str = None, context_k: int = None, max_tokens: int = None) -> str:
@@ -587,16 +656,49 @@ INSTRUCTIONS:
             return f"Sorry, something went wrong with your request: {str(e)}"
             
     async def list_available_models(self) -> List[Dict[str, Any]]:
-        """List all available models from OpenRouter with improved error handling and filtering"""
+        """List all available models from OpenRouter with improved caching"""
+        global _connection_cache
+        
         try:
-            if not self.api_key:
-                logger.error("Cannot list models: No API key provided")
+            # Check if we already have models in cache
+            if _connection_cache["models"] and _connection_cache["is_connected"]:
+                current_time = time.time()
+                # Use cached models if the connection check is recent
+                if current_time - _connection_cache["last_check_time"] < _connection_cache["check_interval"]:
+                    logger.debug("Using cached model list")
+                    # We should still create the formatted model objects
+                    models = []
+                    settings = self.settings_manager.load_settings()
+                    configured_model = settings.openrouter_model
+                    
+                    for model_id in _connection_cache["models"]:
+                        model_obj = {
+                            "id": model_id,
+                            "name": model_id.split("/")[-1] if "/" in model_id else model_id,
+                            "description": "",
+                            "context_length": 0,
+                            "is_current": model_id == configured_model,
+                            "is_free": ":free" in model_id,
+                            "provider": model_id.split("/")[0] if "/" in model_id else "",
+                            "model_type": model_id.split("/")[1] if "/" in model_id else model_id
+                        }
+                        models.append(model_obj)
+                    
+                    # Sort models to put free models first and current model at the top
+                    models.sort(key=lambda m: (not m["is_current"], not m["is_free"]))
+                    return models
+            
+            # If no cached models or cache expired, do a fresh connection check
+            is_connected, _ = await self.check_connection()
+            if not is_connected or not self.api_key:
+                logger.error("Cannot list models: Not connected to OpenRouter")
                 return []
                 
+            # Make a full API request to get detailed model information
             async with httpx.AsyncClient() as client:
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
-                    "HTTP-Referer": "https://blob.iaac.net",  # Replace with your site
+                    "HTTP-Referer": "https://blob.iaac.net",
                     "X-Title": "Blob RAG Assistant"
                 }
                 
@@ -620,6 +722,10 @@ INSTRUCTIONS:
                 for model in data.get("data", []):
                     model_id = model.get("id")
                     
+                    # Update the model cache while we're here
+                    if model_id not in _connection_cache["models"]:
+                        _connection_cache["models"].append(model_id)
+                    
                     # Check if this is the configured model
                     if model_id == configured_model:
                         configured_model_found = True
@@ -642,8 +748,10 @@ INSTRUCTIONS:
                 # Sort models to put free models first and current model at the top
                 models.sort(key=lambda m: (not m["is_current"], not m["is_free"]))
                 
-                # Set available models for later use
+                # Set available models for later use and update cache time
                 self.available_models = [model["id"] for model in models]
+                _connection_cache["models"] = self.available_models
+                _connection_cache["last_check_time"] = time.time()
                 
                 # Log warning if configured model not found
                 if not configured_model_found:

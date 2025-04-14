@@ -71,6 +71,10 @@ class DataAnalyser:
             force_reanalysis=force_reanalysis
         )
         
+        # If processing was cancelled, log that fact
+        if MainProcessor.check_cancellation():
+            logger.info("Resource analysis cancelled by external request")
+        
         # Extract results from processing_result
         updated_resources = []
         projects = []

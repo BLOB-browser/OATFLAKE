@@ -25,6 +25,38 @@ _training_stop_minute = 0
 _last_data_check = None
 _last_data_timestamp = None
 
+def load_training_schedule():
+    """Load training schedule from config.json if available"""
+    global _training_start_hour, _training_start_minute, _training_stop_hour, _training_stop_minute
+    
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                
+            # Check if training_schedule exists in config
+            if 'training_schedule' in config:
+                schedule = config['training_schedule']
+                # Set times if they exist in config
+                if all(k in schedule for k in ['start_hour', 'start_minute', 'stop_hour', 'stop_minute']):
+                    _training_start_hour = schedule['start_hour']
+                    _training_start_minute = schedule['start_minute']
+                    _training_stop_hour = schedule['stop_hour']
+                    _training_stop_minute = schedule['stop_minute']
+                    logger.info(f"Loaded training schedule from config: "
+                               f"{_training_start_hour:02d}:{_training_start_minute:02d} - "
+                               f"{_training_stop_hour:02d}:{_training_stop_minute:02d}")
+                    return True
+    except Exception as e:
+        logger.error(f"Error loading training schedule from config: {e}")
+    
+    # Use defaults if couldn't load from config
+    logger.info(f"Using default training schedule: "
+               f"{_training_start_hour:02d}:{_training_start_minute:02d} - "
+               f"{_training_stop_hour:02d}:{_training_stop_minute:02d}")
+    return False
+
 def set_training_time(start_hour, start_minute, stop_hour, stop_minute):
     """Set the training schedule time window"""
     global _training_start_hour, _training_start_minute, _training_stop_hour, _training_stop_minute
@@ -297,10 +329,14 @@ def _training_loop():
     logger.info("Training scheduler started")
     last_check_time = None
     
+    # Set up interruption handling flag
+    processing_active = False
+    
     while not _stop_event.is_set():
         try:
-            # Wait for 5 seconds between checks
-            if _stop_event.wait(5):
+            # Wait for 2 seconds between checks - this is where we check for stop events
+            if _stop_event.wait(2):
+                logger.info("Stop event detected in training loop")
                 break
                 
             # Get current time
@@ -321,32 +357,117 @@ def _training_loop():
             else:
                 # Crosses midnight (e.g., 22:00 - 04:00)
                 is_training_time = current_time >= training_start or current_time <= training_stop
+                
+            # Check if we're approaching the end of the training window
+            # Calculate time until end of window
+            time_to_end_minutes = 0
+            if is_training_time:
+                # Calculate minutes until end of training window
+                if training_start <= training_stop:
+                    # Normal case (e.g., 01:00 - 06:00)
+                    stop_datetime = now.replace(hour=_training_stop_hour, minute=_training_stop_minute)
+                else:
+                    # Crosses midnight (e.g., 22:00 - 04:00)
+                    stop_datetime = now.replace(hour=_training_stop_hour, minute=_training_stop_minute)
+                    if now.time() >= dt_time(hour=0, minute=0) and now.time() <= training_stop:
+                        # We're after midnight but before stop time
+                        pass  # stop_datetime is already correct
+                    else:
+                        # We're after start time but before midnight
+                        stop_datetime = stop_datetime + timedelta(days=1)
+                
+                time_to_end_minutes = (stop_datetime - now).total_seconds() / 60
+                logger.debug(f"Minutes until end of training window: {time_to_end_minutes:.1f}")
+                
+                # If we're close to the end (< 60 minutes), don't start new resource analysis
+                # but still allow embedding generation and other quick tasks
+                if time_to_end_minutes < 60:
+                    logger.info(f"Approaching end of training window ({time_to_end_minutes:.1f} min left), "
+                               "will skip resource analysis but allow embeddings")
             
-            # Execute training tasks if it's time and we haven't run in the last hour
+            # Execute training tasks if:
+            # - It's within the training window AND
+            # - We haven't run in the last hour (to avoid excessive processing)
             if is_training_time and (last_check_time is None or (now - last_check_time).seconds >= 3600):
+                # Check again for stop event before heavy processing
+                if _stop_event.is_set():
+                    logger.info("Stop event detected before data check")
+                    break
+                    
                 logger.info(f"Training time window active ({training_start} - {training_stop}), checking for new data")
                 
                 # First check if there's any new data to process
                 has_new_data = check_for_new_data()
                 
-                if has_new_data:
-                    logger.info("New data detected, starting knowledge processing")
+                # Check again for stop event after data check
+                if _stop_event.is_set():
+                    logger.info("Stop event detected after data check")
+                    break
+                
+                # Always check for unanalyzed resources, even if no file changes detected
+                # This ensures we process any resources that were interrupted or not fully analyzed
+                should_process = has_new_data
+                
+                # If no new data detected, check for unanalyzed resources anyway
+                if not has_new_data:
+                    try:
+                        import requests
+                        import json
+                        
+                        # Make a quick check for unanalyzed resources without calling the full API
+                        # This is more efficient than making an API call every time
+                        data_path = get_data_path()
+                        resources_path = data_path / "resources.csv"
+                        
+                        if resources_path.exists():
+                            try:
+                                import pandas as pd
+                                df = pd.read_csv(resources_path)
+                                
+                                # Count resources that need analysis
+                                needs_analysis_count = 0
+                                for _, row in df.iterrows():
+                                    # Check if analysis_completed is False or missing
+                                    if pd.isna(row.get('analysis_completed')) or row.get('analysis_completed') == False:
+                                        needs_analysis_count += 1
+                                        if needs_analysis_count > 0:
+                                            # We found at least one that needs analysis, no need to check more
+                                            break
+                                
+                                if needs_analysis_count > 0:
+                                    logger.info(f"Found {needs_analysis_count} resources with incomplete analysis")
+                                    should_process = True
+                                else:
+                                    logger.info("All resources have been analyzed")
+                            except Exception as e:
+                                logger.error(f"Error checking for unanalyzed resources: {e}")
+                    except Exception as e:
+                        logger.warning(f"Could not check for unanalyzed resources: {e}")
+                
+                # Now decide whether to process based on has_new_data OR unanalyzed resources
+                if should_process:
+                    if has_new_data:
+                        logger.info("New data detected, starting knowledge processing")
+                    else:
+                        logger.info("No file changes, but found unanalyzed resources - starting processing")
                     
                     # Use the API endpoint to trigger knowledge processing
                     import requests
                     try:
-                        # Call the updated API endpoint
+                        # Mark that we're in processing mode
+                        processing_active = True
+                        
                         url = "http://localhost:8999/api/knowledge/process"  # Updated path
                         
                         # Set parameters for scheduled processing
                         params = {
-                            "skip_markdown_scraping": "false",  # Process markdown files
-                            "analyze_resources": "true",        # Analyze resources with LLM
-                            "analyze_all_resources": "false",   # Only analyze resources that need it
-                            "batch_size": "1",                  # Process 1 resource at a time for stability
-                            "resource_limit": "",               # No limit on resources
-                            "force_update": "false",            # Let the API decide if processing is needed
-                            "skip_vector_generation": "false"   # Do vector generation in the process endpoint
+                            "skip_markdown_scraping": "false",   # Process markdown files
+                            "analyze_resources": str(time_to_end_minutes >= 60).lower(),  # Only analyze resources if >60 min left
+                            "analyze_all_resources": "false",    # Only analyze resources that need it
+                            "batch_size": "1",                   # Process 1 resource at a time for stability
+                            "force_update": "false",             # Let the API decide if processing is needed
+                            "skip_vector_generation": "false",   # Do vector generation in the process endpoint
+                            "check_unanalyzed": "true"           # Always check for unanalyzed resources
                         }
                         
                         logger.info(f"Calling knowledge processing API endpoint: {url}")
@@ -393,69 +514,182 @@ def _training_loop():
                     
                     except Exception as e:
                         logger.error(f"Error calling knowledge processing API: {e}")
+                        processing_active = False  # Ensure flag is reset even on error
                 else:
-                    logger.info("No new data detected, skipping knowledge processing")
+                    logger.info("No new data detected and all resources analyzed, skipping knowledge processing")
                 
                 # Update last check time regardless of whether we ran processing
                 last_check_time = now
                 
+            # Add specific handling for keyboard interrupts
+            # If we're in the middle of processing, we want to catch Ctrl+C
+            # and handle it gracefully
             
+        except KeyboardInterrupt:
+            # If we catch a keyboard interrupt inside our thread, 
+            # we need to trigger a proper shutdown
+            logger.warning("Keyboard interrupt caught in training thread")
+            _stop_event.set()  # This will cause the thread to exit gracefully
+            break
         except Exception as e:
             logger.error(f"Error in training loop: {e}")
+            processing_active = False  # Reset processing flag on error
             
+    # Make sure we properly mark as not running when exiting loop
     _running = False
-    logger.info("Training scheduler stopped")
+    logger.info("Training scheduler loop exited")
 
 def start():
     """Start the scheduler thread if not already running"""
-    global _scheduler_thread, _stop_event
+    global _scheduler_thread, _stop_event, _running
     
     if (_running):
         logger.info("Scheduler already running")
         return
+    
+    # Load training schedule from config before starting
+    load_training_schedule()
         
+    # Reset stop event and thread state
     _stop_event.clear()
-    _scheduler_thread = threading.Thread(target=_training_loop)
+    
+    # Check if thread exists and is still alive
+    if _scheduler_thread and _scheduler_thread.is_alive():
+        logger.warning("Thread still alive, attempting to stop it first")
+        stop()
+    
+    # Create and start a new thread
+    _scheduler_thread = threading.Thread(target=_training_loop, name="TrainingScheduler")
     _scheduler_thread.daemon = True  # Thread will exit when main program exits
     _scheduler_thread.start()
     
-    logger.info("Started training scheduler")
-
-def stop():
-    """Stop the scheduler thread if running"""
-    global _stop_event, _scheduler_thread
+    # Wait a moment to ensure the thread has properly started
+    import time
+    time.sleep(0.5)
     
-    if not _running:
+    if _scheduler_thread.is_alive():
+        logger.info(f"Started training scheduler thread (id: {_scheduler_thread.ident})")
+    else:
+        logger.error("Failed to start training scheduler thread")
+
+def stop(timeout=15.0):
+    """Stop the scheduler thread if running"""
+    global _stop_event, _scheduler_thread, _running
+    
+    if not _running and (_scheduler_thread is None or not _scheduler_thread.is_alive()):
         logger.info("Scheduler not running")
         return
         
     logger.info("Stopping training scheduler...")
+    
+    # First try to send cancellation signal to any running knowledge process
+    try:
+        import requests
+        try:
+            # Send cancellation signal to the knowledge processing endpoint
+            logger.info("Sending cancellation signal to knowledge process...")
+            cancel_response = requests.post(
+                "http://localhost:8999/api/knowledge/cancel", 
+                json={"force": True},
+                timeout=3
+            )
+            if cancel_response.status_code == 200:
+                logger.info("Cancellation signal sent successfully")
+            else:
+                logger.warning(f"Error sending cancellation signal: {cancel_response.status_code}")
+        except Exception as cancel_e:
+            logger.error(f"Error during cancellation request: {cancel_e}")
+    except ImportError:
+        pass
+    
+    # Set the stop event and wait for thread to finish
     _stop_event.set()
     
-    if (_scheduler_thread):
-        _scheduler_thread.join(timeout=5.0)
+    if _scheduler_thread:
+        # Check if any embedding jobs are in progress
+        embedding_in_progress = False
+        try:
+            import requests
+            try:
+                # Check if there's an active job
+                status_response = requests.get("http://localhost:8999/api/knowledge/stats", timeout=1)
+                if status_response.status_code == 200:
+                    data = status_response.json()
+                    status = data.get('status', '').lower()
+                    if status == 'processing' or 'embedding' in status:
+                        embedding_in_progress = True
+                        logger.info("Embedding is in progress, waiting longer for completion before stopping")
+            except Exception as e:
+                logger.error(f"Error checking embedding status: {e}")
+        except ImportError:
+            pass
+        
+        # Join with a timeout adjusted based on embedding status
+        join_timeout = min(timeout, 20.0 if embedding_in_progress else 10.0)
+        logger.info(f"Waiting up to {join_timeout} seconds for scheduler to stop...")
+        _scheduler_thread.join(timeout=join_timeout)
+        
+        # Check if thread is still alive
         if _scheduler_thread.is_alive():
-            logger.warning("Scheduler thread did not stop gracefully")
+            logger.warning("Scheduler thread did not stop gracefully within timeout")
+            # Try more aggressive approach for testing environments
+            try:
+                import ctypes
+                if hasattr(ctypes, 'pythonapi') and hasattr(ctypes.pythonapi, 'PyThreadState_SetAsyncExc'):
+                    thread_id = _scheduler_thread.ident
+                    result = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_long(thread_id), 
+                        ctypes.py_object(SystemExit)
+                    )
+                    if result == 0:
+                        logger.error(f"Invalid thread ID: {thread_id}")
+                    elif result > 1:
+                        # If more than one thread affected, reset state
+                        ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, 0)
+                        logger.error("Failed to terminate thread")
+                    else:
+                        logger.info("Thread forcefully terminated")
+                        time.sleep(0.5)  # Give it a moment to terminate
+            except Exception as e:
+                logger.error(f"Error attempting to forcefully terminate thread: {e}")
         else:
             logger.info("Scheduler thread stopped successfully")
     
+    # Reset thread and state regardless
     _scheduler_thread = None
+    _running = False
     
     # When training is stopped, rebuild FAISS indexes to ensure consistency
-    logger.info("Training stopped - rebuilding FAISS indexes to ensure consistency...")
+    # Only do this if the server is likely running (skip during app shutdown)
     try:
+        # Check if server is running before attempting API call
         import requests
-        rebuild_url = "http://localhost:8999/api/rebuild-faiss-indexes"
-        rebuild_response = requests.post(rebuild_url)
-        
-        if rebuild_response.status_code == 200:
-            rebuild_result = rebuild_response.json()
-            if rebuild_result.get("status") == "success":
-                logger.info("FAISS index rebuild completed successfully")
-                logger.info(f"Rebuilt {len(rebuild_result.get('stores_rebuilt', []))} stores with {rebuild_result.get('total_documents', 0)} documents")
+        try:
+            # Try a quick status check first
+            status_response = requests.get("http://localhost:8999/api/status", timeout=1)
+            server_running = status_response.status_code == 200
+        except:
+            server_running = False
+            
+        if server_running:
+            logger.info("Training stopped - rebuilding FAISS indexes to ensure consistency...")
+            rebuild_url = "http://localhost:8999/api/rebuild-faiss-indexes"
+            rebuild_response = requests.post(rebuild_url, timeout=5)
+            
+            if rebuild_response.status_code == 200:
+                rebuild_result = rebuild_response.json()
+                if rebuild_result.get("status") == "success":
+                    logger.info("FAISS index rebuild completed successfully")
+                    logger.info(f"Rebuilt {len(rebuild_result.get('stores_rebuilt', []))} stores with {rebuild_result.get('total_documents', 0)} documents")
+                else:
+                    logger.warning(f"FAISS rebuild issue: {rebuild_result.get('error', 'unknown error')}")
             else:
-                logger.warning(f"FAISS rebuild issue: {rebuild_result.get('error', 'unknown error')}")
+                logger.error(f"FAISS rebuild API error: {rebuild_response.status_code} - {rebuild_response.text}")
         else:
-            logger.error(f"FAISS rebuild API error: {rebuild_response.status_code} - {rebuild_response.text}")
+            logger.info("Server appears to be shutting down, skipping FAISS rebuild")
+            
     except Exception as rebuild_error:
         logger.error(f"Error rebuilding FAISS indexes: {rebuild_error}")
+
+# Call load_training_schedule when module is imported to set correct times immediately
+load_training_schedule()
