@@ -35,6 +35,33 @@ def get_data_path():
             
     return default_path
 
+def save_to_env(key, value):
+    """Save a key-value pair to the .env file."""
+    env_path = Path(__file__).parent.parent / '.env'
+    try:
+        # Read existing .env content
+        if env_path.exists():
+            with open(env_path, 'r') as f:
+                lines = f.readlines()
+        else:
+            lines = []
+
+        # Update or add the key-value pair
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}="):
+                lines[i] = f"{key}={value}\n"
+                updated = True
+                break
+        if not updated:
+            lines.append(f"{key}={value}\n")
+
+        # Write back to the .env file
+        with open(env_path, 'w') as f:
+            f.writelines(lines)
+    except Exception as e:
+        print(f"Error saving to .env: {e}")
+
 # Basic configuration
 BACKEND_CONFIG = {
     'PORT': int(os.getenv('PORT', '8999')),

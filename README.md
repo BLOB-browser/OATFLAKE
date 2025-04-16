@@ -34,20 +34,17 @@ git clone https://github.com/blob/OATFLAKE.git
 cd OATFLAKE
 ```
 
-### 2. Create a virtual environment and install dependencies using Poetry
+### 2. Run the setup and start the application
 ```bash
-# Create a virtual environment
-python -m venv .venv
-
-# Activate the virtual environment
-# On Windows:
-# .venv\Scripts\activate
-# On macOS/Linux:
-source .venv/bin/activate
-
-# Install dependencies using Poetry
-poetry install
+# Run the start script
+./start.sh
 ```
+
+This script will:
+1. Create a virtual environment (if not already created).
+2. Install dependencies using Poetry.
+3. Ensure required packages like `slack-bolt` and `Jinja2` are installed.
+4. Start the application automatically.
 
 ### 3. Create a `.env` file
 Create a `.env` file in the root directory with the following content (replace with your actual credentials):

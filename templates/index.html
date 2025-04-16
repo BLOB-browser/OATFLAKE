@@ -277,6 +277,50 @@
                         <p class="mt-1" id="storageSpaceInfo"></p>
                     </div>
                 </div>
+
+                <!-- Slack Widget -->
+                <div id="slackWidget" class="bg-neutral-800 rounded-lg p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-12 h-12 mr-4">
+                                <img src="/static/icons/SLACKLOGO.png" class="w-full h-full" alt="Slack Logo" />
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Slack</h3>
+                                <div class="flex items-center mt-1">
+                                    <div id="slackStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
+                                    <p id="slackStatusText" class="text-sm text-neutral-400">Not connected</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Token input field -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">API Token</label>
+                        <input id="slackTokenInput" type="password" placeholder="Enter your Slack API Token" 
+                               class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                    </div>
+
+                    <!-- Signing Secret input field -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Signing Secret</label>
+                        <input id="slackSigningSecretInput" type="password" placeholder="Enter your Slack Signing Secret" 
+                               class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                    </div>
+
+                    <!-- Bot User ID input field -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Bot User ID</label>
+                        <input id="slackBotUserIdInput" type="text" placeholder="Enter your Slack Bot User ID" 
+                               class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                    </div>
+
+                    <button onclick="SlackWidget.saveSlackConfig()" 
+                            class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded text-white">
+                        Save Configuration
+                    </button>
+                </div>
             </div>
         </div>
         
@@ -285,6 +329,7 @@
         <script src="/static/js/widgets/tunnel-widget.js"></script>
         <script src="/static/js/widgets/group-widget.js"></script>
         <script src="/static/js/widgets/data-widget.js"></script>
+        <script src="/static/js/widgets/slack-widget.js"></script>
         <script src="/static/js/app.js?v=1"></script>
     <script>
         // Status update interval in milliseconds
