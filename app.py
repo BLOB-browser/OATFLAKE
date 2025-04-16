@@ -11,6 +11,8 @@ from api.routes.openrouter import router as openrouter_router
 from api.routes.openrouter_models import router as openrouter_models_router  # Import OpenRouter models router
 # Add import for goals router
 from api.routes.goals import router as goals_router
+# Import knowledge stats function directly
+from api.routes.stats import get_knowledge_stats
 from scripts.models.schemas import Definition, JsonRequest, ConnectionRequest, ConnectionResponse, Project, Method, Resource, WebRequest, WebResponse, AnswerRequest  # Add AnswerRequest
 from scripts.services import storage, connection
 from utils.config import BACKEND_CONFIG
@@ -269,6 +271,9 @@ app.include_router(openrouter_models_router, prefix="/api/openrouter", tags=["op
 app.include_router(markdown_router)  # Add Markdown router
 app.include_router(knowledge.router)  # This router now uses prefix="/api/knowledge"
 app.include_router(goals_router)  # Add goals router
+
+# Add direct mapping for knowledge stats endpoint to fix 404 error
+app.add_api_route("/api/data/stats/knowledge", get_knowledge_stats, methods=["GET"])
 
 # Register the Ollama router properly for FastAPI
 app.include_router(ollama_router)

@@ -1,7 +1,14 @@
 # OATFLAKE
 
-## Overview
-OATFLAKE is a RAG-based (Retrieval-Augmented Generation) assistant platform that helps process, analyze, and interact with your data. It features integrations with Slack, OpenRouter, Supabase, and other services to provide a comprehensive solution for knowledge management and AI assistance.
+## Introduction
+
+OATFLAKE is a no-code interface framework designed as a submodule of the BLOB browser. It enables community-governed intelligence training based on Retrieval-Augmented Generation (RAG). This repository serves as an easy-to-setup beta testing and development space for contributors to the system.
+
+The unique value of OATFLAKE lies in its flexibility and autonomy. The backend can run entirely locally, without requiring external APIs or web access, by leveraging Ollama and local folder files. Additionally, it supports web scraping to gather resources and integrate them into the local vector space using FAISS. Many components are built with LangChain, and OpenRouter is included as an API for extended functionality.
+
+OATFLAKE empowers communities, such as research groups and collectives, to maintain their local intelligence systems and easily swap out models. While currently tailored for extracting methods, definitions, resources, and materials, the system is evolving to support the collection and analysis of any type of text data. The framework is built with modularity in mind, offering small building blocks and adapters to handle diverse file inputs.
+
+Our vision is to make as much of the system customizable through the interface as possible, enabling communities to adapt it to their unique needs without requiring coding expertise.
 
 ## Features
 - Knowledge processing and extraction

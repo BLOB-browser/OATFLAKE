@@ -673,10 +673,26 @@ class MainProcessor:
                 except Exception as fallback_error:
                     logger.error(f"[{resource_id}] Fallback storage failed: {fallback_error}")
             
-            # Mark as completed
+            # Check if processing was at least partially successful
+            # We'll mark with appropriate status rather than just boolean:
+            # - "completed": Successfully processed with data extracted or pages processed
+            # - "failed": Complete failure to process
             has_extracted_data = bool(all_definitions or all_projects or all_methods)
-            resource['analysis_completed'] = has_extracted_data
-            logger.info(f"[{resource_id}] Setting analysis_completed flag to: {has_extracted_data}")
+            has_processed_pages = bool(page_results) and any(
+                page.get('content') for page in page_results.values() if isinstance(page, dict)
+            )
+            
+            # Set analysis status based on processing results
+            if has_extracted_data or has_processed_pages:
+                resource['analysis_completed'] = True
+                resource['analysis_status'] = "completed"
+            else:
+                resource['analysis_completed'] = False
+                resource['analysis_status'] = "failed"
+            
+            logger.info(f"[{resource_id}] Setting analysis status to '{resource.get('analysis_status', 'unknown')}' " +
+                        f"(analysis_completed={resource['analysis_completed']}, " +
+                        f"data extracted: {has_extracted_data}, pages processed: {has_processed_pages})")
 
             # Use DataSaver for saving resource - ensure idx is passed properly
             success = self.data_saver.save_resource(resource, csv_path, idx)

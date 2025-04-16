@@ -10,6 +10,7 @@ import os
 import logging
 import json
 import asyncio
+import shutil
 from pathlib import Path
 from datetime import datetime, time
 from pydantic import BaseModel
@@ -80,6 +81,63 @@ async def status(request: Request):  # Add request parameter
             "ngrok_url": "",
             "data_path": str(BACKEND_CONFIG['data_path'])
         }
+        
+@router.get("/api/storage/space")
+async def get_storage_space(path: str):
+    """Get storage space information for a path"""
+    try:
+        logger.info(f"Getting storage space info for path: {path}")
+        
+        # Handle both absolute and relative paths
+        data_path = Path(path)
+        if not data_path.is_absolute():
+            # First check if it's relative to the configured data path
+            config_path = Path(BACKEND_CONFIG['data_path'])
+            possible_path = config_path / path
+            if possible_path.exists():
+                data_path = possible_path
+            else:
+                # Try user's home directory
+                possible_path = Path.home() / path
+                if possible_path.exists():
+                    data_path = possible_path
+                else:
+                    # Try user's Documents directory
+                    possible_path = Path.home() / "Documents" / path
+                    if possible_path.exists():
+                        data_path = possible_path
+        
+        logger.info(f"Resolved path to: {data_path}")
+        
+        # Validate path exists
+        if not data_path.exists():
+            raise HTTPException(status_code=404, detail=f"Path not found: {data_path}")
+        
+        # Get disk usage information
+        total, used, free = shutil.disk_usage(data_path)
+        
+        # Convert to human-readable format
+        def format_bytes(bytes_value):
+            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                if bytes_value < 1024 or unit == 'TB':
+                    return f"{bytes_value:.2f} {unit}"
+                bytes_value /= 1024
+        
+        return {
+            "status": "success",
+            "path": str(data_path),
+            "total": total,
+            "used": used,
+            "free": free,
+            "total_formatted": format_bytes(total),
+            "used_formatted": format_bytes(used),
+            "free_formatted": format_bytes(free),
+            "usage_percent": round((used / total) * 100, 2)
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting storage space info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health")  # Keep as is
 async def health():
