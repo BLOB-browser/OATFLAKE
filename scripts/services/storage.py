@@ -68,28 +68,18 @@ class DataSaver:
                 }
 
                 try:
-                    # Check for duplicates by reading existing file if it exists
-                    is_duplicate = False
-                    if not is_new_file:
-                        with open(csv_file, mode='r', newline='', encoding='utf-8') as f:
-                            reader = csv.DictReader(f)
-                            existing_terms = [r.get('term', '').lower() for r in reader]
-                            if row['term'].lower() in existing_terms:
-                                logger.info(f"Definition for '{row['term']}' already exists, skipping")
-                                is_duplicate = True
+                    # Always save the definition, even if it's a duplicate
+                    # Append row to CSV
+                    with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=fields)
 
-                    if not is_duplicate:
-                        # Append row to CSV
-                        with open(csv_file, mode='a', newline='', encoding='utf-8') as f:
-                            writer = csv.DictWriter(f, fieldnames=fields)
+                        # Write header only for new files
+                        if is_new_file:
+                            writer.writeheader()
+                            is_new_file = False
 
-                            # Write header only for new files
-                            if is_new_file:
-                                writer.writeheader()
-                                is_new_file = False
-
-                            writer.writerow(row)
-                            logger.info(f"Definition saved to CSV: {row['term']}")
+                        writer.writerow(row)
+                        logger.info(f"Definition saved to CSV: {row['term']} (may be duplicate)")
                 except Exception as row_error:
                     logger.error(f"Error saving definition row: {row_error}")
 
@@ -153,11 +143,6 @@ class DataSaver:
 
                 if not project_item.get('title'):
                     logger.warning(f"Skipping project with missing title")
-                    continue
-
-                # Skip duplicates
-                if project_item.get('title', '').lower() in existing_titles:
-                    logger.info(f"Project '{project_item.get('title')}' already exists, skipping")
                     continue
 
                 # Process list fields to ensure they're stored as strings
@@ -256,11 +241,6 @@ class DataSaver:
 
                 if not method_item.get('title'):
                     logger.warning(f"Skipping method with missing title")
-                    continue
-
-                # Skip duplicates
-                if method_item.get('title', '').lower() in existing_titles:
-                    logger.info(f"Method '{method_item.get('title')}' already exists, skipping")
                     continue
 
                 # Process steps to ensure they're stored properly

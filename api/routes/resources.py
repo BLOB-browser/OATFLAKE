@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from utils.config import BACKEND_CONFIG
 
-router = APIRouter(prefix="/api/data/resources", tags=["resources"])
+router = APIRouter(prefix="/resources", tags=["resources"])
 logger = logging.getLogger(__name__)
 
 @router.post("")

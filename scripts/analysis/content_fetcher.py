@@ -6,6 +6,8 @@ import requests
 from typing import Tuple, Dict, Any
 from bs4 import BeautifulSoup
 import urllib3
+import csv
+import os
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -58,7 +60,31 @@ class ContentFetcher:
         # SSL verification settings
         self.verify_ssl = False  # Disable SSL verification
         logger.info("SSL verification disabled for content fetching")
-    
+        
+        # Initialize processed URLs storage
+        self.processed_urls_file = "processed_urls.csv"
+        if not os.path.exists(self.processed_urls_file):
+            with open(self.processed_urls_file, mode='w', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow(["url"])
+
+    def _load_processed_urls(self):
+        """Load processed URLs from the CSV file."""
+        processed_urls = set()
+        if os.path.exists(self.processed_urls_file):
+            with open(self.processed_urls_file, mode='r') as file:
+                reader = csv.reader(file)
+                next(reader, None)  # Skip header
+                for row in reader:
+                    processed_urls.add(row[0])
+        return processed_urls
+
+    def _save_processed_url(self, url):
+        """Save a processed URL to the CSV file."""
+        with open(self.processed_urls_file, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([url])
+
     def get_main_page_with_links(self, url: str, go_deeper: bool = True) -> Tuple[bool, Dict[str, Any]]:
         """
         Retrieves the main page content and identifies links to additional pages.
@@ -291,7 +317,7 @@ class ContentFetcher:
             logger.warning(f"Error fetching page {url}: {e}")
             return False, ""
     
-    def fetch_content(self, url: str, max_additional_pages: int = 15) -> Tuple[bool, Dict[str, str]]:
+    def fetch_content(self, url: str, max_additional_pages: int = 150) -> Tuple[bool, Dict[str, str]]:
         """
         Safely retrieves website content with error handling.
         Fetches main page and related pages, storing each separately.
@@ -305,20 +331,27 @@ class ContentFetcher:
             dict_of_pages format: {'main': main_html, 'url1': page1_html, ...}
         """
         try:
+            # Load processed URLs
+            processed_urls = self._load_processed_urls()
+
+            if url in processed_urls:
+                logger.info(f"Skipping already processed URL: {url}")
+                return True, {"main": "", "error": "URL already processed"}
+
             # Get the main page and extract links to other pages
             success, main_data = self.get_main_page_with_links(url)
-            
+
             if not success or "error" in main_data:
                 return False, {"error": main_data.get("error", "Unknown error fetching main page")}
-            
+
             # Initialize the pages dictionary with the main page
             pages_dict = {'main': main_data["main_html"]}
-            
+
             # Get the list of additional URLs
             additional_urls = main_data["additional_urls"]
             headers = main_data["headers"]
             visited_urls = main_data["visited_urls"]
-            
+
             # Limit number of additional pages if needed
             initial_count = len(additional_urls)
             if initial_count > max_additional_pages:
@@ -326,22 +359,32 @@ class ContentFetcher:
                 additional_urls = additional_urls[:max_additional_pages]
             if additional_urls:
                 logger.info(f"Found {len(additional_urls)} additional pages to fetch from {url}")
-            
+
             # Fetch additional pages one by one
             for idx, additional_url in enumerate(additional_urls):
+                if additional_url in processed_urls:
+                    logger.info(f"Skipping already processed subpage URL: {additional_url}")
+                    continue
+
                 logger.info(f"Fetching additional page {idx+1}/{len(additional_urls)}: {additional_url}")
                 success, html_content = self.fetch_additional_page(additional_url, headers)
-                
+
                 if success and html_content:
                     # Use page name as key (simplified URL)
                     section_name = additional_url.rsplit('/', 1)[-1] or f'page{idx+1}'
                     # Store each page separately
                     pages_dict[section_name] = html_content
                     visited_urls.add(additional_url)
-            
+
+                    # Save the processed subpage URL
+                    self._save_processed_url(additional_url)
+
+            # Save the main URL as processed
+            self._save_processed_url(url)
+
             # Return all pages as a dictionary
             return True, pages_dict
-            
+
         except requests.RequestException as e:
             logger.error(f"Error fetching {url}: {e}")
             return False, {"error": str(e)}
