@@ -6,7 +6,7 @@
     "title": "Title of the entry",
     "description": "Detailed description of the entry (or definition for content_type: definition)",
     "tags": ["Array of keywords or tags"],
-    "purpose": ["Array of goals or objectives for the content"],
+    "purpose": "Array of goals or objectives for the content",
     "related_url": "Additional related URLs",
     "status": "Current status of the item (active, archive, etc.)",
     "creator_id": "ID of the content creator",
