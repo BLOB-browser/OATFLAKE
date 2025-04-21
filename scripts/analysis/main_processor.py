@@ -3,35 +3,23 @@
 
 import logging
 import json
-import pandas as pd
 import os
-from typing import Dict, List, Any, Optional, Tuple
+import pandas as pd
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
+import asyncio
 
 logger = logging.getLogger(__name__)
-
-# Class-level cancellation flag
-_cancel_processing = False
 
 # Import interruptible handling
 from scripts.analysis.interruptible_llm import is_interrupt_requested, clear_interrupt
 
 class MainProcessor:
     """
-    Simplified main processor that coordinates content fetching, analysis, and storage.
-    Vectors are only generated at the end of processing all resources.
+    Main orchestrator that coordinates content fetching, analysis, and storage.
+    Delegates to specialized components for different aspects of processing.
     """
-    
-    @classmethod
-    def reset_cancellation(cls):
-        """Reset the cancellation flag"""
-        cls._cancel_processing = False
-    
-    @classmethod
-    def check_cancellation(cls):
-        """Check if processing should be cancelled"""
-        return cls._cancel_processing or is_interrupt_requested()
     
     def __init__(self, data_folder: str):
         """
@@ -42,38 +30,90 @@ class MainProcessor:
         """
         self.data_folder = data_folder
         
-        # Import required services
-        from scripts.analysis.content_fetcher import ContentFetcher
-        from scripts.analysis.llm_analyzer import LLMAnalyzer
-        from scripts.analysis.method_llm import MethodLLM
+        # Import specialized components
+        from scripts.analysis.single_resource_processor import SingleResourceProcessor
+        from scripts.analysis.cleanup_manager import CleanupManager
+        from scripts.analysis.vector_generator import VectorGenerator
+        
+        # Initialize components
+        self.single_processor = SingleResourceProcessor(data_folder)
+        self.cleanup_manager = CleanupManager(data_folder)
+        self.vector_generator = VectorGenerator(data_folder)
+        
+        # For backward compatibility, still import these directly
         from scripts.storage.content_storage_service import ContentStorageService
         from scripts.storage.temporary_storage_service import TemporaryStorageService
-        # Use DataSaver class instead of individual functions
-        from scripts.services.storage import DataSaver
-        
-        # Initialize services
-        self.content_fetcher = ContentFetcher()
-        self.llm_analyzer = LLMAnalyzer()
-        self.method_llm = MethodLLM()
         self.content_storage = ContentStorageService(data_folder)
         self.temp_storage = TemporaryStorageService(data_folder)
-        
-        # Use DataSaver instance instead of individual functions
-        self.data_saver = DataSaver()
         
         # Track processing state
         self.vector_generation_needed = False
         
-        # Reset cancellation flag when creating a new instance
-        MainProcessor.reset_cancellation()
+        # File to store the last URL count when vector store was built
+        self.last_build_count_file = os.path.join(data_folder, "vector_build_count.json")
         
         logger.info(f"MainProcessor initialized with data folder: {data_folder}")
+        
+    def _get_last_vector_build_count(self) -> int:
+        """
+        Get the last URL count at which vector store was built from persistent storage.
+        
+        Returns:
+            Integer count of URLs at last vector store build
+        """
+        if os.path.exists(self.last_build_count_file):
+            try:
+                with open(self.last_build_count_file, 'r') as f:
+                    data = json.load(f)
+                    count = data.get('last_build_count', 0)
+                    logger.info(f"Retrieved last vector build count: {count}")
+                    return count
+            except Exception as e:
+                logger.error(f"Error reading last build count file: {e}")
+        
+        logger.info("No previous vector build count found, starting from 0")
+        return 0
+        
+    def _save_vector_build_count(self, count: int):
+        """
+        Save the current URL count after vector store was built.
+        
+        Args:
+            count: Current URL count to save
+        """
+        try:
+            data = {'last_build_count': count, 'timestamp': datetime.now().isoformat()}
+            with open(self.last_build_count_file, 'w') as f:
+                json.dump(data, f)
+            logger.info(f"Saved current vector build count: {count}")
+        except Exception as e:
+            logger.error(f"Error saving vector build count: {e}")
+
+    @classmethod
+    def reset_cancellation(cls):
+        """Reset the cancellation flag for backward compatibility"""
+        clear_interrupt()
+    
+    @classmethod
+    def check_cancellation(cls):
+        """Check if processing should be cancelled for backward compatibility"""
+        return is_interrupt_requested()
     
     def process_resources(self, csv_path: str = None, max_resources: int = None, force_reanalysis: bool = False, skip_vector_generation: bool = False) -> Dict[str, Any]:
-        # Process resources from a CSV file
+        """
+        Process resources from a CSV file.
         
+        Args:
+            csv_path: Path to the CSV file containing resources to process
+            max_resources: Maximum number of resources to process
+            force_reanalysis: Whether to force reanalysis of already processed resources
+            skip_vector_generation: Whether to skip vector generation after processing
+            
+        Returns:
+            Dictionary with processing statistics
+        """
         # Reset cancellation flag when starting new processing
-        MainProcessor.reset_cancellation()
+        self.reset_cancellation()
         
         # Set default CSV path if not provided
         if csv_path is None:
@@ -95,13 +135,15 @@ class MainProcessor:
             "definitions_found": 0,
             "projects_found": 0,
             "methods_found": 0,
+            "skipped_count": 0,  # Track skipped resources
             "start_time": datetime.now()
         }
         
         try:
             # Read resources CSV file
             df = pd.read_csv(csv_path)
-            logger.info(f"Read {len(df)} resources from {csv_path}")
+            total_resources = len(df)
+            logger.info(f"Read {total_resources} resources from {csv_path}")
             
             # Prepare analysis_completed column
             if 'analysis_completed' not in df.columns:
@@ -125,10 +167,15 @@ class MainProcessor:
             if not force_reanalysis:
                 unprocessed_mask = ~df['analysis_completed'].fillna(False).astype(bool)
                 unprocessed_count = unprocessed_mask.sum()
+                skipped_count = total_resources - unprocessed_count
                 
-                if unprocessed_count < len(df):
-                    logger.info(f"Filtering out {len(df) - unprocessed_count} already processed resources")
-                    df = df[unprocessed_mask]
+                stats["skipped_count"] = skipped_count
+                
+                if skipped_count > 0:
+                    logger.info(f"Skipping {skipped_count} already processed resources (analysis_completed=True)")
+                    df = df[unprocessed_mask].copy()  # Use .copy() to avoid SettingWithCopyWarning
+            else:
+                logger.info(f"Force reanalysis enabled - processing all {total_resources} resources regardless of analysis_completed")
             
             # Limit resources if specified
             if max_resources is not None and len(df) > max_resources:
@@ -140,6 +187,7 @@ class MainProcessor:
                 return {
                     "status": "completed",
                     "resources_processed": 0,
+                    "skipped_count": stats.get("skipped_count", 0),
                     "message": "No resources needed processing"
                 }
             
@@ -149,24 +197,48 @@ class MainProcessor:
             all_projects = []
             all_methods = []
             
+            # Get URL storage to track processed URLs
+            from scripts.analysis.url_storage import URLStorageManager
+            from utils.config import get_data_path
+            processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+            url_storage = URLStorageManager(processed_urls_file)
+            
+            # Get the initial count of processed URLs
+            initial_url_count = len(url_storage.get_processed_urls())
+            logger.info(f"Starting with {initial_url_count} already processed URLs")
+            
+            # Set the URL threshold for vector generation
+            url_threshold = 10  # Build vector store after every 10 URLs
+            
+            # Get the last build count from persistent storage
+            last_vector_build_url_count = self._get_last_vector_build_count()
+            
+            # Make sure we don't go negative if URL file was reset
+            if last_vector_build_url_count > initial_url_count:
+                logger.warning(f"Last build count ({last_vector_build_url_count}) is higher than current URL count ({initial_url_count}). Resetting to current count.")
+                last_vector_build_url_count = initial_url_count
+                self._save_vector_build_count(last_vector_build_url_count)
+            
             # Process each resource
             for idx, row in df.iterrows():
                 resource = row.to_dict()
                 resource_id = f"#{idx+1}/{len(df)}"
                 
                 # Check for cancellation
-                if MainProcessor.check_cancellation():
+                if self.check_cancellation():
                     logger.info("Resource processing cancelled by external request")
                     break
                 
+                # Log which resource we're processing
                 logger.info(f"Processing resource {resource_id}: {resource.get('title', 'Unnamed')}")
                 
                 try:
-                    # Process this resource
-                    result = self.process_single_resource(resource, resource_id, idx, csv_path)
+                    # Use our dedicated single resource processor for this resource
+                    result = self.single_processor.process_resource(resource, resource_id, idx, csv_path)
                     
                     # Update statistics
                     stats["resources_processed"] += 1
+                    
                     if result["success"]:
                         stats["success_count"] += 1
                         stats["definitions_found"] += len(result.get("definitions", []))
@@ -180,13 +252,58 @@ class MainProcessor:
                         all_methods.extend(result.get("methods", []))
                     else:
                         stats["error_count"] += 1
+                    
+                    # Check if vector generation is needed
+                    if self.single_processor.vector_generation_needed:
+                        self.vector_generation_needed = True
+                    
+                    # Check if we need to generate vectors based on processed URLs count
+                    current_url_count = len(url_storage.get_processed_urls())
+                    urls_since_last_build = current_url_count - last_vector_build_url_count
+                    
+                    logger.info(f"Current URL count: {current_url_count}, URLs since last build: {urls_since_last_build}")
+                    
+                    if (urls_since_last_build >= url_threshold and 
+                        self.vector_generation_needed and not skip_vector_generation):
+                        
+                        logger.info(f"Starting vector store generation after {urls_since_last_build} new URLs processed (total: {current_url_count})")
+                        
+                        try:
+                            # Get all content files from the temporary storage path
+                            content_paths = list(self.content_storage.temp_storage_path.glob("*.jsonl"))
+                            logger.info(f"Found {len(content_paths)} content files for vector generation")
+                            
+                            # Run the vector generation as a checkpoint - this doesn't delete anything
+                            incremental_stats = asyncio.run(self.vector_generator.generate_vector_stores(content_paths))
+                            
+                            # Store the stats of this checkpoint build
+                            if "url_checkpoint_builds" not in stats:
+                                stats["url_checkpoint_builds"] = []
+                                
+                            stats["url_checkpoint_builds"].append({
+                                "build_number": len(stats.get("url_checkpoint_builds", [])) + 1,
+                                "total_urls": current_url_count,
+                                "new_urls": urls_since_last_build,
+                                "content_paths": len(content_paths),
+                                "stats": incremental_stats
+                            })
+                            
+                            # Update the last build URL count, but don't delete temporary files
+                            last_vector_build_url_count = current_url_count
+                            # Save the count persistently
+                            self._save_vector_build_count(last_vector_build_url_count)
+                            logger.info(f"Completed vector store checkpoint build #{len(stats.get('url_checkpoint_builds', []))} and saved count")
+                            
+                        except Exception as ve:
+                            logger.error(f"Error during checkpoint vector generation: {ve}")
+                            # Continue processing resources despite vector generation error
                         
                 except Exception as e:
                     logger.error(f"Error processing resource {resource_id}: {e}")
                     stats["error_count"] += 1
                 
                 # Check for cancellation again after processing each resource
-                if MainProcessor.check_cancellation():
+                if self.check_cancellation():
                     logger.info("Resource processing cancelled after processing resource")
                     break
             
@@ -200,33 +317,32 @@ class MainProcessor:
             stats["projects"] = all_projects
             stats["methods"] = all_methods
             
-            # Generate vector stores if needed and not explicitly skipped
+            # Comprehensive vector store generation after all resources are processed
             if self.vector_generation_needed and not skip_vector_generation:
                 logger.info("Starting vector generation after all resources were processed")
-                
-                # Get all content paths that need processing
-                from scripts.analysis.vector_generator import VectorGenerator
-                import asyncio
                 
                 # Get all content files from the temporary storage path
                 content_paths = list(self.content_storage.temp_storage_path.glob("*.jsonl"))
                 logger.info(f"Found {len(content_paths)} content files for vector generation")
                 
-                # Use VectorGenerator instead of internal method
-                vector_generator = VectorGenerator(self.data_folder)
-                
                 # Handle async vector generation
                 try:
                     # Run the vector generation
-                    vector_stats = asyncio.run(vector_generator.generate_vector_stores(content_paths))
+                    vector_stats = asyncio.run(self.vector_generator.generate_vector_stores(content_paths))
                     stats["vector_stats"] = vector_stats
                     logger.info(f"Vector generation complete: {vector_stats}")
+                    
+                    # After successful final build, update the last build count
+                    current_url_count = len(url_storage.get_processed_urls())
+                    self._save_vector_build_count(current_url_count)
+                    logger.info(f"Updated last build count to {current_url_count} after final vector generation")
+                    
                 except Exception as ve:
                     logger.error(f"Error during vector generation: {ve}")
                     stats["vector_error"] = str(ve)
                 
                 # Add comprehensive cleanup after vector generation (whether successful or not)
-                self._cleanup_temporary_files()
+                self.cleanup_manager.cleanup_temporary_files()
             elif skip_vector_generation and self.vector_generation_needed:
                 logger.info("Vector generation needed but explicitly skipped - will be handled at a higher level")
                 stats["vector_generation_skipped"] = True
@@ -243,6 +359,7 @@ class MainProcessor:
     def process_single_resource(self, resource: Dict, resource_id: str, idx: int, csv_path: str) -> Dict[str, Any]:
         """
         Process a single resource through content fetching, analysis and storage.
+        Now delegates to the SingleResourceProcessor.
         
         Args:
             resource: The resource dictionary 
@@ -253,536 +370,95 @@ class MainProcessor:
         Returns:
             Dictionary with processing results
         """
-        start_time = datetime.now()
-        
-        # Reset interruption state at start of processing each resource
-        clear_interrupt()
-        
-        # Initialize result structure
-        result = {
-            "success": False,
-            "resource": resource,
-            "definitions": [],
-            "projects": [],
-            "methods": [],
-            "error": None
-        }
-        
-        try:
-            resource_title = resource.get('title', 'Unnamed')
-            resource_url = resource.get('url', '')
-            
-            # STEP 1: Fetch main page content
-            logger.info(f"[{resource_id}] Fetching content from {resource_url}")
-            
-            # Create temp file for storing content
-            resource_slug = resource_title.replace(" ", "_").lower()[:30]
-            temp_path = self.temp_storage.create_temp_file(prefix=resource_slug)
-            
-            # Fetch main page and extract links
-            success, main_data = self.content_fetcher.get_main_page_with_links(resource_url, go_deeper=True)
-            
-            if not success or "error" in main_data:
-                error_msg = main_data.get("error", "Unknown error")
-                logger.warning(f"[{resource_id}] Failed to fetch {resource_url}: {error_msg}")
-                result["error"] = f"Fetch error: {error_msg}"
-                return result
-            
-            # Get content from main page
-            main_html = main_data["main_html"]
-            additional_urls = main_data["additional_urls"]
-            
-            # Don't limit additional pages - process all of them
-            logger.info(f"[{resource_id}] Processing all {len(additional_urls)} additional pages without limitation")
-            
-            # Extract text from main page
-            main_page_text = self.content_fetcher.extract_text(main_html, 2000)
-            if not main_page_text:
-                logger.warning(f"[{resource_id}] Failed to extract text from {resource_url}")
-                result["error"] = "Text extraction failed"
-                return result
-                
-            # Initialize collectors for extracted information
-            all_definitions = []
-            all_projects = []
-            all_methods = []
-            page_results = {}
-            
-            # Write main page to temp file
-            try:
-                content_to_write = f"MAIN PAGE: {resource_title}\n\n{main_page_text}"
-                total_bytes = self.temp_storage.write_to_file(temp_path, content_to_write, mode="w")
-                logger.info(f"[{resource_id}] Wrote main page ({total_bytes/1024:.1f} KB) to temporary file")
-            except Exception as e:
-                logger.error(f"[{resource_id}] Error writing to temp file: {e}")
-            
-            # Store content for later vector generation (instead of immediate embedding)
-            self.content_storage.store_original_content(resource_title, resource_url, main_page_text, resource_id)
-            self.vector_generation_needed = True  # Flag that we'll need vector generation at the end
-            
-            # STEP 2: Process main page
-            logger.info(f"[{resource_id}] Analyzing main page")
-            
-            # Check for cancellation before extraction starts
-            if MainProcessor.check_cancellation():
-                logger.info(f"[{resource_id}] Resource processing cancelled")
-                return result
-            
-            # Extract definitions, projects, and methods
-            try:
-                # Extract definitions if requested
-                main_definitions = self.llm_analyzer.extract_definitions(
-                    f"{resource_title} - main", resource_url, main_page_text
-                )
-                if main_definitions and not MainProcessor.check_cancellation():
-                    for definition in main_definitions:
-                        definition['source'] = resource_url
-                        definition['resource_url'] = resource_url
-                    all_definitions.extend(main_definitions)
-                    logger.info(f"[{resource_id}] Found {len(main_definitions)} definitions on main page")
-                    # Save to CSV using DataSaver instead of function call
-                    self.data_saver.save_definition(main_definitions)
-                
-                # Identify projects if requested
-                main_projects = self.llm_analyzer.identify_projects(
-                    f"{resource_title} - main", resource_url, main_page_text
-                )
-                if main_projects and not MainProcessor.check_cancellation():
-                    for project in main_projects:
-                        # Only set source if not already set by the extractor
-                        if 'source' not in project:
-                            project['source'] = resource_url
-                        # Always set resource_url (main page URL)
-                        project['resource_url'] = resource_url
-                        # Ensure origin_title is set if not already
-                        if 'origin_title' not in project:
-                            project['origin_title'] = resource_title
-                    all_projects.extend(main_projects)
-                    logger.info(f"[{resource_id}] Found {len(main_projects)} projects on main page")
-                    
-                    # Save to CSV using DataSaver
-                    self.data_saver.save_project(main_projects)
-                
-                # Extract methods if requested
-                main_methods = self.method_llm.extract_methods(
-                    f"{resource_title} - main", resource_url, main_page_text
-                )
-                if main_methods and not MainProcessor.check_cancellation():
-                    for method in main_methods:
-                        # Only set source if not already set by the extractor
-                        if 'source' not in method:
-                            method['source'] = resource_url
-                        # Always set resource_url (main page URL)
-                        method['resource_url'] = resource_url
-                        # Ensure origin_title is set if not already
-                        if 'origin_title' not in method:
-                            method['origin_title'] = resource_title
-                    all_methods.extend(main_methods)
-                    logger.info(f"[{resource_id}] Found {len(main_methods)} methods on main page")
-                    
-                    # Save to CSV using DataSaver
-                    self.data_saver.save_method(main_methods)
-                
-                # Check for cancellation before finalizing
-                if MainProcessor.check_cancellation():
-                    logger.info(f"[{resource_id}] Resource processing cancelled during extraction")
-                    return result
-            
-            except KeyboardInterrupt:
-                logger.warning(f"[{resource_id}] Processing interrupted by keyboard interrupt")
-                return result
-            
-            # Store results and add source information
-            page_results['main'] = {
-                "definitions": main_definitions,
-                "projects": main_projects,
-                "methods": main_methods,
-                "url": resource_url,
-                "content": main_page_text[:500] + "..." if len(main_page_text) > 500 else main_page_text
-            }
-            
-            # STEP 3: Process additional pages
-            logger.info(f"[{resource_id}] Processing {len(additional_urls)} additional pages")
-            headers = main_data.get("headers", {})
-            for idx, additional_url in enumerate(additional_urls):
-                try:
-                    # Fetch page content
-                    logger.info(f"[{resource_id}] Fetching page {idx+1}/{len(additional_urls)}: {additional_url}")
-                    success, html_content = self.content_fetcher.fetch_additional_page(additional_url, headers)
-                    
-                    if not success or not html_content:
-                        logger.warning(f"[{resource_id}] Failed to fetch {additional_url}, skipping")
-                        continue
-                    
-                    # Use page name as key (simplified URL)
-                    page_name = additional_url.rsplit('/', 1)[-1] or f'page{idx+1}'
-                    
-                    # Extract text from page
-                    page_text = self.content_fetcher.extract_text(html_content, 2000)
-                    if not page_text:
-                        logger.warning(f"[{resource_id}] Failed to extract text from {additional_url}, skipping")
-                        continue
-                    
-                    # Append to temp file
-                    try:
-                        content_to_append = f"\n\n--- PAGE: {page_name} ---\n\n{page_text}"
-                        page_bytes = self.temp_storage.append_to_file(temp_path, content_to_append)
-                        logger.info(f"[{resource_id}] Wrote page {page_name} ({page_bytes/1024:.1f} KB) to temp file")
-                    except Exception as e:
-                        logger.error(f"[{resource_id}] Error appending to temp file: {e}")
-                    
-                    # Process page content
-                    page_definitions = self.llm_analyzer.extract_definitions(
-                        f"{resource_title} - {page_name}", additional_url, page_text
-                    )
-                    page_projects = self.llm_analyzer.identify_projects(
-                        f"{resource_title} - {page_name}", additional_url, page_text
-                    )
-                    page_methods = self.method_llm.extract_methods(
-                        f"{resource_title} - {page_name}", additional_url, page_text
-                    )
-                    
-                    # Store results for this page
-                    page_results[page_name] = {
-                        "definitions": page_definitions,
-                        "projects": page_projects,
-                        "methods": page_methods,
-                        "url": additional_url,
-                        "content": page_text[:500] + "..." if len(page_text) > 500 else page_text
-                    }
-                    
-                    # Process and add source information
-                    if page_definitions:
-                        for definition in page_definitions:
-                            # Only set source if not already set by the extractor
-                            if 'source' not in definition:
-                                definition['source'] = additional_url
-                            # Always set resource_url (main page URL)
-                            definition['resource_url'] = resource_url
-                            # Ensure origin_title is set if not already
-                            if 'origin_title' not in definition:
-                                definition['origin_title'] = f"{resource_title} - {page_name}"
-                        all_definitions.extend(page_definitions)
-                        # Use DataSaver
-                        self.data_saver.save_definition(page_definitions)
-                        logger.info(f"[{resource_id}] Found {len(page_definitions)} definitions on page '{page_name}'")
-                    
-                    # Process page-specific projects
-                    if page_projects:
-                        for project in page_projects:
-                            # Only set source if not already set by the extractor
-                            if 'source' not in project:
-                                project['source'] = additional_url
-                            # Always set resource_url (main page URL)
-                            project['resource_url'] = resource_url
-                            # Ensure origin_title is set if not already  
-                            if 'origin_title' not in project:
-                                project['origin_title'] = f"{resource_title} - {page_name}"
-                        all_projects.extend(page_projects)
-                        # Use DataSaver
-                        self.data_saver.save_project(page_projects)
-                        logger.info(f"[{resource_id}] Found {len(page_projects)} projects on page '{page_name}'")
-                    
-                    # Process page-specific methods
-                    if page_methods:
-                        for method in page_methods:
-                            # Only set source if not already set by the extractor
-                            if 'source' not in method:
-                                method['source'] = additional_url
-                            # Always set resource_url (main page URL)
-                            method['resource_url'] = resource_url
-                            # Ensure origin_title is set if not already
-                            if 'origin_title' not in method:
-                                method['origin_title'] = f"{resource_title} - {page_name}"
-                        all_methods.extend(page_methods)
-                        # Use DataSaver
-                        self.data_saver.save_method(page_methods)
-                        logger.info(f"[{resource_id}] Found {len(page_methods)} methods on page '{page_name}'")
-                    
-                    # Store page content for later vector generation
-                    self.content_storage.store_original_content(
-                        f"{resource_title} - {page_name}", 
-                        additional_url, 
-                        page_text, 
-                        f"{resource_id} - {page_name}"
-                    )
-                    
-                    # Mark this URL as processed immediately after successful analysis
-                    # This ensures it's saved to both CSV and in-memory cache
-                    self.content_fetcher.mark_url_as_processed(additional_url, depth=1, origin=resource_url)
-                    logger.info(f"[{resource_id}] Marked subpage as processed: {additional_url}")
-                    
-                except Exception as e:
-                    logger.error(f"[{resource_id}] Error processing page {additional_url}: {e}")
-                    continue
-            
-            # STEP 4: Store analysis results
-            logger.info(f"[{resource_id}] Completed processing all pages")
-            
-            # Initialize analysis_results if needed
-            if 'analysis_results' not in resource:
-                resource['analysis_results'] = {}
-            
-            # Ensure analysis_results is a dictionary
-            if isinstance(resource['analysis_results'], str):
-                try:
-                    resource['analysis_results'] = json.loads(resource['analysis_results'])
-                except:
-                    resource['analysis_results'] = {}
-            
-            if not isinstance(resource['analysis_results'], dict):
-                resource['analysis_results'] = {}
-                    
-            # Store all the page results in the resource
-            resource['analysis_results']['pages'] = page_results
-            resource['analysis_results']['definitions'] = all_definitions
-            resource['analysis_results']['projects'] = all_projects
-            resource['analysis_results']['methods'] = all_methods
-            
-            # STEP 5: Generate description if needed
-            if not resource.get('description') or len(resource.get('description', '').strip()) < 10:
-                logger.info(f"[{resource_id}] Generating description")
-                
-                # Read from temp file
-                try:
-                    combined_text = self.temp_storage.read_from_file(temp_path, max_size=10000)
-                    if not combined_text:
-                        combined_text = main_page_text
-                except Exception as e:
-                    logger.error(f"[{resource_id}] Error reading from temp file: {e}")
-                    combined_text = main_page_text
-                
-                # Generate description
-                description = self.llm_analyzer.generate_description(
-                    resource_title, resource_url, combined_text
-                )
-                
-                resource['description'] = description
-                logger.info(f"[{resource_id}] Generated description: {len(description)} chars")
-            
-            # STEP 6: Generate tags if needed
-            if not resource.get('tags') or not isinstance(resource.get('tags'), list) or len(resource.get('tags')) < 3:
-                logger.info(f"[{resource_id}] Generating tags")
-                
-                # Prepare existing tags
-                existing_tags = []
-                if resource.get('tags'):
-                    if isinstance(resource.get('tags'), str):
-                        try:
-                            existing_tags = json.loads(resource['tags'].replace("'", '"'))
-                        except:
-                            pass
-                    elif isinstance(resource.get('tags'), list):
-                        existing_tags = resource.get('tags')
-                
-                # Create context for tag generation
-                all_terms = [d.get('term', '').lower() for d in all_definitions 
-                            if isinstance(d, dict) and 'term' in d]
-                all_project_titles = [p.get('title', '') for p in all_projects 
-                                     if isinstance(p, dict) and 'title' in p]
-                
-                tag_context = f"""
-                Resource Title: {resource_title}
-                URL: {resource_url}
-                
-                Description: {resource.get('description', '')}
-                
-                Key terms: {', '.join(all_terms[:20])}
-                Projects: {', '.join(all_project_titles[:5])}
-                """
-                
-                # Generate tags
-                tags = self.llm_analyzer.generate_tags(
-                    resource_title, resource_url, tag_context,
-                    resource.get('description', ''), existing_tags
-                )
-                    
-                resource['tags'] = tags
-                logger.info(f"[{resource_id}] Generated tags: {tags}")
-            
-            # STEP 7: Process batches for vector storage
-            logger.info(f"[{resource_id}] Processing content in batches for later vector generation")
-            
-            try:
-                # Check if temp file exists
-                if os.path.exists(temp_path):
-                    file_size = os.path.getsize(temp_path)
-                    logger.info(f"[{resource_id}] Processing temp file: {file_size/1024/1024:.2f} MB")
-                    
-                    # Process in batches
-                    batch_size = 32 * 1024  # 32KB per batch
-                    
-                    with open(temp_path, 'r', encoding='utf-8') as f:
-                        # Get file size
-                        f.seek(0, os.SEEK_END)
-                        total_size = f.tell()
-                        f.seek(0)
-                        
-                        batch_number = 1
-                        total_processed = 0
-                        
-                        # Process each batch
-                        while True:
-                            batch_text = f.read(batch_size)
-                            if not batch_text:
-                                break
-                                
-                            # Track progress
-                            total_processed += len(batch_text)
-                            progress = (total_processed / total_size) * 100
-                            
-                            # Store batch for later vector generation
-                            batch_title = f"{resource_title} - Batch {batch_number}"
-                            batch_metadata = {
-                                "resource_title": resource_title,
-                                "resource_url": resource_url,
-                                "batch_number": batch_number,
-                                "progress_percent": progress,
-                                "definitions_count": len(all_definitions),
-                                "projects_count": len(all_projects),
-                                "methods_count": len(all_methods)
-                            }
-                            
-                            # Store content batch - this just stores it for later, no vector generation now
-                            self.content_storage.store_content_batch(
-                                batch_title, resource_url, batch_text,
-                                all_definitions, all_projects, all_methods, batch_metadata
-                            )
-                            
-                            logger.info(f"[{resource_id}] Processed batch {batch_number} ({progress:.1f}%)")
-                            batch_number += 1
-                            
-                    logger.info(f"[{resource_id}] Completed processing {batch_number-1} batches")
-                    
-                    # Delete temp file
-                    try:
-                        os.unlink(temp_path)
-                        logger.info(f"[{resource_id}] Deleted temporary file")
-                    except Exception as e:
-                        logger.warning(f"[{resource_id}] Failed to delete temporary file: {e}")
-            
-            except Exception as e:
-                logger.error(f"[{resource_id}] Error processing batches: {e}")
-                # If batch processing failed, store everything at once
-                try:
-                    combined_text = self.temp_storage.read_from_file(temp_path)
-                    if combined_text:
-                        self.content_storage.store_content_with_analysis(
-                            resource_title, resource_url, combined_text,
-                            all_definitions, all_projects, all_methods
-                        )
-                        logger.info(f"[{resource_id}] Stored combined content as fallback")
-                except Exception as fallback_error:
-                    logger.error(f"[{resource_id}] Fallback storage failed: {fallback_error}")
-            
-            # Check if processing was at least partially successful
-            # We'll mark with appropriate status rather than just boolean:
-            # - "completed": Successfully processed with data extracted or pages processed
-            # - "failed": Complete failure to process
-            has_extracted_data = bool(all_definitions or all_projects or all_methods)
-            has_processed_pages = bool(page_results) and any(
-                page.get('content') for page in page_results.values() if isinstance(page, dict)
-            )
-            
-            # Set analysis status based on processing results
-            if has_extracted_data or has_processed_pages:
-                resource['analysis_completed'] = True
-                resource['analysis_status'] = "completed"
-            else:
-                resource['analysis_completed'] = False
-                resource['analysis_status'] = "failed"
-            
-            logger.info(f"[{resource_id}] Setting analysis status to '{resource.get('analysis_status', 'unknown')}' " +
-                        f"(analysis_completed={resource['analysis_completed']}, " +
-                        f"data extracted: {has_extracted_data}, pages processed: {has_processed_pages})")
-
-            # Use DataSaver for saving resource - ensure idx is passed properly
-            success = self.data_saver.save_resource(resource, csv_path, idx)
-            if not success:
-                logger.warning(f"[{resource_id}] Failed to save resource to CSV")
-            
-            # Update result
-            result["success"] = True
-            result["resource"] = resource
-            result["definitions"] = all_definitions
-            result["projects"] = all_projects
-            result["methods"] = all_methods
-            
-            # Calculate duration
-            duration = (datetime.now() - start_time).total_seconds()
-            logger.info(f"✓ [{resource_id}] Processing completed in {duration:.2f}s: {len(all_definitions)} definitions, {len(all_projects)} projects, {len(all_methods)} methods")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"[{resource_id}] Error processing resource: {e}", exc_info=True)
-            result["error"] = str(e)
-            return result
+        # Simply delegate to our dedicated single resource processor
+        return self.single_processor.process_resource(resource, resource_id, idx, csv_path)
     
-    # Replace save_single_resource with a method that uses data_saver
     def save_single_resource(self, resource, csv_path, idx):
-        """Save a single resource to the CSV file using DataSaver."""
-        return self.data_saver.save_resource(resource, csv_path, idx)
+        """Save a single resource to the CSV file."""
+        # Delegate to the single processor
+        return self.single_processor.save_single_resource(resource, csv_path, idx)
 
     async def generate_vector_stores(self) -> Dict[str, Any]:
         """
-        DEPRECATED: Use VectorGenerator.generate_vector_stores() instead.
-        This method is kept for backward compatibility.
+        Generate vector stores from content files.
+        Now delegates to the VectorGenerator.
         """
-        logger.warning("Using deprecated generate_vector_stores method. Consider using VectorGenerator directly")
-        
-        from scripts.analysis.vector_generator import VectorGenerator
+        logger.info("Generating vector stores using VectorGenerator")
         
         # Get all content files from the temporary storage path
         content_paths = list(self.content_storage.temp_storage_path.glob("*.jsonl"))
         
-        # Use VectorGenerator
-        vector_generator = VectorGenerator(self.data_folder)
-        return await vector_generator.generate_vector_stores(content_paths)
+        # Delegate to the vector generator
+        return await self.vector_generator.generate_vector_stores(content_paths)
     
     def _cleanup_temporary_files(self):
-        """Clean up all temporary files and directories after processing."""
+        """
+        Clean up all temporary files and directories after processing.
+        Now delegates to the CleanupManager.
+        """
+        # Delegate to the cleanup manager
+        self.cleanup_manager.cleanup_temporary_files()
+    
+    async def generate_vector_stores_for_url_list(self, processed_urls_csv: str = None) -> Dict[str, Any]:
+        """
+        Generate vector stores specifically from the processed URLs CSV file.
+        This allows vector store creation from subpages without waiting for resource thresholds.
+        
+        Args:
+            processed_urls_csv: Path to the processed URLs CSV file. If None, use default.
+            
+        Returns:
+            Dictionary with vector generation statistics
+        """
+        from scripts.analysis.url_storage import URLStorageManager
+        from utils.config import get_data_path
+        import os
+        
+        # Set default path if not provided
+        if processed_urls_csv is None:
+            data_path = get_data_path()
+            processed_urls_csv = os.path.join(data_path, "processed_urls.csv")
+        
+        logger.info(f"Generating vector stores from processed URLs: {processed_urls_csv}")
+        
         try:
-            logger.info("Performing comprehensive cleanup of temporary files")
+            # Initialize URL storage to read the processed URLs
+            url_storage = URLStorageManager(processed_urls_csv)
+            processed_urls = url_storage.get_processed_urls()
             
-            # 1. Clean up any remaining resource temp files
-            temp_files = list(Path(self.temp_storage.temp_dir).glob("*"))
-            if temp_files:
-                logger.info(f"Cleaning up {len(temp_files)} temporary resource files")
-                for temp_file in temp_files:
-                    try:
-                        if (temp_file.is_file()):
-                            temp_file.unlink()
-                        elif (temp_file.is_dir()):
-                            import shutil
-                            shutil.rmtree(temp_file, ignore_errors=True)
-                    except Exception as e:
-                        logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+            if not processed_urls:
+                logger.warning("No processed URLs found in CSV file")
+                return {"status": "warning", "message": "No processed URLs found"}
             
-            # 2. Clean up any remaining JSONL files in multiple locations
-            # 2a. Clean JSONL files in content storage temp path
-            jsonl_files = list(self.content_storage.temp_storage_path.glob("*.jsonl"))
-            if jsonl_files:
-                logger.info(f"Cleaning up {len(jsonl_files)} remaining JSONL files in content storage")
-                for jsonl_file in jsonl_files:
-                    try:
-                        jsonl_file.unlink()
-                    except Exception as e:
-                        logger.warning(f"Failed to remove JSONL file {jsonl_file}: {e}")
+            logger.info(f"Found {len(processed_urls)} processed URLs to use for vector store generation")
             
-            # 2b. Clean JSONL files in general temp directory
-            temp_dir = Path(self.data_folder) / "temp"
-            if temp_dir.exists():
-                temp_jsonl_files = list(temp_dir.glob("*.jsonl"))
-                if temp_jsonl_files:
-                    logger.info(f"Cleaning up {len(temp_jsonl_files)} remaining JSONL files in temp directory")
-                    for jsonl_file in temp_jsonl_files:
-                        try:
-                            jsonl_file.unlink()
-                        except Exception as e:
-                            logger.warning(f"Failed to remove JSONL file {jsonl_file}: {e}")
+            # Extract content from these URLs (this needs to be implemented in a content extractor)
+            from scripts.analysis.content_extractor import extract_content_for_urls
+            content_paths = await extract_content_for_urls(processed_urls, self.data_folder)
             
-            # 3. Log completion of cleanup
-            logger.info("Temporary file cleanup completed")
+            if not content_paths:
+                logger.warning("No content files generated from processed URLs")
+                return {"status": "warning", "message": "No content files generated"}
+                
+            logger.info(f"Generated {len(content_paths)} content files from processed URLs")
+            
+            # Generate vector stores from the content files
+            stats = await self.vector_generator.generate_vector_stores(content_paths)
+            
+            # Update the last build count after successful generation
+            url_storage = URLStorageManager(processed_urls_csv)
+            current_url_count = len(url_storage.get_processed_urls())
+            self._save_vector_build_count(current_url_count)
+            logger.info(f"Updated last build count to {current_url_count} after manual vector generation")
+            
+            return {
+                "status": "success",
+                "processed_urls_count": len(processed_urls),
+                "content_files_count": len(content_paths),
+                "vector_stats": stats,
+                "last_build_count_updated": current_url_count,
+            }
+            
         except Exception as e:
-            logger.error(f"Error during temporary file cleanup: {e}")
+            logger.error(f"Error generating vector stores from URL list: {e}")
+            return {"status": "error", "error": str(e)}
