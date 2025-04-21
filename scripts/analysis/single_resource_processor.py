@@ -49,7 +49,7 @@ class SingleResourceProcessor:
         # Track whether vector generation is needed
         self.vector_generation_needed = False
     
-    def process_resource(self, resource, resource_id, idx, csv_path):
+    def process_resource(self, resource: Dict, resource_id: str, idx: int, csv_path: str, on_subpage_processed=None) -> Dict[str, Any]:
         """
         Process a single resource through content fetching, analysis and storage.
         
@@ -58,6 +58,7 @@ class SingleResourceProcessor:
             resource_id: String identifier for logging
             idx: Index in the CSV file
             csv_path: Path to the CSV file for saving updates
+            on_subpage_processed: Optional callback function to call after each subpage is processed
             
         Returns:
             Dictionary with processing results
@@ -335,6 +336,10 @@ class SingleResourceProcessor:
                     # Mark this URL as processed immediately after successful analysis
                     self.content_fetcher.mark_url_as_processed(additional_url, depth=1, origin=resource_url)
                     logger.info(f"[{resource_id}] Marked subpage as processed: {additional_url}")
+                    
+                    # Call the callback after each subpage is processed
+                    if on_subpage_processed is not None:
+                        on_subpage_processed()
             
             # STEP 4: Store analysis results
             logger.info(f"[{resource_id}] Completed processing all pages")

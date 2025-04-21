@@ -21,14 +21,19 @@ class MainProcessor:
     Delegates to specialized components for different aspects of processing.
     """
     
-    def __init__(self, data_folder: str):
+    def __init__(self, data_folder: str, url_batch_size: int = 10):
         """
         Initialize the main processor.
         
         Args:
             data_folder: Path to the data directory
+            url_batch_size: Batch size for URL processing before vector generation (default: 10)
         """
         self.data_folder = data_folder
+        self.url_batch_size = url_batch_size  # Added configurable batch size
+        
+        # Track the last checked URL count to avoid excessive checks
+        self.last_checked_url_count = 0
         
         # Import specialized components
         from scripts.analysis.single_resource_processor import SingleResourceProcessor
@@ -49,46 +54,25 @@ class MainProcessor:
         # Track processing state
         self.vector_generation_needed = False
         
-        # File to store the last URL count when vector store was built
-        self.last_build_count_file = os.path.join(data_folder, "vector_build_count.json")
-        
-        logger.info(f"MainProcessor initialized with data folder: {data_folder}")
-        
-    def _get_last_vector_build_count(self) -> int:
+        logger.info(f"MainProcessor initialized with data folder: {data_folder} and URL batch size: {url_batch_size}")
+    
+    def _should_generate_vectors(self, url_count: int) -> bool:
         """
-        Get the last URL count at which vector store was built from persistent storage.
-        
-        Returns:
-            Integer count of URLs at last vector store build
-        """
-        if os.path.exists(self.last_build_count_file):
-            try:
-                with open(self.last_build_count_file, 'r') as f:
-                    data = json.load(f)
-                    count = data.get('last_build_count', 0)
-                    logger.info(f"Retrieved last vector build count: {count}")
-                    return count
-            except Exception as e:
-                logger.error(f"Error reading last build count file: {e}")
-        
-        logger.info("No previous vector build count found, starting from 0")
-        return 0
-        
-    def _save_vector_build_count(self, count: int):
-        """
-        Save the current URL count after vector store was built.
+        Determine if we should generate vectors based on the current URL count.
+        Generates vectors when URL count reaches a multiple of url_batch_size.
         
         Args:
-            count: Current URL count to save
+            url_count: Current count of processed URLs
+            
+        Returns:
+            Boolean indicating whether vector generation should occur
         """
-        try:
-            data = {'last_build_count': count, 'timestamp': datetime.now().isoformat()}
-            with open(self.last_build_count_file, 'w') as f:
-                json.dump(data, f)
-            logger.info(f"Saved current vector build count: {count}")
-        except Exception as e:
-            logger.error(f"Error saving vector build count: {e}")
-
+        # Generate vectors when URL count is a multiple of batch size
+        should_generate = url_count > 0 and url_count % self.url_batch_size == 0
+        if should_generate:
+            logger.info(f"URL count {url_count} is a multiple of batch size {self.url_batch_size}, should generate vectors")
+        return should_generate
+    
     @classmethod
     def reset_cancellation(cls):
         """Reset the cancellation flag for backward compatibility"""
@@ -206,18 +190,7 @@ class MainProcessor:
             # Get the initial count of processed URLs
             initial_url_count = len(url_storage.get_processed_urls())
             logger.info(f"Starting with {initial_url_count} already processed URLs")
-            
-            # Set the URL threshold for vector generation
-            url_threshold = 10  # Build vector store after every 10 URLs
-            
-            # Get the last build count from persistent storage
-            last_vector_build_url_count = self._get_last_vector_build_count()
-            
-            # Make sure we don't go negative if URL file was reset
-            if last_vector_build_url_count > initial_url_count:
-                logger.warning(f"Last build count ({last_vector_build_url_count}) is higher than current URL count ({initial_url_count}). Resetting to current count.")
-                last_vector_build_url_count = initial_url_count
-                self._save_vector_build_count(last_vector_build_url_count)
+            self.last_checked_url_count = initial_url_count
             
             # Process each resource
             for idx, row in df.iterrows():
@@ -234,7 +207,13 @@ class MainProcessor:
                 
                 try:
                     # Use our dedicated single resource processor for this resource
-                    result = self.single_processor.process_resource(resource, resource_id, idx, csv_path)
+                    result = self.single_processor.process_resource(
+                        resource, 
+                        resource_id, 
+                        idx, 
+                        csv_path,
+                        on_subpage_processed=lambda: self._check_and_generate_vectors(url_storage, stats, skip_vector_generation)
+                    )
                     
                     # Update statistics
                     stats["resources_processed"] += 1
@@ -258,46 +237,9 @@ class MainProcessor:
                         self.vector_generation_needed = True
                     
                     # Check if we need to generate vectors based on processed URLs count
-                    current_url_count = len(url_storage.get_processed_urls())
-                    urls_since_last_build = current_url_count - last_vector_build_url_count
+                    # This check happens after each resource is fully processed
+                    self._check_and_generate_vectors(url_storage, stats, skip_vector_generation)
                     
-                    logger.info(f"Current URL count: {current_url_count}, URLs since last build: {urls_since_last_build}")
-                    
-                    if (urls_since_last_build >= url_threshold and 
-                        self.vector_generation_needed and not skip_vector_generation):
-                        
-                        logger.info(f"Starting vector store generation after {urls_since_last_build} new URLs processed (total: {current_url_count})")
-                        
-                        try:
-                            # Get all content files from the temporary storage path
-                            content_paths = list(self.content_storage.temp_storage_path.glob("*.jsonl"))
-                            logger.info(f"Found {len(content_paths)} content files for vector generation")
-                            
-                            # Run the vector generation as a checkpoint - this doesn't delete anything
-                            incremental_stats = asyncio.run(self.vector_generator.generate_vector_stores(content_paths))
-                            
-                            # Store the stats of this checkpoint build
-                            if "url_checkpoint_builds" not in stats:
-                                stats["url_checkpoint_builds"] = []
-                                
-                            stats["url_checkpoint_builds"].append({
-                                "build_number": len(stats.get("url_checkpoint_builds", [])) + 1,
-                                "total_urls": current_url_count,
-                                "new_urls": urls_since_last_build,
-                                "content_paths": len(content_paths),
-                                "stats": incremental_stats
-                            })
-                            
-                            # Update the last build URL count, but don't delete temporary files
-                            last_vector_build_url_count = current_url_count
-                            # Save the count persistently
-                            self._save_vector_build_count(last_vector_build_url_count)
-                            logger.info(f"Completed vector store checkpoint build #{len(stats.get('url_checkpoint_builds', []))} and saved count")
-                            
-                        except Exception as ve:
-                            logger.error(f"Error during checkpoint vector generation: {ve}")
-                            # Continue processing resources despite vector generation error
-                        
                 except Exception as e:
                     logger.error(f"Error processing resource {resource_id}: {e}")
                     stats["error_count"] += 1
@@ -331,11 +273,6 @@ class MainProcessor:
                     vector_stats = asyncio.run(self.vector_generator.generate_vector_stores(content_paths))
                     stats["vector_stats"] = vector_stats
                     logger.info(f"Vector generation complete: {vector_stats}")
-                    
-                    # After successful final build, update the last build count
-                    current_url_count = len(url_storage.get_processed_urls())
-                    self._save_vector_build_count(current_url_count)
-                    logger.info(f"Updated last build count to {current_url_count} after final vector generation")
                     
                 except Exception as ve:
                     logger.error(f"Error during vector generation: {ve}")
@@ -445,20 +382,77 @@ class MainProcessor:
             # Generate vector stores from the content files
             stats = await self.vector_generator.generate_vector_stores(content_paths)
             
-            # Update the last build count after successful generation
+            # Just log the current URL count but don't save it separately
             url_storage = URLStorageManager(processed_urls_csv)
             current_url_count = len(url_storage.get_processed_urls())
-            self._save_vector_build_count(current_url_count)
-            logger.info(f"Updated last build count to {current_url_count} after manual vector generation")
+            logger.info(f"Current URL count after manual vector generation: {current_url_count}")
             
             return {
                 "status": "success",
                 "processed_urls_count": len(processed_urls),
                 "content_files_count": len(content_paths),
                 "vector_stats": stats,
-                "last_build_count_updated": current_url_count,
+                "current_url_count": current_url_count,
             }
             
         except Exception as e:
             logger.error(f"Error generating vector stores from URL list: {e}")
             return {"status": "error", "error": str(e)}
+    
+    def _check_and_generate_vectors(self, url_storage, stats=None, skip_vector_generation=False):
+        """
+        Check if we need to generate vectors based on current URL count, and generate them if needed.
+        
+        Args:
+            url_storage: The URL storage manager to get URL counts from
+            stats: Optional stats dictionary to update with checkpoint information
+            skip_vector_generation: Whether to skip vector generation
+        
+        Returns:
+            Boolean indicating whether vector generation was performed
+        """
+        # Get current URL count
+        current_url_count = len(url_storage.get_processed_urls())
+        
+        # Check if URL count has changed since last check
+        if current_url_count == self.last_checked_url_count:
+            return False
+        
+        logger.info(f"URL count check: Current count is {current_url_count}, last checked was {self.last_checked_url_count}")
+        self.last_checked_url_count = current_url_count
+        
+        # Check if we should generate vectors
+        if (self._should_generate_vectors(current_url_count) and 
+            self.vector_generation_needed and not skip_vector_generation):
+            
+            logger.info(f"Starting vector store generation at URL count milestone: {current_url_count} (batch size: {self.url_batch_size})")
+            
+            try:
+                # Get all content files from the temporary storage path
+                content_paths = list(self.content_storage.temp_storage_path.glob("*.jsonl"))
+                logger.info(f"Found {len(content_paths)} content files for vector generation")
+                
+                # Run the vector generation as a checkpoint - this doesn't delete anything
+                incremental_stats = asyncio.run(self.vector_generator.generate_vector_stores(content_paths))
+                
+                # Store the stats of this checkpoint build if stats dictionary is provided
+                if stats is not None:
+                    if "url_checkpoint_builds" not in stats:
+                        stats["url_checkpoint_builds"] = []
+                        
+                    stats["url_checkpoint_builds"].append({
+                        "build_number": len(stats.get("url_checkpoint_builds", [])) + 1,
+                        "total_urls": current_url_count,
+                        "milestone": f"{current_url_count} (batch size: {self.url_batch_size})",
+                        "content_paths": len(content_paths),
+                        "stats": incremental_stats
+                    })
+                
+                logger.info(f"Completed vector store checkpoint build at URL count {current_url_count}")
+                return True
+                
+            except Exception as ve:
+                logger.error(f"Error during checkpoint vector generation: {ve}")
+                return False
+                
+        return False
