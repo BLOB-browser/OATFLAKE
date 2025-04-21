@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse  # Add this import to fix the errors
 from pathlib import Path
 from typing import List, Optional, Dict
-from langchain.schema import Document
+from langchain_core.documents import Document
 from api.routes import auth_router, data_router, system_router, training_router, slack, questions, markdown_router, knowledge
 from api.routes.openrouter import router as openrouter_router
 from api.routes.openrouter_models import router as openrouter_models_router  # Import OpenRouter models router
@@ -39,6 +39,10 @@ from api.routes.ollama import router as ollama_router
 
 # Import the search router
 from api.routes.search import router as search_router
+
+# Add these imports for the missing routers
+from api.routes.definitions import router as definitions_router
+from api.routes.projects import router as projects_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -271,6 +275,9 @@ app.include_router(openrouter_models_router, prefix="/api/openrouter", tags=["op
 app.include_router(markdown_router)  # Add Markdown router
 app.include_router(knowledge.router)  # This router now uses prefix="/api/knowledge"
 app.include_router(goals_router)  # Add goals router
+# Add these lines to include the missing routers
+app.include_router(definitions_router)
+app.include_router(projects_router)
 
 # Add direct mapping for knowledge stats endpoint to fix 404 error
 app.add_api_route("/api/data/stats/knowledge", get_knowledge_stats, methods=["GET"])

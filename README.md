@@ -34,17 +34,32 @@ git clone https://github.com/blob/OATFLAKE.git
 cd OATFLAKE
 ```
 
-### 2. Run the setup and start the application
+### 2. Run the setup and start script
+
+#### On Windows:
+Double-click the `start.bat` file in File Explorer, or run it from the command line:
+```
+# In Command Prompt:
+start.bat
+
+# In PowerShell:
+.\start.bat
+```
+
+#### On Mac/Linux:
 ```bash
-# Run the start script
+# First time only - make the startup script executable
+chmod +x start.sh
+
+# Then run the script
 ./start.sh
 ```
 
-This script will:
-1. Create a virtual environment (if not already created).
-2. Install dependencies using Poetry.
-3. Ensure required packages like `slack-bolt` and `Jinja2` are installed.
-4. Start the application automatically.
+#### Using PowerShell:
+```powershell
+# Run the PowerShell script
+.\run.ps1
+```
 
 ### 3. Create a `.env` file
 Create a `.env` file in the root directory with the following content (replace with your actual credentials):
@@ -76,6 +91,36 @@ OPENROUTER_API_KEY=your-openrouter-api-key
 ```
 
 ## Usage
+
+## Running the Application
+
+### On Mac:
+```bash
+# First time only - make the startup script executable
+chmod +x start_mac.sh
+
+# Then run the script
+./start_mac.sh
+```
+
+### On Windows:
+Double-click the `start.bat` file in File Explorer, or run it from the command line:
+```
+# In Command Prompt:
+start.bat
+
+# In PowerShell:
+.\start.bat
+```
+
+### On Linux:
+```bash
+# First time only - make the startup script executable
+chmod +x start.sh
+
+# Then run the script
+./start.sh
+```
 
 ### Running the Application
 To start the application:

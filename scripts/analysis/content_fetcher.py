@@ -85,18 +85,27 @@ class ContentFetcher:
             writer = csv.writer(file)
             writer.writerow([url])
 
-    def get_main_page_with_links(self, url: str, go_deeper: bool = True) -> Tuple[bool, Dict[str, Any]]:
+    def get_main_page_with_links(self, url: str, max_depth: int = 2, go_deeper: bool = None) -> Tuple[bool, Dict[str, Any]]:
         """
         Retrieves the main page content and identifies links to additional pages.
-        Can go two layers deep to find more content-rich pages.
+        Can go multiple layers deep to find more content-rich pages.
         
         Args:
             url: The URL to fetch
-            go_deeper: If True, will look for links two levels deep (default: True)
+            max_depth: Maximum depth level to crawl (1=just main page links, 2=two levels, 3=three levels)
+            go_deeper: (Deprecated) If True, will look for links two levels deep (use max_depth instead)
             
         Returns:
             Tuple of (success_flag, dict with main_html and additional_urls)
         """
+        # Handle backward compatibility with go_deeper parameter
+        if go_deeper is not None:
+            logger.warning("Parameter 'go_deeper' is deprecated, use 'max_depth' instead")
+            if go_deeper is False:
+                max_depth = 1  # Only get main page links
+            else:
+                max_depth = 2  # Go two levels deep (original behavior)
+        
         try:
             # Clean URL, handling trailing slashes and common issues
             url = url.strip()
@@ -179,11 +188,13 @@ class ContentFetcher:
                 if absolute_url not in visited_urls and absolute_url not in additional_urls:
                     additional_urls.append(absolute_url)
             
-            # If we're going deeper, fetch the level 1 pages to find level 2 links
+            # If we're going deeper, fetch the level 1 pages to find level 2 links and possibly level 3
             level2_urls = []
-            if go_deeper and additional_urls:
-                logger.info(f"Going deeper: examining up to 10 first-level pages")
-                pages_to_check = additional_urls[:10]  # Always check up to 10 pages
+            level3_urls = []
+            
+            if max_depth >= 2 and additional_urls:
+                logger.info(f"Going deeper: examining up to 100 first-level pages")
+                pages_to_check = additional_urls[:100]  # Check up to 100 pages at level 1
                 
                 for first_level_url in pages_to_check:
                     try:
@@ -258,8 +269,92 @@ class ContentFetcher:
                     except Exception as e:
                         logger.warning(f"Error processing deeper links for {first_level_url}: {e}")
             
-            # Combine level 1 and level 2 URLs, prioritizing level 1
-            if level2_urls:
+            # Process level 3 if requested
+            if max_depth >= 3 and level2_urls:
+                logger.info(f"Going to level 3: examining up to 50 second-level pages")
+                pages_to_check_l2 = level2_urls[:50]  # Check up to 50 pages at level 2
+                
+                for second_level_url in pages_to_check_l2:
+                    try:
+                        logger.info(f"Checking for level 3 links in {second_level_url}")
+                        
+                        # Fetch the second-level page
+                        response = requests.get(
+                            second_level_url,
+                            headers=headers,
+                            timeout=60,
+                            verify=self.verify_ssl,
+                            allow_redirects=True
+                        )
+                        
+                        if response.status_code != 200:
+                            continue
+                            
+                        # Parse the HTML for links
+                        second_level_soup = BeautifulSoup(response.text, 'html.parser')
+                        
+                        # Find detailed content links that might contain rich information
+                        detail_keywords = ['detail', 'more', 'read', 'view', 'full', 'case', 'story', 
+                                          'about', 'learn', 'article', 'page', 'post']
+                        
+                        # Find links with these keywords or in specific content sections
+                        detail_links = []
+                        
+                        # Look in likely content containers
+                        for container in second_level_soup.select('main, article, section, .content, .projects, .details, .post'):
+                            for link in container.find_all('a', href=True):
+                                detail_links.append(link)
+                        
+                        # Also look for links with detail-related text
+                        if len(detail_links) < 5:  # If not enough links found in containers
+                            for link in second_level_soup.find_all('a', href=True):
+                                link_text = link.get_text().lower().strip()
+                                if any(keyword in link_text for keyword in detail_keywords):
+                                    detail_links.append(link)
+                        
+                        # Process the found links
+                        for link in detail_links:
+                            href = link['href']
+                            
+                            # Skip unwanted links
+                            if (href.startswith('#') or any(domain in href for domain in 
+                                                          ['twitter.com', 'facebook.com', 'linkedin.com', 
+                                                           'instagram.com', 'mailto:'])):
+                                continue
+                                
+                            # Convert to absolute URL if needed
+                            if href.startswith('/'):
+                                absolute_url = f"{base_domain}{href}"
+                            elif not href.startswith(('http://', 'https://')):
+                                # For relative URLs, build from the second-level URL's base
+                                second_level_base = second_level_url.rsplit('/', 1)[0] if '/' in second_level_url else second_level_url
+                                absolute_url = f"{second_level_base}/{href}"
+                            else:
+                                # Skip links to other domains
+                                if parsed_url.netloc not in href:
+                                    continue
+                                absolute_url = href
+                            
+                            # Skip if already visited or in any queue
+                            if (absolute_url not in visited_urls and 
+                                absolute_url not in additional_urls and 
+                                absolute_url not in level2_urls and
+                                absolute_url not in level3_urls):
+                                level3_urls.append(absolute_url)
+                        
+                        # Mark this URL as visited to avoid re-processing
+                        visited_urls.add(second_level_url)
+                        
+                        logger.info(f"Found {len(detail_links)} potential level 3 links on {second_level_url}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Error processing level 3 links for {second_level_url}: {e}")
+            
+            # Combine all URLs, prioritizing higher levels
+            if level3_urls:
+                logger.info(f"Found {len(level3_urls)} third-level (deepest) URLs")
+                combined_urls = additional_urls + level2_urls + level3_urls
+            elif level2_urls:
                 logger.info(f"Found {len(level2_urls)} second-level (deeper) URLs")
                 combined_urls = additional_urls + level2_urls
             else:
@@ -278,7 +373,7 @@ class ContentFetcher:
         except requests.RequestException as e:
             logger.error(f"Error fetching main page {url}: {e}")
             return False, {"error": str(e)}
-    
+
     def fetch_additional_page(self, url: str, headers: Dict = None, timeout: int = 60) -> Tuple[bool, str]:  # Increased timeout from 10 to 60 seconds for Raspberry Pi
         """
         Fetch a single additional page.
@@ -317,14 +412,15 @@ class ContentFetcher:
             logger.warning(f"Error fetching page {url}: {e}")
             return False, ""
     
-    def fetch_content(self, url: str, max_additional_pages: int = 150) -> Tuple[bool, Dict[str, str]]:
+    def fetch_content(self, url: str, max_additional_pages: int = 250, max_depth: int = 3) -> Tuple[bool, Dict[str, str]]:
         """
         Safely retrieves website content with error handling.
         Fetches main page and related pages, storing each separately.
         
         Args:
             url: The URL to fetch
-            max_additional_pages: Maximum number of additional pages to fetch
+            max_additional_pages: Maximum number of additional pages to fetch (increased to 250)
+            max_depth: Maximum depth level to crawl (default=3 for three levels deep)
             
         Returns:
             Tuple of (success_flag, dict_of_pages)
@@ -338,8 +434,8 @@ class ContentFetcher:
                 logger.info(f"Skipping already processed URL: {url}")
                 return True, {"main": "", "error": "URL already processed"}
 
-            # Get the main page and extract links to other pages
-            success, main_data = self.get_main_page_with_links(url)
+            # Get the main page and extract links to other pages with specified depth
+            success, main_data = self.get_main_page_with_links(url, max_depth=max_depth)
 
             if not success or "error" in main_data:
                 return False, {"error": main_data.get("error", "Unknown error fetching main page")}
