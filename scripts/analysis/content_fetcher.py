@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 import urllib3
 import csv
 import os
+import platform
+from pathlib import Path
+from utils.config import get_data_path
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -62,28 +65,136 @@ class ContentFetcher:
         logger.info("SSL verification disabled for content fetching")
         
         # Initialize processed URLs storage
-        self.processed_urls_file = "processed_urls.csv"
+        # Get data path from config and create directory if needed
+        data_path = get_data_path()
+        os.makedirs(data_path, exist_ok=True)
+        
+        # Store processed URLs in the configured data path
+        self.processed_urls_file = os.path.join(data_path, "processed_urls.csv")
+        logger.info(f"Using processed URLs file at: {self.processed_urls_file}")
+        
+        # Check if the file exists and create it with enhanced header if it doesn't
         if not os.path.exists(self.processed_urls_file):
-            with open(self.processed_urls_file, mode='w', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(["url"])
+            try:
+                with open(self.processed_urls_file, mode='w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["url", "depth", "origin", "timestamp"])
+                logger.info(f"Created new processed_urls.csv file with enhanced structure")
+            except Exception as e:
+                logger.error(f"Failed to create processed_urls.csv: {e}")
+                # Fallback to project directory if data path fails
+                self.processed_urls_file = "processed_urls.csv"
+                with open(self.processed_urls_file, mode='w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["url", "depth", "origin", "timestamp"])
 
     def _load_processed_urls(self):
-        """Load processed URLs from the CSV file."""
+        """Load processed URLs from the CSV file.
+        
+        Returns:
+            Set of processed URLs for quick lookup
+        """
         processed_urls = set()
+        self.url_metadata = {}  # Dictionary to store additional metadata about URLs
+        
         if os.path.exists(self.processed_urls_file):
-            with open(self.processed_urls_file, mode='r') as file:
-                reader = csv.reader(file)
-                next(reader, None)  # Skip header
-                for row in reader:
-                    processed_urls.add(row[0])
+            try:
+                with open(self.processed_urls_file, mode='r', encoding='utf-8') as file:
+                    reader = csv.reader(file)
+                    header = next(reader, None)  # Skip header
+                    
+                    # Check if we're dealing with old format (just URL) or new format (with depth, origin, etc.)
+                    is_new_format = header and len(header) >= 3 and "depth" in header
+                    
+                    for row in reader:
+                        if row and len(row) > 0:  # Make sure row has data
+                            url = row[0]
+                            processed_urls.add(url)
+                            
+                            # If we have the enhanced format, store the metadata
+                            if is_new_format and len(row) >= 3:
+                                depth = int(row[1]) if row[1].isdigit() else 0
+                                origin = row[2] if len(row) >= 3 else ""
+                                timestamp = row[3] if len(row) >= 4 else ""
+                                self.url_metadata[url] = {
+                                    "depth": depth,
+                                    "origin": origin,
+                                    "timestamp": timestamp
+                                }
+                logger.info(f"Loaded {len(processed_urls)} processed URLs")
+            except Exception as e:
+                logger.error(f"Error loading processed URLs: {e}")
+                
+        # Store the processed URLs in an instance attribute so we can add to it when saving
+        # This is critical for recognizing URLs processed during the current session
+        self._processed_urls_cache = processed_urls
         return processed_urls
 
-    def _save_processed_url(self, url):
-        """Save a processed URL to the CSV file."""
-        with open(self.processed_urls_file, mode='a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow([url])
+    def _save_processed_url(self, url, depth=0, origin=""):
+        """Save a processed URL to the CSV file with depth and origin information.
+        
+        Args:
+            url: The URL that was processed
+            depth: The crawl depth level of this URL (0=main, 1=first level, etc.)
+            origin: The URL that led to this URL (empty for main URLs)
+        """
+        try:
+            from datetime import datetime
+            import os
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Extra diagnostics about file path and directory
+            file_dir = os.path.dirname(self.processed_urls_file)
+            logger.info(f"Directory for processed URLs: {file_dir}")
+            logger.info(f"Directory exists: {os.path.exists(file_dir)}")
+            logger.info(f"Directory writable: {os.access(file_dir, os.W_OK)}")
+            logger.info(f"File path: {self.processed_urls_file}")
+            logger.info(f"File exists: {os.path.exists(self.processed_urls_file)}")
+            
+            # Make sure directory exists
+            os.makedirs(os.path.dirname(self.processed_urls_file), exist_ok=True)
+            
+            logger.info(f"Saving processed URL to {self.processed_urls_file}: {url} (depth={depth}, origin={origin or 'main'})")
+            
+            # Open in append mode with explicit flush
+            with open(self.processed_urls_file, mode='a', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow([url, depth, origin, timestamp])
+                file.flush()
+                os.fsync(file.fileno())  # Force write to disk
+            
+            # Verify the file exists and has content
+            if os.path.exists(self.processed_urls_file):
+                file_size = os.path.getsize(self.processed_urls_file)
+                logger.info(f"After write: file exists with size {file_size} bytes")
+            else:
+                logger.warning(f"After write: file does not exist!")
+            
+            # Store in memory cache as well
+            if not hasattr(self, 'url_metadata'):
+                self.url_metadata = {}
+            self.url_metadata[url] = {"depth": depth, "origin": origin, "timestamp": timestamp}
+            
+            # IMPORTANT: Also add to the in-memory processed_urls set so it's recognized immediately
+            # This is crucial to ensure the URL is marked as processed for the current session
+            if hasattr(self, '_processed_urls_cache'):
+                self._processed_urls_cache.add(url)
+                logger.info(f"Added URL to in-memory processed URLs cache (now has {len(self._processed_urls_cache)} URLs)")
+            
+            logger.info(f"Successfully saved URL to processed_urls.csv")
+        except Exception as e:
+            logger.error(f"Failed to save processed URL {url}: {e}")
+            # Try a fallback to the local directory if the data path fails
+            try:
+                if self.processed_urls_file != "processed_urls.csv":
+                    fallback_file = "processed_urls.csv"
+                    with open(fallback_file, mode='a', newline='', encoding='utf-8') as file:
+                        writer = csv.writer(file)
+                        writer.writerow([url, depth, origin, timestamp])
+                        file.flush()
+                    logger.info(f"Saved URL to fallback processed_urls.csv in project directory")
+            except Exception as fallback_error:
+                logger.error(f"Fallback save also failed: {fallback_error}")
 
     def get_main_page_with_links(self, url: str, max_depth: int = 2, go_deeper: bool = None) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -196,8 +307,17 @@ class ContentFetcher:
                 logger.info(f"Going deeper: examining up to 100 first-level pages")
                 pages_to_check = additional_urls[:100]  # Check up to 100 pages at level 1
                 
+                # Load processed URLs to avoid re-fetching content we've already analyzed
+                processed_urls = self._load_processed_urls()
+                
                 for first_level_url in pages_to_check:
                     try:
+                        # Check if we should still process this URL
+                        already_processed = first_level_url in processed_urls
+                        if already_processed:
+                            logger.info(f"URL {first_level_url} already processed, but still checking for deeper links")
+                            # Continue with this URL, as we want to find deeper links even in processed pages
+                        
                         logger.info(f"Checking for deeper links in {first_level_url}")
                         
                         # Fetch the first-level page
@@ -274,8 +394,18 @@ class ContentFetcher:
                 logger.info(f"Going to level 3: examining up to 50 second-level pages")
                 pages_to_check_l2 = level2_urls[:50]  # Check up to 50 pages at level 2
                 
+                # Make sure processed_urls is loaded
+                if not 'processed_urls' in locals():
+                    processed_urls = self._load_processed_urls()
+                
                 for second_level_url in pages_to_check_l2:
                     try:
+                        # Check if we should still process this URL for deeper links
+                        already_processed = second_level_url in processed_urls
+                        if already_processed:
+                            logger.info(f"URL {second_level_url} already processed, but still checking for level 3 links")
+                            # Continue with this URL, as we want to find deeper links even in processed pages
+                            
                         logger.info(f"Checking for level 3 links in {second_level_url}")
                         
                         # Fetch the second-level page
@@ -472,11 +602,20 @@ class ContentFetcher:
                     pages_dict[section_name] = html_content
                     visited_urls.add(additional_url)
 
-                    # Save the processed subpage URL
-                    self._save_processed_url(additional_url)
+                    # Determine the depth level based on URL lists from get_main_page_with_links
+                    depth = 1  # Default to depth 1 (first level from main)
+                    
+                    # Check if this URL is in level2_urls or level3_urls
+                    if "level2_urls" in main_data and additional_url in main_data["level2_urls"]:
+                        depth = 2
+                    elif "level3_urls" in main_data and additional_url in main_data["level3_urls"]:
+                        depth = 3
+                    
+                    # Save the processed subpage URL with depth and origin information
+                    self._save_processed_url(additional_url, depth=depth, origin=url)
 
-            # Save the main URL as processed
-            self._save_processed_url(url)
+            # Save the main URL as processed (depth 0, no origin)
+            self._save_processed_url(url, depth=0, origin="")
 
             # Return all pages as a dictionary
             return True, pages_dict
@@ -593,3 +732,16 @@ class ContentFetcher:
                 logger.warning(f"No content could be extracted from page '{page_name}'")
                 
         return texts
+    
+    def mark_url_as_processed(self, url, depth=1, origin=""):
+        """
+        Mark a URL as processed after its content has been successfully analyzed.
+        This method can be called by external components like MainProcessor.
+        
+        Args:
+            url: The URL to mark as processed
+            depth: The depth level of the URL (0=main, 1=first level, etc.)
+            origin: The parent URL that led to this URL
+        """
+        logger.info(f"Marking URL as processed after successful content analysis: {url}")
+        self._save_processed_url(url, depth=depth, origin=origin)

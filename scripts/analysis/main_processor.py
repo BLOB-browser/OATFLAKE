@@ -292,11 +292,8 @@ class MainProcessor:
             main_html = main_data["main_html"]
             additional_urls = main_data["additional_urls"]
             
-            # Limit additional pages
-            max_additional_pages = 15
-            if len(additional_urls) > max_additional_pages:
-                logger.info(f"[{resource_id}] Limiting from {len(additional_urls)} to {max_additional_pages} additional pages")
-                additional_urls = additional_urls[:max_additional_pages]
+            # Don't limit additional pages - process all of them
+            logger.info(f"[{resource_id}] Processing all {len(additional_urls)} additional pages without limitation")
             
             # Extract text from main page
             main_page_text = self.content_fetcher.extract_text(main_html, 2000)
@@ -509,6 +506,11 @@ class MainProcessor:
                         page_text, 
                         f"{resource_id} - {page_name}"
                     )
+                    
+                    # Mark this URL as processed immediately after successful analysis
+                    # This ensures it's saved to both CSV and in-memory cache
+                    self.content_fetcher.mark_url_as_processed(additional_url, depth=1, origin=resource_url)
+                    logger.info(f"[{resource_id}] Marked subpage as processed: {additional_url}")
                     
                 except Exception as e:
                     logger.error(f"[{resource_id}] Error processing page {additional_url}: {e}")
