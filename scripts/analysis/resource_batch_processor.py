@@ -192,6 +192,10 @@ class ResourceBatchProcessor:
                             from scripts.storage.content_storage_service import ContentStorageService
                             content_storage = ContentStorageService(self.data_folder)
                             content_paths = list(content_storage.temp_storage_path.glob("*.jsonl"))
+                            # Also check vector_data folder if it exists
+                            vector_data_path = content_storage.temp_storage_path.parent / "vector_data"
+                            if vector_data_path.exists():
+                                content_paths.extend(list(vector_data_path.glob("*.jsonl")))
                             
                             logger.info(f"Found {len(content_paths)} content files for incremental vector generation")
                             

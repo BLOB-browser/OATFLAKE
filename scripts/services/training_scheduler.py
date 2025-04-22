@@ -385,9 +385,7 @@ def _training_loop():
                     logger.info(f"Approaching end of training window ({time_to_end_minutes:.1f} min left), "
                                "will skip resource analysis but allow embeddings")
             
-            # Execute training tasks if:
-            # - It's within the training window AND
-            # - We haven't run in the last hour (to avoid excessive processing)
+            # Execute training tasks if within time window and haven't run recently
             if is_training_time and (last_check_time is None or (now - last_check_time).seconds >= 3600):
                 # Check again for stop event before heavy processing
                 if _stop_event.is_set():
@@ -457,7 +455,7 @@ def _training_loop():
                         # Mark that we're in processing mode
                         processing_active = True
                         
-                        url = "http://localhost:8999/api/knowledge/process"  # Updated path
+                        url = "http://localhost:8999/api/knowledge/process"
                         
                         # Set parameters for scheduled processing
                         params = {
@@ -466,7 +464,7 @@ def _training_loop():
                             "analyze_all_resources": "false",    # Only analyze resources that need it
                             "batch_size": "1",                   # Process 1 resource at a time for stability
                             "force_update": "false",             # Let the API decide if processing is needed
-                            "skip_vector_generation": "false",   # Do vector generation in the process endpoint
+                            "skip_vector_generation": "false",   # This parameter tells the API to generate vectors
                             "check_unanalyzed": "true"           # Always check for unanalyzed resources
                         }
                         
@@ -484,21 +482,64 @@ def _training_loop():
                                     logger.info("Vector generation was already performed during knowledge processing")
                                     # No need to rebuild FAISS indexes again
                                 else:
-                                    # Only rebuild if vector generation wasn't already done
+                                    # 4. If vectors weren't generated, it directly calls the rebuild script:
                                     logger.info("Vector generation wasn't performed during knowledge processing, rebuilding now...")
-                                    rebuild_url = "http://localhost:8999/api/rebuild-faiss-indexes"
                                     
                                     try:
-                                        rebuild_response = requests.post(rebuild_url)
-                                        if rebuild_response.status_code == 200:
-                                            rebuild_result = rebuild_response.json()
-                                            if rebuild_result.get("status") == "success":
+                                        # Import the rebuild function from the rebuild script
+                                        from scripts.tools.rebuild_faiss_indexes import rebuild_indexes
+                                        import asyncio
+                                        
+                                        # Get data path from config
+                                        data_path = get_data_path()
+                                        
+                                        # Run the rebuild_faiss_indexes.py script as a separate process
+                                        logger.info(f"Running FAISS index rebuild as separate process with data path: {data_path}")
+                                        
+                                        import subprocess
+                                        import sys
+                                        
+                                        # Get the path to the rebuild script
+                                        from pathlib import Path
+                                        script_path = Path(__file__).parents[2] / "scripts" / "tools" / "rebuild_faiss_indexes.py"
+                                        
+                                        # Run the script as a separate process to ensure it has full stdout/stderr
+                                        logger.info(f"Executing rebuild script: {script_path}")
+                                        try:
+                                            # Run with the same Python interpreter
+                                            python_path = sys.executable
+                                            cmd = [python_path, str(script_path), "--data-path", str(data_path)]
+                                            
+                                            # Execute with real-time output
+                                            process = subprocess.Popen(
+                                                cmd,
+                                                stdout=subprocess.PIPE,
+                                                stderr=subprocess.STDOUT,
+                                                universal_newlines=True,
+                                                bufsize=1
+                                            )
+                                            
+                                            # Stream the output in real-time
+                                            logger.info("===== BEGIN REBUILD SCRIPT OUTPUT =====")
+                                            for line in process.stdout:
+                                                line = line.strip()
+                                                if line:
+                                                    logger.info(f"REBUILD: {line}")
+                                            
+                                            # Wait for process to complete
+                                            return_code = process.wait()
+                                            logger.info("===== END REBUILD SCRIPT OUTPUT =====")
+                                            
+                                            rebuild_result = (return_code == 0)
+                                            
+                                            if rebuild_result:
                                                 logger.info("FAISS index rebuild completed successfully")
-                                                logger.info(f"Rebuilt {len(rebuild_result.get('stores_rebuilt', []))} stores with {rebuild_result.get('total_documents', 0)} documents")
                                             else:
-                                                logger.warning(f"FAISS rebuild issue: {rebuild_result.get('error', 'unknown error')}")
-                                        else:
-                                            logger.error(f"FAISS rebuild API error: {rebuild_response.status_code} - {rebuild_response.text}")
+                                                logger.warning(f"FAISS index rebuild had issues, return code: {return_code}")
+                                        
+                                        except Exception as e:
+                                            logger.error(f"Error running rebuild script: {e}")
+                                            rebuild_result = False
                                     except Exception as rebuild_error:
                                         logger.error(f"Error rebuilding FAISS indexes: {rebuild_error}")
                                 # API endpoint already generates questions, no need for separate call
@@ -572,8 +613,8 @@ def start():
     else:
         logger.error("Failed to start training scheduler thread")
 
-def stop(timeout=15.0):
-    """Stop the scheduler thread if running"""
+def stop(timeout=None):
+    """Stop the scheduler thread if running, with no forced timeout"""
     global _stop_event, _scheduler_thread, _running
     
     if not _running and (_scheduler_thread is None or not _scheduler_thread.is_alive()):
@@ -624,10 +665,9 @@ def stop(timeout=15.0):
         except ImportError:
             pass
         
-        # Join with a timeout adjusted based on embedding status
-        join_timeout = min(timeout, 20.0 if embedding_in_progress else 10.0)
-        logger.info(f"Waiting up to {join_timeout} seconds for scheduler to stop...")
-        _scheduler_thread.join(timeout=join_timeout)
+        # No timeout - wait indefinitely for the scheduler to finish
+        logger.info("Waiting for scheduler to stop completely (no timeout)...")
+        _scheduler_thread.join()
         
         # Check if thread is still alive
         if _scheduler_thread.is_alive():
@@ -660,33 +700,67 @@ def stop(timeout=15.0):
     _running = False
     
     # When training is stopped, rebuild FAISS indexes to ensure consistency
-    # Only do this if the server is likely running (skip during app shutdown)
     try:
-        # Check if server is running before attempting API call
-        import requests
+        logger.info("Training stopped - rebuilding FAISS indexes to ensure consistency...")
+        
         try:
-            # Try a quick status check first
-            status_response = requests.get("http://localhost:8999/api/status", timeout=1)
-            server_running = status_response.status_code == 200
-        except:
-            server_running = False
+            # Import the rebuild function directly
+            from scripts.tools.rebuild_faiss_indexes import rebuild_indexes
+            import asyncio
             
-        if server_running:
-            logger.info("Training stopped - rebuilding FAISS indexes to ensure consistency...")
-            rebuild_url = "http://localhost:8999/api/rebuild-faiss-indexes"
-            rebuild_response = requests.post(rebuild_url, timeout=5)
+            # Get data path from config
+            data_path = get_data_path()
             
-            if rebuild_response.status_code == 200:
-                rebuild_result = rebuild_response.json()
-                if rebuild_result.get("status") == "success":
+            # Run the rebuild_faiss_indexes.py script as a separate process
+            logger.info(f"Running FAISS index rebuild as separate process with data path: {data_path}")
+            
+            import subprocess
+            import sys
+            
+            # Get the path to the rebuild script
+            from pathlib import Path
+            script_path = Path(__file__).parents[2] / "scripts" / "tools" / "rebuild_faiss_indexes.py"
+            
+            # Run the script as a separate process to ensure it has full stdout/stderr
+            logger.info(f"Executing rebuild script: {script_path}")
+            try:
+                # Run with the same Python interpreter
+                python_path = sys.executable
+                cmd = [python_path, str(script_path), "--data-path", str(data_path)]
+                
+                # Execute with real-time output
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1
+                )
+                
+                # Stream the output in real-time
+                logger.info("===== BEGIN REBUILD SCRIPT OUTPUT =====")
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        logger.info(f"REBUILD: {line}")
+                
+                # Wait for process to complete
+                return_code = process.wait()
+                logger.info("===== END REBUILD SCRIPT OUTPUT =====")
+                
+                rebuild_result = (return_code == 0)
+                
+                if rebuild_result:
                     logger.info("FAISS index rebuild completed successfully")
-                    logger.info(f"Rebuilt {len(rebuild_result.get('stores_rebuilt', []))} stores with {rebuild_result.get('total_documents', 0)} documents")
                 else:
-                    logger.warning(f"FAISS rebuild issue: {rebuild_result.get('error', 'unknown error')}")
-            else:
-                logger.error(f"FAISS rebuild API error: {rebuild_response.status_code} - {rebuild_response.text}")
-        else:
-            logger.info("Server appears to be shutting down, skipping FAISS rebuild")
+                    logger.warning(f"FAISS index rebuild had issues, return code: {return_code}")
+            
+            except Exception as e:
+                logger.error(f"Error running rebuild script: {e}")
+                rebuild_result = False
+                
+        except ImportError as e:
+            logger.error(f"Could not import rebuild script: {e}")
             
     except Exception as rebuild_error:
         logger.error(f"Error rebuilding FAISS indexes: {rebuild_error}")

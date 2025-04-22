@@ -194,6 +194,8 @@ class FAISSBuilder:
                     # Save vector store
                     vector_store.save_local(str(store_path))
                     
+                    # We decided not to use pkl files or symlinks, using only index.faiss
+                    
                     # Update metadata
                     if (store_path / "embedding_stats.json").exists():
                         try:

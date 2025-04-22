@@ -86,10 +86,21 @@ class VectorGenerator:
             # Create topic stores using documents with tags
             logger.info("Creating topic-specific stores...")
             
-            # Filter documents that have tags
+            # Filter documents that have tags/topics
             tagged_docs = [doc for doc in all_documents 
-                          if hasattr(doc, 'metadata') and 'tags' in doc.metadata 
-                          and isinstance(doc.metadata['tags'], list)]
+                          if hasattr(doc, 'metadata') and 
+                          (('tags' in doc.metadata and doc.metadata['tags']) or 
+                           ('topics' in doc.metadata and doc.metadata['topics']))]
+            
+            # Convert string tags to lists if needed and ensure topics field exists
+            for doc in tagged_docs:
+                # If document has tags but not topics, copy tags to topics
+                if 'tags' in doc.metadata and doc.metadata['tags'] and 'topics' not in doc.metadata:
+                    # Convert string tags to list if needed
+                    if isinstance(doc.metadata['tags'], str):
+                        doc.metadata['topics'] = doc.metadata['tags'].split(',')
+                    else:
+                        doc.metadata['topics'] = doc.metadata['tags']
             
             if tagged_docs:
                 logger.info(f"Found {len(tagged_docs)} documents with tags for topic stores")
@@ -104,7 +115,7 @@ class VectorGenerator:
                         stats["topic_stores_created"].add(topic_store_name)
                         logger.info(f"Created topic store: {topic_store_name}")
             else:
-                logger.warning("No documents with tags found for topic stores")
+                logger.warning("No documents with tags or topics found for topic stores - ensure resources have tags in CSV")
             
             # Calculate final stats
             stats["duration"] = time.time() - start_time
@@ -140,9 +151,10 @@ class VectorGenerator:
             }
     
     async def _extract_documents_from_files(self, content_paths: List[Path]) -> List[Document]:
-        """Extract documents from JSONL files."""
+        """Extract documents from multiple sources including JSONL files and documents.json"""
         documents = []
         
+        # First try to extract from JSONL files
         for content_path in content_paths:
             if not content_path.exists():
                 logger.warning(f"Content file not found: {content_path}")
@@ -163,7 +175,62 @@ class VectorGenerator:
                             continue
             except Exception as e:
                 logger.error(f"Error reading {content_path}: {e}")
-                
+        
+        # If no documents found in JSONL files, try to load from documents.json in vector store directories
+        if not documents:
+            logger.info("No documents found in JSONL files. Checking for documents.json files in vector stores...")
+            
+            # Get vector store directories
+            vector_path = Path(self.data_folder) / "vector_stores" / "default"
+            if vector_path.exists():
+                # Look for existing stores
+                for store_dir in vector_path.iterdir():
+                    if store_dir.is_dir():
+                        documents_json = store_dir / "documents.json"
+                        if documents_json.exists():
+                            try:
+                                with open(documents_json, 'r', encoding='utf-8') as f:
+                                    doc_data = json.load(f)
+                                    logger.info(f"Found {len(doc_data)} documents in {documents_json}")
+                                    
+                                    # Convert to Document objects
+                                    for doc in doc_data:
+                                        document = Document(
+                                            page_content=doc["content"],
+                                            metadata=doc["metadata"]
+                                        )
+                                        documents.append(document)
+                            except Exception as e:
+                                logger.error(f"Error reading {documents_json}: {e}")
+            
+            # Also check for TXT files in the temp directory
+            temp_dir = Path(self.data_folder) / "temp"
+            if temp_dir.exists():
+                txt_files = list(temp_dir.glob("*.txt"))
+                if txt_files:
+                    logger.info(f"Found {len(txt_files)} text files in temp directory")
+                    for txt_file in txt_files:
+                        try:
+                            # Extract content from text file
+                            with open(txt_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            
+                            # Create a simple document with basic metadata
+                            filename = txt_file.name
+                            document = Document(
+                                page_content=content,
+                                metadata={
+                                    "source": str(txt_file),
+                                    "source_type": "text",
+                                    "filename": filename,
+                                    "created_at": txt_file.stat().st_mtime
+                                }
+                            )
+                            documents.append(document)
+                        except Exception as e:
+                            logger.error(f"Error reading text file {txt_file}: {e}")
+        
+        logger.info(f"Total documents extracted from all sources: {len(documents)}")
         return documents
     
     def _group_documents_by_store(self, documents: List[Document]) -> Dict[str, List[Document]]:

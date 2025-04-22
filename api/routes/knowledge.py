@@ -447,6 +447,10 @@ async def process_knowledge_base(
                 temp_dir = data_path / "temp"
                 if temp_dir.exists():
                     content_paths.extend(list(temp_dir.glob("*.jsonl")))
+                    # Also check vector_data folder if it exists
+                    vector_data_path = temp_dir / "vector_data"
+                    if vector_data_path.exists():
+                        content_paths.extend(list(vector_data_path.glob("*.jsonl")))
                     
                 # Check if we should proceed even if no content files found
                 if not content_paths and force_update:
@@ -460,46 +464,97 @@ async def process_knowledge_base(
                 if content_paths:
                     logger.info(f"Found {len(content_paths)} content files for vector generation")
                     
-                    # Use VectorGenerator as a wrapper around VectorStoreManager
-                    vector_generator = VectorGenerator(str(data_path))
-                    vector_stats = await vector_generator.generate_vector_stores(content_paths)
+                    # Instead of using VectorGenerator, directly execute the rebuild_faiss_indexes.py script
+                    logger.info("Running rebuild_faiss_indexes.py script to generate vector stores")
+                    
+                    import subprocess
+                    import sys
+                    
+                    # Get the path to the rebuild script
+                    script_path = Path(__file__).parents[2] / "scripts" / "tools" / "rebuild_faiss_indexes.py"
+                    
+                    # Run the script as a separate process to ensure it has full stdout/stderr
+                    logger.info(f"Executing rebuild script: {script_path}")
+                    rebuild_start_time = time.time()
+                    
+                    try:
+                        # Run with the same Python interpreter
+                        python_path = sys.executable
+                        cmd = [python_path, str(script_path), "--data-path", str(data_path)]
+                        
+                        # Execute with real-time output
+                        process = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            universal_newlines=True,
+                            bufsize=1
+                        )
+                        
+                        # Stream the output in real-time
+                        logger.info("===== BEGIN REBUILD SCRIPT OUTPUT =====")
+                        rebuild_output = []
+                        for line in process.stdout:
+                            line = line.strip()
+                            rebuild_output.append(line)
+                            if line:
+                                logger.info(f"REBUILD: {line}")
+                        
+                        # Wait for process to complete
+                        return_code = process.wait()
+                        logger.info("===== END REBUILD SCRIPT OUTPUT =====")
+                        rebuild_duration = time.time() - rebuild_start_time
+                        
+                        # Parse output to extract stats
+                        rebuilt_stores = []
+                        total_documents = 0
+                        
+                        for line in rebuild_output:
+                            if "Successfully rebuilt" in line and "store" in line:
+                                store_name = line.split("Successfully rebuilt")[-1].strip()
+                                rebuilt_stores.append(store_name)
+                            elif "documents" in line and ":" in line:
+                                try:
+                                    store_info = line.strip().split(":")
+                                    if len(store_info) >= 2 and "documents" in store_info[1]:
+                                        doc_count = int(store_info[1].split("documents")[0].strip())
+                                        total_documents += doc_count
+                                except:
+                                    pass
+                        
+                        if return_code == 0:
+                            vector_stats = {
+                                "status": "success",
+                                "documents_processed": total_documents,
+                                "embeddings_generated": total_documents,
+                                "stores_created": rebuilt_stores,
+                                "topic_stores_created": [store for store in rebuilt_stores if store.startswith("topic_")],
+                                "duration_seconds": rebuild_duration
+                            }
+                            logger.info(f"✅ Successfully rebuilt all FAISS indexes")
+                        else:
+                            vector_stats = {
+                                "status": "error",
+                                "message": f"Rebuild script failed with return code {return_code}",
+                                "duration_seconds": rebuild_duration
+                            }
+                            logger.error(f"❌ Failed to rebuild indexes, return code: {return_code}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error executing rebuild script: {e}")
+                        vector_stats = {
+                            "status": "error",
+                            "message": str(e),
+                            "duration_seconds": time.time() - rebuild_start_time
+                        }
                     
                     # Add vector stats to the result
                     result["vector_generation"] = vector_stats
                     logger.info(f"Vector generation complete: {vector_stats}")
                     
-                    # Always attempt to rebuild indexes if needed
-                    try:
-                        # If we didn't get enough topic stores, rebuild them
-                        if len(vector_stats.get("topic_stores_created", [])) < 3:
-                            logger.info("Few topic stores created, attempting to rebuild topic stores")
-                            # Initialize VectorStoreManager directly
-                            vector_store_manager = VectorStoreManager(base_path=data_path)
-                            
-                            # Use list_stores to get all existing stores
-                            stores = vector_store_manager.list_stores()
-                            if "content_store" in [store.get("name") for store in stores]:
-                                logger.info("Content store exists, getting representative docs for topics")
-                                
-                                # Get representative chunks to create topic stores
-                                rep_docs = await vector_store_manager.get_representative_chunks(
-                                    store_name="content_store", 
-                                    num_chunks=100
-                                )
-                                
-                                if rep_docs:
-                                    # Try to create topic stores from these docs
-                                    topic_results = await vector_store_manager.create_topic_stores(rep_docs)
-                                    
-                                    if topic_results:
-                                        logger.info(f"Created {len(topic_results)} additional topic stores")
-                                        # Update stats
-                                        for topic in topic_results:
-                                            if topic_results[topic]:
-                                                vector_stats.setdefault("topic_stores_created", []).append(f"topic_{topic}")
-                                        result["vector_generation"] = vector_stats
-                    except Exception as rebuild_error:
-                        logger.error(f"Error rebuilding topic stores: {rebuild_error}")
+                    # Note: Topic store generation is now handled directly in the rebuild_faiss_indexes.py script
+                    # We don't need to regenerate them here, as that would cause duplication
+                    logger.info("Topic store generation is now handled by the rebuild_faiss_indexes.py script")
                 else:
                     # Even if no content files found, try to rebuild existing stores
                     logger.info("No content files found, attempting to rebuild existing vector stores")
@@ -582,12 +637,10 @@ async def process_knowledge_base(
             logger.info("Vector generation explicitly skipped")
             result["vector_generation"] = {"status": "skipped", "reason": "explicitly skipped"}
 
-        # Step 6: Extract goals from vector stores (TEMPORARILY DISABLED)
-        logger.info("STEP 6: EXTRACTING GOALS FROM VECTOR STORES - TEMPORARILY DISABLED")
+        # Step 6: Extract goals from vector stores
+        logger.info("STEP 6: EXTRACTING GOALS FROM VECTOR STORES")
         logger.info("=========================================")
         
-        # Comment out the goal extraction code for now
-        """
         try:
             # Initialize goal extractor
             goal_extractor = GoalExtractor(str(data_path))
@@ -603,7 +656,7 @@ async def process_knowledge_base(
                     "duration_seconds": goals_result.get("stats", {}).get("duration_seconds", 0)
                 }
             else:
-                logger.warning(f"Goal extraction issue: {goals_result.get("message")}")
+                logger.warning(f"Goal extraction issue: {goals_result.get('message')}")
                 result["goals"] = {
                     "status": "warning",
                     "message": goals_result.get("message", "Unknown issue during goal extraction")
@@ -614,13 +667,6 @@ async def process_knowledge_base(
                 "status": "error",
                 "error": str(goal_error)
             }
-        """
-        
-        # Add empty goals result to maintain API compatibility
-        result["goals"] = {
-            "status": "skipped",
-            "message": "Goal extraction temporarily disabled"
-        }
         
         # Step 7: Generate questions after processing the knowledge base
         logger.info("STEP 7: GENERATING QUESTIONS FROM PROCESSED KNOWLEDGE")

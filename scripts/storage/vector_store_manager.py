@@ -158,6 +158,8 @@ class VectorStoreManager:
             # Save FAISS index
             faiss.write_index(index, str(store_path / "index.faiss"))
             
+            # We decided not to use pkl files or symlinks, using only index.faiss
+            
             # Save documents metadata - now based on chunks not original documents
             with open(store_path / "documents.json", "w") as f:
                 json.dump([{
@@ -327,6 +329,8 @@ class VectorStoreManager:
                 
                 # Save updated index
                 faiss.write_index(existing_index, str(store_path / "index.faiss"))
+                
+                # We decided not to use pkl files or symlinks, using only index.faiss
                 
                 # Combine document metadata and save - use chunks instead of original documents
                 combined_documents = existing_documents + [{
@@ -499,18 +503,183 @@ class VectorStoreManager:
     async def create_topic_stores(self, documents: List[Document], group_id: str = "default") -> Dict:
         """Create separate vector stores by topic"""
         try:
-            # Group documents by topic
+            # First, extract topics from document metadata
             topic_docs: Dict[str, List[Document]] = {}
             
+            # Look for topics in both 'topics' field and 'tags' field
             for doc in documents:
-                topics = doc.metadata.get('topics', ['general'])
+                # Check if document already has topics
+                topics = doc.metadata.get('topics', [])
                 if isinstance(topics, str):
                     topics = [topics]
+                
+                # If no topics found, try using tags
+                if not topics:
+                    tags = doc.metadata.get('tags', [])
+                    if isinstance(tags, str):
+                        tags = [tags]
+                    topics = tags
                     
+                # If still no topics, try fields (some tables use fields instead of tags)
+                if not topics:
+                    fields = doc.metadata.get('fields', [])
+                    if isinstance(fields, str):
+                        fields = [fields]
+                    topics = fields
+                
+                # If still no topics, try using simple NLP to extract topics from content
+                if not topics:
+                    # Use basic NLP to identify potential topics from the content
+                    if hasattr(doc, 'page_content') and doc.page_content:
+                        text = doc.page_content.lower()
+                        
+                        # Try to extract topics from document title if available
+                        title = None
+                        if doc.metadata.get('title'):
+                            title = doc.metadata.get('title')
+                        elif doc.metadata.get('resource_title'):
+                            title = doc.metadata.get('resource_title')
+                        
+                        # If we have a title, use it as a potential topic
+                        detected_topics = []
+                        if title:
+                            # Split title into words, remove common stop words
+                            stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'about', 'for', 'with', 'to', 'from', 'in', 'on', 'at'}
+                            import re
+                            title_tokens = re.findall(r'\b\w+\b', title.lower())
+                            title_topics = [word for word in title_tokens if len(word) > 3 and word not in stop_words]
+                            detected_topics.extend(title_topics[:2])  # Use up to 2 terms from title
+                        
+                        # Add general topic as fallback
+                        if not detected_topics:
+                            detected_topics = ["general"]
+                        
+                        topics = detected_topics
+                
+                # Add document to each topic collection
                 for topic in topics:
-                    if topic not in topic_docs:
-                        topic_docs[topic] = []
-                    topic_docs[topic].append(doc)
+                    # Normalize topic name (lowercase, replace spaces with hyphens)
+                    normalized_topic = topic.lower().strip().replace(' ', '-')
+                    if not normalized_topic:
+                        normalized_topic = "general"
+                        
+                    if normalized_topic not in topic_docs:
+                        topic_docs[normalized_topic] = []
+                    topic_docs[normalized_topic].append(doc)
+            
+            # Always attempt automatic topic extraction, regardless of existing topics
+            # This ensures we have diverse, content-driven topics 
+            if len(documents) >= 10:  # Only try with enough documents for meaningful clusters
+                logger.info("Performing automatic topic extraction through content analysis")
+                
+                try:
+                    # Content-based topic extraction
+                    from sklearn.feature_extraction.text import TfidfVectorizer
+                    from sklearn.cluster import KMeans
+                    from sklearn.decomposition import LatentDirichletAllocation
+                    import numpy as np
+                    
+                    # Extract text from documents
+                    texts = [doc.page_content for doc in documents if hasattr(doc, 'page_content') and doc.page_content]
+                    
+                    # Skip if we don't have enough texts with content
+                    if len(texts) >= 10:
+                        logger.info(f"Analyzing {len(texts)} documents for automatic topic extraction")
+                        
+                        # Create TF-IDF features
+                        vectorizer = TfidfVectorizer(
+                            max_features=200, 
+                            stop_words='english',
+                            min_df=2,  # Term must appear in at least 2 documents
+                            max_df=0.9  # Term must not appear in more than 90% of documents
+                        )
+                        X = vectorizer.fit_transform(texts)
+                        
+                        # Get feature names for labeling
+                        feature_names = vectorizer.get_feature_names_out()
+                        
+                        # First approach: Use KMeans for clustering
+                        # Determine optimal number of clusters (3-8 based on corpus size)
+                        num_clusters = min(8, max(3, len(texts) // 20 + 2))
+                        logger.info(f"Creating {num_clusters} topic clusters via KMeans")
+                        
+                        # Apply KMeans clustering
+                        kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+                        clusters = kmeans.fit_predict(X)
+                        
+                        # Get top terms per cluster to use as topic names
+                        cluster_topics = {}
+                        for i in range(num_clusters):
+                            # Find documents in this cluster
+                            cluster_docs = [j for j, c in enumerate(clusters) if c == i]
+                            
+                            if cluster_docs:  # Ensure cluster has documents
+                                # Get mean TF-IDF vector for this cluster
+                                centroid = kmeans.cluster_centers_[i]
+                                # Get top terms for this cluster
+                                top_indices = np.argsort(centroid)[-5:][::-1]  # Top 5 terms in descending order
+                                top_terms = [feature_names[idx] for idx in top_indices]
+                                
+                                # Create a meaningful topic name using top terms
+                                topic_name = f"topic-{i+1}-{top_terms[0]}"
+                                cluster_topics[i] = topic_name
+                                
+                                # Log the topic's characteristic terms
+                                logger.info(f"Cluster {i+1} ({len(cluster_docs)} docs): {', '.join(top_terms[:3])}")
+                        
+                        # Create topic collections from clusters
+                        for i, doc in enumerate(documents):
+                            if i < len(clusters):  # Make sure we have a cluster assignment
+                                cluster_id = clusters[i]
+                                topic_name = cluster_topics.get(cluster_id, f"topic-{cluster_id+1}")
+                                
+                                # Add to appropriate topic collection
+                                if topic_name not in topic_docs:
+                                    topic_docs[topic_name] = []
+                                topic_docs[topic_name].append(doc)
+                        
+                        # Second approach (if topics still limited): Try topic modeling with LDA
+                        if len(topic_docs) <= 2 and len(texts) >= 30:
+                            logger.info("Trying LDA topic modeling for additional topics")
+                            
+                            # Use LDA as an alternative approach
+                            lda = LatentDirichletAllocation(
+                                n_components=min(5, len(texts) // 10), 
+                                random_state=42
+                            )
+                            lda.fit(X)
+                            
+                            # Get top terms for each topic
+                            for topic_idx, topic in enumerate(lda.components_):
+                                top_indices = topic.argsort()[:-6:-1]  # Top 5 terms
+                                top_terms = [feature_names[i] for i in top_indices]
+                                
+                                # Create topic name
+                                topic_name = f"lda-topic-{topic_idx+1}-{top_terms[0]}"
+                                logger.info(f"LDA Topic {topic_idx+1}: {', '.join(top_terms[:3])}")
+                                
+                                # Get documents most associated with this topic
+                                topic_distributions = lda.transform(X)
+                                # Get indices of documents where this topic has highest probability
+                                doc_indices = np.argsort(topic_distributions[:, topic_idx])[-10:]  # Top 10 docs
+                                
+                                # Only create this topic if it's sufficiently distinct and has documents
+                                if len(doc_indices) > 0:
+                                    # Create a topic collection if it doesn't exist
+                                    if topic_name not in topic_docs:
+                                        topic_docs[topic_name] = []
+                                        
+                                    # Add documents to this topic (without removing from other topics)
+                                    for doc_idx in doc_indices:
+                                        if doc_idx < len(documents):
+                                            # Check topic relevance score - only include if high probability
+                                            topic_score = topic_distributions[doc_idx, topic_idx]
+                                            if topic_score > 0.2:  # Document must have at least 20% relevance to this topic
+                                                topic_docs[topic_name].append(documents[doc_idx])
+                
+                except Exception as cluster_err:
+                    logger.error(f"Error in automatic topic extraction: {cluster_err}", exc_info=True)
+                    # Original topics are already in topic_docs, so they'll still be used
             
             # Log topic distribution
             logger.info(f"Found {len(topic_docs)} topics with document counts:")
@@ -521,19 +690,23 @@ class VectorStoreManager:
             results = {}
             for topic, docs in topic_docs.items():
                 store_name = f"topic_{topic}"
+                
+                # Skip empty topics
+                if not docs:
+                    continue
+                    
                 success = await self.create_or_update_store(
                     store_name=store_name,
                     documents=docs,
                     metadata={"topic": topic},
                     update_stats=True  # Ensure stats are updated
-                    # No need to pass group_id anymore
                 )
                 results[topic] = success
                 
             return results
             
         except Exception as e:
-            logger.error(f"Error creating topic stores: {e}")
+            logger.error(f"Error creating topic stores: {e}", exc_info=True)
             return {}
 
     async def search(self, 
@@ -640,32 +813,77 @@ class VectorStoreManager:
             # Get the store path
             store_path = self._get_store_path(store_name)
             if not (store_path / "index.faiss").exists():
+                logger.warning(f"No index.faiss file found at {store_path}")
                 return []
                 
             # Load vectors and documents
             import faiss
             index = faiss.read_index(str(store_path / "index.faiss"))
             
+            if not (store_path / "documents.json").exists():
+                logger.warning(f"No documents.json file found at {store_path}")
+                return []
+                
             with open(store_path / "documents.json", "r") as f:
                 documents = json.load(f)
             
+            if not documents:
+                logger.warning(f"No documents found in {store_path / 'documents.json'}")
+                return []
+                
+            # Log details for debugging
+            logger.info(f"Found {len(documents)} documents in {store_name}")
+            logger.info(f"Index has dimension {index.d} and {index.ntotal} vectors")
+            
             # Perform clustering
             n_clusters = min(num_chunks, len(documents))
+            if n_clusters < 1:
+                logger.warning(f"Not enough documents for clustering in {store_name}")
+                return []
+                
             kmeans = faiss.Kmeans(index.d, n_clusters)
-            vectors = faiss.vector_to_array(index).reshape(-1, index.d)
-            kmeans.train(vectors)
-            
-            # Get nearest documents to centroids
-            _, I = index.search(kmeans.centroids, 1)
-            
-            return [
-                Document(
-                    page_content=documents[i]["content"],
-                    metadata=documents[i]["metadata"]
-                )
-                for i in I.ravel()
-            ]
+            try:
+                vectors = faiss.vector_to_array(index).reshape(-1, index.d)
+                # Only proceed if we have vectors
+                if vectors.shape[0] == 0:
+                    logger.warning(f"No vectors found in {store_name} index")
+                    return []
+                    
+                logger.info(f"Training K-means with {vectors.shape[0]} vectors")
+                kmeans.train(vectors)
+                
+                # Get nearest documents to centroids
+                _, I = index.search(kmeans.centroids, 1)
+                
+                result_docs = []
+                for idx in I.ravel():
+                    # Make sure the index is valid
+                    if idx < len(documents):
+                        result_docs.append(Document(
+                            page_content=documents[idx]["content"],
+                            metadata=documents[idx]["metadata"]
+                        ))
+                    else:
+                        logger.warning(f"Invalid document index: {idx} (max: {len(documents)-1})")
+                
+                logger.info(f"Returning {len(result_docs)} representative documents")
+                return result_docs
+            except Exception as cluster_err:
+                logger.error(f"Error during clustering: {cluster_err}")
+                
+                # Fallback: if clustering fails, just return a random sample
+                import random
+                sample_size = min(num_chunks, len(documents))
+                sample_indices = random.sample(range(len(documents)), sample_size)
+                
+                return [
+                    Document(
+                        page_content=documents[i]["content"],
+                        metadata=documents[i]["metadata"]
+                    )
+                    for i in sample_indices
+                ]
             
         except Exception as e:
-            logger.error(f"Error getting representative chunks: {e}")
+            logger.error(f"Error getting representative chunks: {e}", exc_info=True)
             return []

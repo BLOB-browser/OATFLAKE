@@ -204,6 +204,18 @@ class ContentStorageService:
                 "content_type": "enriched_batch",
             }
             
+            # Get resource tags if they exist
+            if batch_metadata and "tags" in batch_metadata:
+                tags = batch_metadata["tags"]
+                # Copy tags to topics field for topic store creation
+                if tags:
+                    metadata["tags"] = tags
+                    # Also add topics field for topic store creation
+                    if isinstance(tags, str):
+                        metadata["topics"] = tags.split(",")
+                    else:
+                        metadata["topics"] = tags
+            
             # Add any additional batch metadata
             if batch_metadata:
                 metadata.update(batch_metadata)
@@ -315,6 +327,29 @@ class ContentStorageService:
                 "processed_at": datetime.now().isoformat(),
                 "content_type": "enriched"
             }
+            
+            # Try to find resource tags from the definitions or projects metadata
+            tags = None
+            for definition in definitions[:1]:  # Check first definition
+                if isinstance(definition, dict) and "resource_tags" in definition:
+                    tags = definition.get("resource_tags")
+                    break
+                    
+            # If we still don't have tags, look at projects
+            if not tags and projects:
+                for project in projects[:1]:  # Check first project
+                    if isinstance(project, dict) and "resource_tags" in project:
+                        tags = project.get("resource_tags")
+                        break
+            
+            # Add tags to metadata for topic store creation
+            if tags:
+                metadata["tags"] = tags
+                # Also add topics field for topic store creation  
+                if isinstance(tags, str):
+                    metadata["topics"] = tags.split(",")
+                else:
+                    metadata["topics"] = tags
             
             # Create document
             document = Document(

@@ -468,6 +468,10 @@ class SingleResourceProcessor:
                                 "methods_count": len(all_methods)
                             }
                             
+                            # Add tags from the resource for topic store creation
+                            if 'tags' in resource and resource['tags']:
+                                batch_metadata["tags"] = resource['tags']
+                            
                             # Store content batch - this just stores it for later, no vector generation now
                             self.content_storage.store_content_batch(
                                 batch_title, resource_url, batch_text,
@@ -492,6 +496,14 @@ class SingleResourceProcessor:
                 try:
                     combined_text = self.temp_storage.read_from_file(temp_path)
                     if combined_text:
+                        # Add resource tags to definitions metadata for storage
+                        if 'tags' in resource and resource['tags']:
+                            # Add tags to first definition metadata
+                            for definition in all_definitions:
+                                if isinstance(definition, dict):
+                                    definition["resource_tags"] = resource['tags']
+                                    break
+                                    
                         self.content_storage.store_content_with_analysis(
                             resource_title, resource_url, combined_text,
                             all_definitions, all_projects, all_methods

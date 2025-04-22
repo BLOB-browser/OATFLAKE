@@ -49,6 +49,7 @@ async def rebuild_indexes(data_path):
     try:
         start_time = time.time()
         
+        # First rebuild all existing stores
         if use_new_modules:
             logger.info("Using new modular architecture for rebuilding")
             faiss_builder = FAISSBuilder(data_path)
@@ -66,6 +67,49 @@ async def rebuild_indexes(data_path):
             # Show individual store stats
             for store_name, doc_count in result.get('document_counts', {}).items():
                 logger.info(f"  - {store_name}: {doc_count} documents")
+            
+            # Check if we need to generate topic stores
+            # Count how many topic stores were rebuilt
+            topic_stores = [store for store in result.get('stores_rebuilt', []) if store.startswith("topic_")]
+            
+            if len(topic_stores) < 3:
+                logger.info(f"Few topic stores created ({len(topic_stores)}), attempting to generate topic stores")
+                
+                # Import vector store manager for topic store generation
+                from scripts.storage.vector_store_manager import VectorStoreManager
+                
+                # Initialize with the data path
+                vector_store_manager = VectorStoreManager(base_path=data_path)
+                
+                # Check if content_store exists
+                stores = vector_store_manager.list_stores()
+                if "content_store" in [store.get("name") for store in stores]:
+                    logger.info("Content store exists, getting representative docs for topics")
+                    
+                    # Get representative chunks to create topic stores
+                    rep_docs = await vector_store_manager.get_representative_chunks(
+                        store_name="content_store", 
+                        num_chunks=100
+                    )
+                    
+                    if rep_docs:
+                        logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
+                        
+                        # Try to create topic stores from these docs
+                        topic_results = await vector_store_manager.create_topic_stores(rep_docs)
+                        
+                        if topic_results:
+                            logger.info(f"Created {len(topic_results)} additional topic stores")
+                            # Log the created topic stores
+                            for topic, success in topic_results.items():
+                                if success:
+                                    logger.info(f"  - Created topic store for: {topic}")
+                    else:
+                        logger.warning("No representative documents found for topic generation")
+                else:
+                    logger.warning("Content store not found, cannot generate topic stores")
+            else:
+                logger.info(f"Found {len(topic_stores)} topic stores, no need to generate more")
                 
             # Log completion time
             duration = time.time() - start_time
