@@ -49,6 +49,9 @@ async function handleLoginClick() {
         document.getElementById('mainContent').classList.remove('hidden');
         updateLoginStatus();
         
+        // Initialize slides
+        initializeSlides();
+        
         // Start status updates
         updateStatus();
         setInterval(updateStatus, 2000);
@@ -57,6 +60,46 @@ async function handleLoginClick() {
         console.error('Login error:', error);
         alert('Login failed: ' + error.message);
     }
+}
+
+// Initialize the slide content
+function initializeSlides() {
+    console.log('Initializing application slides');
+    
+    // Initialize the search view
+    const searchContainer = document.getElementById('searchContainer');
+    if (searchContainer && typeof SearchSlide !== 'undefined') {
+        console.log('Initializing search slide');
+        SearchSlide.render(searchContainer);
+    } else {
+        console.error('Could not initialize search slide');
+    }
+    
+    // Initialize the data view
+    const dataContainer = document.getElementById('dataContainer');
+    if (dataContainer && typeof DataSlide !== 'undefined') {
+        console.log('Initializing data slide');
+        DataSlide.render(dataContainer);
+    } else {
+        console.error('Could not initialize data slide');
+    }
+    
+    // Initialize the settings view
+    const settingsContainer = document.getElementById('settingsContainer');
+    if (settingsContainer && typeof SettingsSlide !== 'undefined') {
+        console.log('Initializing settings slide');
+        SettingsSlide.render(settingsContainer);
+    } else {
+        console.error('Could not initialize settings slide');
+    }
+    
+    // Initialize view switch after slides are ready
+    setTimeout(() => {
+        if (window.viewSwitch) {
+            console.log('Refreshing view switch after slide initialization');
+            window.viewSwitch.switchView(window.viewSwitch.activeView);
+        }
+    }, 200);
 }
 
 // Add updateLoginStatus function
@@ -70,16 +113,17 @@ function updateLoginStatus() {
 
     console.log('Updating login status:', { token: !!token, email });
 
+    // Add null checks before trying to modify elements
     if (token && email) {
-        loginStatus.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-green-500/10 text-green-500">Logged in as ${email}</span>`;
-        logoutButton.classList.remove('hidden');
-        loginSection.classList.add('hidden');
-        mainContent.classList.remove('hidden');
+        if (loginStatus) loginStatus.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-green-500/10 text-green-500">Logged in as ${email}</span>`;
+        if (logoutButton) logoutButton.classList.remove('hidden');
+        if (loginSection) loginSection.classList.add('hidden');
+        if (mainContent) mainContent.classList.remove('hidden');
     } else {
-        loginStatus.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-red-500/10 text-red-500">Not logged in</span>`;
-        logoutButton.classList.add('hidden');
-        loginSection.classList.remove('hidden');
-        mainContent.classList.add('hidden');
+        if (loginStatus) loginStatus.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-red-500/10 text-red-500">Not logged in</span>`;
+        if (logoutButton) logoutButton.classList.add('hidden');
+        if (loginSection) loginSection.classList.remove('hidden');
+        if (mainContent) mainContent.classList.add('hidden');
     }
 }
 
@@ -137,6 +181,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         authToken = token;
         document.getElementById('loginSection').classList.add('hidden');
         document.getElementById('mainContent').classList.remove('hidden');
+        
+        // Initialize slides for returning users
+        initializeSlides();
     }
     
     // Update login status immediately
@@ -184,10 +231,16 @@ async function updateStatus() {
         });
 
         if (data.ngrok_url) {
-            document.getElementById('domainInput').value = data.ngrok_url;
+            const domainInput = document.getElementById('domainInput');
+            if (domainInput) {
+                domainInput.value = data.ngrok_url;
+            }
         }
         if (data.data_path) {
-            document.getElementById('dataPath').value = data.data_path;
+            const dataPathInput = document.getElementById('dataPath');
+            if (dataPathInput) {
+                dataPathInput.value = data.data_path;
+            }
         }
     } catch (error) {
         console.error('Status update error:', error);
@@ -211,6 +264,8 @@ function updateStatusElement(type, status, extraData = {}) {
 
     const icon = element.querySelector('img');
     const text = element.querySelector('span');
+    if (!text) return; // Don't proceed if there's no text element
+    
     const isActive = status === 'running' || status === 'connected';
     
     // Special handling for group status
@@ -232,17 +287,19 @@ function updateStatusElement(type, status, extraData = {}) {
                 };
                 
                 icon.src = imageUrl;
-                icon.style.filter = 'none';  // Remove any filters
+                if (icon.style) icon.style.filter = 'none';  // Remove any filters
             }
             text.innerHTML = `Group: <span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-green-500/10 text-green-500">${extraData.group_name || status}</span>`;
         } else {
-            icon.src = '/static/icons/GROUPLOGO.png';
-            icon.style.filter = 'none';  // Remove any filters
+            if (icon) {
+                icon.src = '/static/icons/GROUPLOGO.png';
+                if (icon.style) icon.style.filter = 'none';  // Remove any filters
+            }
             text.innerHTML = `Group: <span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-red-500/10 text-red-500">Not Connected</span>`;
         }
     } else {
         // Reset any existing filters
-        if (icon) {
+        if (icon && icon.style) {
             icon.style.filter = 'none';
         }
         
