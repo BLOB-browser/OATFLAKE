@@ -282,6 +282,34 @@ class ResourceBatchProcessor:
                 logger.info("Vector generation needed but explicitly skipped - will be handled at a higher level")
                 stats["vector_generation_skipped"] = True
             
+            # Check if we should start processing a new batch (if not cancelled)
+            if not self.check_cancellation():
+                # Read resources CSV file again to check for more unprocessed resources
+                try:
+                    new_df = pd.read_csv(csv_path)
+                    unprocessed_mask = ~new_df['analysis_completed'].fillna(False).astype(bool)
+                    unprocessed_count = unprocessed_mask.sum()
+                    
+                    if unprocessed_count > 0:
+                        logger.info(f"Found {unprocessed_count} more resources that need processing, starting new batch automatically")
+                        # Recursively call process_resources to start a new batch without waiting for scheduler
+                        stats["continued_with_new_batch"] = True
+                        next_batch_stats = self.process_resources(
+                            csv_path=csv_path, 
+                            max_resources=max_resources,
+                            force_reanalysis=force_reanalysis,
+                            skip_vector_generation=skip_vector_generation,
+                            process_by_level=process_by_level,
+                            max_depth=max_depth,
+                            process_cross_resource=process_cross_resource,
+                            current_level=current_level
+                        )
+                        stats["next_batch_stats"] = next_batch_stats
+                    else:
+                        logger.info("No more resources need processing")
+                except Exception as e:
+                    logger.error(f"Error checking for more resources to process: {e}")
+            
             return stats
             
         except Exception as e:
