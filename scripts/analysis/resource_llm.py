@@ -405,9 +405,40 @@ class ResourceLLM:
         
         # Try direct parsing first
         try:
+            # Check if text is empty or just whitespace
+            if not text or text.isspace():
+                logger.warning("Empty or whitespace-only text provided for JSON parsing")
+                return None
+            
+            # Check for single quotes instead of double quotes (common LLM mistake)
+            if "'" in text and '"' not in text:
+                # Replace single quotes with double quotes for JSON compatibility
+                fixed_text = text.replace("'", '"')
+                try:
+                    return json.loads(fixed_text)
+                except json.JSONDecodeError:
+                    pass  # Continue to next attempt
+                    
+            # Try standard parsing
             return json.loads(text)
         except json.JSONDecodeError as e:
             logger.warning(f"Initial JSON parsing failed: {e}")
+            # If error is "Expecting value", the response might start with whitespace or invalid characters
+            if "Expecting value" in str(e):
+                # Try to find where the actual JSON content begins
+                try:
+                    # Find the first occurrence of '{' or '['
+                    start_idx = min(
+                        text.find('{') if '{' in text else len(text),
+                        text.find('[') if '[' in text else len(text)
+                    )
+                    if start_idx < len(text):
+                        # Extract from this position and try parsing again
+                        trimmed_text = text[start_idx:]
+                        logger.debug(f"Trying to parse from position {start_idx}: {trimmed_text[:50]}...")
+                        return json.loads(trimmed_text)
+                except Exception as trim_error:
+                    logger.warning(f"Failed to parse after trimming: {trim_error}")
         
         # Try to find JSON array/object boundaries with regex
         import re

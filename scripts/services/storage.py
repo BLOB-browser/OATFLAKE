@@ -659,7 +659,7 @@ class DataSaver:
             logger.error(f"Error updating storage path: {e}")
             raise
 
-    def save_resources(self, resources: list) -> bool:
+    def save_resources(self, resources: list, csv_path: str = None) -> bool:
         """Save resources to CSV file"""
         try:
             if not resources:
@@ -667,7 +667,10 @@ class DataSaver:
                 return False
 
             # Get the resources file path
-            file_path = Path(BACKEND_CONFIG.get('data_path', './data')) / "resources.csv"
+            if csv_path is None:
+                file_path = Path(BACKEND_CONFIG.get('data_path', './data')) / "resources.csv"
+            else:
+                file_path = Path(csv_path)
 
             # If file doesn't exist, create it with headers
             if not file_path.exists():

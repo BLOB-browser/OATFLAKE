@@ -156,6 +156,7 @@ class SingleResourceProcessor:
             if not main_html:
                 logger.error(f"[{resource_id}] Failed to extract main HTML content")
                 result["error"] = "Failed to extract main HTML content"
+                # Don't mark URL as processed since extraction failed
                 return result
             
             headers = page_data.get("headers", {})
@@ -277,7 +278,7 @@ class SingleResourceProcessor:
                 "resource_id": resource_id,
                 "page_type": "main"
             }
-            self.temp_storage.append_to_temp_file(temp_path, json.dumps(content_obj))
+            self.temp_storage.append_to_file(temp_path, json.dumps(content_obj) + "\n")
             
             # Call the callback if provided, e.g., for incremental vector generation
             if on_subpage_processed:
@@ -318,7 +319,14 @@ class SingleResourceProcessor:
                         break
                         
                     try:
+                        # Check if the additional URL has already been processed
+                        if self.content_fetcher.url_storage.url_is_processed(additional_url):
+                            logger.info(f"[{resource_id}] Subpage URL {additional_url} already processed, skipping")
+                            continue
+                            
                         logger.info(f"[{resource_id}] Fetching page {idx+1}/{len(additional_urls)}: {additional_url}")
+                        # Log the exact URL being fetched
+                        logger.info(f"[{resource_id}] Fetching subpage using fetch_additional_page method: {additional_url}")
                         success, html_content = self.content_fetcher.fetch_additional_page(additional_url, headers)
                         
                         if not success or not html_content:
@@ -416,7 +424,22 @@ class SingleResourceProcessor:
                                     "resource_id": resource_id,
                                     "page_type": "subpage"
                                 }
-                                self.temp_storage.append_to_temp_file(temp_path, json.dumps(content_obj))
+                                self.temp_storage.append_to_file(temp_path, json.dumps(content_obj) + "\n")
+                                
+                                # Only mark URL as processed if we actually extracted meaningful data
+                                # This ensures URLs that didn't yield useful content will be retried
+                                if page_definitions or page_projects or page_methods:
+                                    # Determine depth level based on which level this URL was from
+                                    subpage_depth = 1  # Default to level 1
+                                    for level, urls in urls_by_level.items():
+                                        if page_url in urls:
+                                            subpage_depth = int(level)
+                                            break
+                                            
+                                    logger.info(f"[{resource_id}] Marking subpage URL as processed at depth {subpage_depth}: {page_url}")
+                                    self.content_fetcher.mark_url_as_processed(page_url, depth=subpage_depth, origin=resource_url)
+                                else:
+                                    logger.info(f"[{resource_id}] No data extracted from {page_url}, not marking as processed yet")
                             
                             # Call the callback after each page if provided
                             if on_subpage_processed:
@@ -425,6 +448,14 @@ class SingleResourceProcessor:
                         except Exception as e:
                             logger.error(f"[{resource_id}] Error processing page {page_key}: {e}")
                             continue
+            
+            # After all processing is complete, mark the URL as processed
+            # Only mark URL as processed if we actually extracted meaningful data
+            if main_definitions or main_projects or main_methods:
+                logger.info(f"[{resource_id}] Marking main URL as processed after successful analysis: {resource_url}")
+                self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
+            else:
+                logger.info(f"[{resource_id}] No data extracted from main URL, not marking as processed yet")
             
             # After all processing is complete, mark the resource as analyzed in the CSV
             if idx is not None and csv_path is not None:
@@ -493,19 +524,54 @@ class SingleResourceProcessor:
             resource_slug = resource_title.replace(" ", "_").lower()[:30]
             temp_path = self.temp_storage.create_temp_file(prefix=f"{resource_slug}_level{depth}")
             
-            # Fetch just this specific URL
-            logger.info(f"[{resource_id}] Fetching level {depth} URL: {url}")
+            # When processing a higher level URL, we want to also discover URLs at that level
+            # This is important for level 2+ URLs where we need to find new URLs at that depth
+            if depth > 1:
+                logger.info(f"[{resource_id}] Processing level {depth} URL: {url} with discovery enabled")
+                
+                # Pass current_level explicitly so this URL discovers links at its own level
+                success, pages_dict = self.content_fetcher.fetch_content(
+                    url=url,
+                    max_depth=depth,  # Match the max_depth to this URL's depth
+                    process_by_level=True,
+                    batch_size=1,  # Just process this single URL
+                    current_level=depth  # Explicitly tell it what level we're processing
+                )
+                
+                if not success:
+                    logger.warning(f"[{resource_id}] Failed to fetch/discover content from {url}")
+                    result["error"] = f"Failed to fetch content: {pages_dict.get('error', 'Unknown error')}"
+                    return result
+                    
+                # Extract the HTML content for this URL
+                html_content = pages_dict.get('main', '')
+                
+                if not html_content:
+                    logger.error(f"[{resource_id}] Failed to extract HTML content from {url}")
+                    result["error"] = "Failed to extract HTML content"
+                    return result
+                    
+                # Create headers from the returned data
+                headers = pages_dict.get('headers', {})
+                if not headers:
+                    # Create headers using WebFetcher if not in returned data
+                    headers = self.content_fetcher.web_fetcher.create_headers()
+            else:
+                # For level 1 URLs, just fetch the content directly
+                logger.info(f"[{resource_id}] Fetching level {depth} URL: {url}")
+                
+                # Create headers using WebFetcher
+                headers = self.content_fetcher.web_fetcher.create_headers()
+                
+                # Fetch the page
+                success, html_content = self.content_fetcher.fetch_additional_page(url, headers)
+                
+                if not success or not html_content:
+                    logger.warning(f"[{resource_id}] Failed to fetch {url}")
+                    result["error"] = "Failed to fetch URL"
+                    return result
             
-            # Create headers using WebFetcher
-            headers = self.content_fetcher.web_fetcher.create_headers()
-            
-            # Fetch the page
-            success, html_content = self.content_fetcher.fetch_additional_page(url, headers)
-            
-            if not success or not html_content:
-                logger.warning(f"[{resource_id}] Failed to fetch {url}, skipping")
-                result["error"] = "Failed to fetch URL"
-                return result
+            # Remove redundant check since we now do this in the if/else blocks
             
             # Extract text content from HTML
             page_text = extract_text(html_content)
@@ -574,16 +640,15 @@ class SingleResourceProcessor:
                         "resource_id": resource_id,
                         "page_type": f"level{depth}"
                     }
-                    self.temp_storage.append_to_temp_file(temp_path, json.dumps(content_obj))
+                    self.temp_storage.append_to_file(temp_path, json.dumps(content_obj) + "\n")
                 
-                # Mark the URL as processed - use URL storage
-                from scripts.analysis.url_storage import URLStorageManager
-                from utils.config import get_data_path
-                processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
-                url_storage = URLStorageManager(processed_urls_file)
-                
-                # Mark as processed
-                url_storage.save_processed_url(url, depth=depth, origin=origin_url)
+                # Mark the URL as processed using ContentFetcher's method
+                # Only mark as processed if we actually extracted meaningful data
+                if page_definitions or page_projects or page_methods:
+                    logger.info(f"[{resource_id}] Marking URL as processed after successful analysis: {url}")
+                    self.content_fetcher.mark_url_as_processed(url, depth=depth, origin=origin_url)
+                else:
+                    logger.info(f"[{resource_id}] No data extracted from URL, not marking as processed yet")
                 
                 # Mark the operation as successful
                 result["success"] = True

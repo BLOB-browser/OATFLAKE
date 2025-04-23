@@ -365,18 +365,20 @@ class ContentFetcher:
                             # Mark as visited to avoid re-processing
                             visited_urls.add(next_url)
                             
-                            # Fetch the page
-                            success, html_content = self.web_fetcher.fetch_page(
-                                next_url,
-                                headers,
-                                custom_timeout=60  # Increased timeout for deeper pages
-                            )
+                            # We don't need to fetch the full content during discovery
+                            # Just add the URL to the pending queue for later processing
+                            # This will be processed in the main content extraction phase
+                            logger.info(f"Adding URL to discovery queue (level {current_level+1}): {next_url}")
                             
-                            if not success:
-                                continue
-                                
-                            # Parse the HTML
-                            next_soup = BeautifulSoup(html_content, 'html.parser')
+                            # When we're not fetching content during discovery phase, we still need to 
+                            # provide some structure for pages_to_process to maintain level tracking
+                            
+                            # Create a minimal BeautifulSoup object that won't cause errors if accessed
+                            # This avoids issues with None values in the _discover_urls_breadth_first method
+                            next_soup = BeautifulSoup("<html><body></body></html>", 'html.parser')
+                            
+                            # Skip the actual content fetching and parsing during discovery
+                            # This significantly reduces network traffic and processing time
                             
                             # Add to the next level's pages to process
                             pages_to_process[current_level + 1].append((next_soup, next_url))
@@ -408,7 +410,8 @@ class ContentFetcher:
         # This method is kept for backward compatibility and for direct page fetching without crawling
         return self.web_fetcher.fetch_page(url, headers, timeout)
     
-    def fetch_content(self, url: str, max_depth: int = 4, process_by_level: bool = True, batch_size: int = 50) -> Tuple[bool, Dict[str, str]]:
+    def fetch_content(self, url: str, max_depth: int = 4, process_by_level: bool = True, 
+                     batch_size: int = 50, current_level: int = None) -> Tuple[bool, Dict[str, str]]:
         """
         Safely retrieves website content with error handling.
         Fetches main page and all discovered related pages up to the specified depth.
@@ -418,6 +421,7 @@ class ContentFetcher:
             max_depth: Maximum depth level to crawl (can be set to any value, e.g. 10 for deep crawling)
             process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
             batch_size: Maximum number of URLs to process at each level to limit memory usage
+            current_level: If specified, only discover URLs at this specific level (for level-based processing)
             
         Returns:
             Tuple of (success_flag, dict_of_pages)
@@ -429,9 +433,29 @@ class ContentFetcher:
                 logger.info(f"Skipping already processed URL: {url}")
                 return True, {"main": "", "error": "URL already processed"}
 
-            # Get the main page and extract links to other pages with specified depth
-            # The breadth_first parameter is now controlled by process_by_level
-            success, main_data = self.get_main_page_with_links(url, max_depth=max_depth, breadth_first=process_by_level, discover_only_level=1)
+            # Get the main page and extract links based on the current processing level
+            # When current_level is specified, we're in level-based processing mode
+            
+            # Determine what level to discover URLs for
+            if current_level is not None:
+                # Only discover URLs at the specific level requested
+                discover_only_level = current_level
+                # For level discovery, we need current_level depth
+                current_max_depth = current_level
+                logger.info(f"Level-based processing: Discovering ONLY level {discover_only_level} URLs")
+            else:
+                # Default to level 1 for initial processing
+                discover_only_level = 1
+                current_max_depth = 1
+                logger.info(f"Initial processing: Discovering ONLY level {discover_only_level} URLs")
+            
+            # Get the main page and discover only the exact level we want
+            success, main_data = self.get_main_page_with_links(
+                url, 
+                max_depth=current_max_depth,  # Limited to exactly the current level
+                breadth_first=True,  # Always use breadth-first to ensure level discipline
+                discover_only_level=discover_only_level  # Only discover this exact level
+            )
 
             if not success or "error" in main_data:
                 return False, {"error": main_data.get("error", "Unknown error fetching main page")}
@@ -444,9 +468,9 @@ class ContentFetcher:
             visited_urls = main_data["visited_urls"]
             urls_by_level = main_data.get("urls_by_level", {})
             
-            # Save the main URL as processed (depth 0, no origin) immediately
-            self.url_storage.save_processed_url(url, depth=0, origin="")
-            self.urls_processed_since_last_build += 1
+            # Don't mark the URL as processed yet - we'll do this after successful extraction
+            # The URL will only be marked as processed after the entire analysis is complete
+            # This prevents URLs from being skipped if extraction fails
             
             if process_by_level:
                 # Modified to only process level 1 URLs and save higher levels to pending queue
@@ -485,11 +509,11 @@ class ContentFetcher:
                             pages_dict[section_name] = html_content
                             visited_urls.add(additional_url)
                             
-                            # Save the processed subpage URL with its level and origin information
-                            self.url_storage.save_processed_url(additional_url, depth=current_level, origin=url)
+                            # Don't mark URL as processed yet - we'll do this after successful analysis
+                            # We're only tracking it for vector generation counts
                             self.urls_processed_since_last_build += 1
                     
-                    logger.info(f"Completed processing level 1 URLs for {url}")
+                    logger.info(f"Completed fetching HTML content for level 1 URLs from {url} - ready for analysis")
                 
                 # Save all higher level URLs to pending for later cross-resource processing
                 for future_level in range(2, max_depth + 1):
@@ -536,8 +560,9 @@ class ContentFetcher:
                                 depth = int(level)
                                 break
                         
-                        # Save the processed subpage URL with depth and origin information
-                        self.url_storage.save_processed_url(additional_url, depth=depth, origin=url)
+                        # Don't mark the subpage URL as processed yet
+                        # URLs will be marked as processed after successful analysis by the resource processor
+                        # Just track it for vector generation counts
                         self.urls_processed_since_last_build += 1
 
             # Return all pages as a dictionary
