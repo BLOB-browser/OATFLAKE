@@ -179,58 +179,71 @@ class SingleResourceProcessor:
             # Extract LLM results from main page text
             try:
                 # STEP 2: Extract definition and content classification
-                main_definitions = self.extraction_utils.extract_definitions(
-                    title=resource_title, 
-                    url=resource_url, 
-                    content=main_page_text
-                )
-                
-                # Log definition extraction results
-                definitions_found = len(main_definitions)
-                logger.info(f"[{resource_id}] Extracted {definitions_found} definition(s) from main page")
+                try:
+                    main_definitions = self.extraction_utils.extract_definitions(
+                        title=resource_title, 
+                        url=resource_url, 
+                        content=main_page_text
+                    )
+                    
+                    # Log definition extraction results
+                    definitions_found = len(main_definitions)
+                    logger.info(f"[{resource_id}] Extracted {definitions_found} definition(s) from main page")
+                    
+                    # Save definitions immediately after extraction
+                    if main_definitions:
+                        logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_definitions)} definitions to CSV immediately")
+                        self.data_saver.save_definitions(main_definitions)
+                        self.vector_generation_needed = True
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error extracting or saving definitions: {e}")
+                    main_definitions = []
                 
                 # STEP 3: Extract project information
-                main_projects = self.extraction_utils.identify_projects(
-                    title=resource_title, 
-                    url=resource_url, 
-                    content=main_page_text
-                )
-                
-                # Log project extraction results
-                projects_found = len(main_projects)
-                logger.info(f"[{resource_id}] Identified {projects_found} project(s) from main page")
-                
-                # STEP 4: Extract methods
-                main_methods = self.method_llm.extract_methods(
-                    title=resource_title, 
-                    url=resource_url, 
-                    content=main_page_text
-                )
-                
-                # Log method extraction results
-                methods_found = len(main_methods)
-                logger.info(f"[{resource_id}] Extracted {methods_found} method(s) from main page")
-                
-                # STEP 5: Save extracted results to storage
-                # Save to vector store
-                if main_definitions or main_projects or main_methods:
-                    self.vector_generation_needed = True
+                try:
+                    main_projects = self.extraction_utils.identify_projects(
+                        title=resource_title, 
+                        url=resource_url, 
+                        content=main_page_text
+                    )
                     
-                    # Save to CSV using DataSaver with detailed logging
-                    logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_definitions)} definitions to CSV")
-                    self.data_saver.save_definitions(main_definitions)
+                    # Log project extraction results
+                    projects_found = len(main_projects)
+                    logger.info(f"[{resource_id}] Identified {projects_found} project(s) from main page")
                     
-                    logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_projects)} projects to CSV")
+                    # Save projects immediately after extraction
                     if main_projects:
+                        logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_projects)} projects to CSV immediately")
                         for idx, proj in enumerate(main_projects):
                             logger.info(f"[{resource_id}] SAVING PROJECT #{idx+1}: {proj.get('title', 'Untitled')} with tags: {proj.get('tags', [])}")
-                    self.data_saver.save_projects(main_projects)
+                        self.data_saver.save_projects(main_projects)
+                        self.vector_generation_needed = True
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error extracting or saving projects: {e}")
+                    main_projects = []
+                
+                # STEP 4: Extract methods
+                try:
+                    main_methods = self.method_llm.extract_methods(
+                        title=resource_title, 
+                        url=resource_url, 
+                        content=main_page_text
+                    )
                     
-                    logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_methods)} methods to CSV")
+                    # Log method extraction results
+                    methods_found = len(main_methods)
+                    logger.info(f"[{resource_id}] Extracted {methods_found} method(s) from main page")
+                    
+                    # Save methods immediately after extraction
                     if main_methods:
+                        logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_methods)} methods to CSV immediately")
                         for idx, method in enumerate(main_methods):
                             logger.info(f"[{resource_id}] SAVING METHOD #{idx+1}: {method.get('title', 'Untitled')} with {len(method.get('steps', []))} steps")
-                    self.data_saver.save_methods(main_methods)
+                        self.data_saver.save_methods(main_methods)
+                        self.vector_generation_needed = True
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error extracting or saving methods: {e}")
+                    main_methods = []
                 
                 # Check for cancellation before finalizing
                 if is_interrupt_requested():
