@@ -217,9 +217,9 @@ class SingleResourceProcessor:
                     self.vector_generation_needed = True
                     
                     # Save to CSV using DataSaver
-                    self.data_saver.save_definition(main_definitions)
-                    self.data_saver.save_project(main_projects)
-                    self.data_saver.save_method(main_methods)
+                    self.data_saver.save_definitions(main_definitions)
+                    self.data_saver.save_projects(main_projects)
+                    self.data_saver.save_methods(main_methods)
                 
                 # Check for cancellation before finalizing
                 if is_interrupt_requested():
@@ -368,9 +368,9 @@ class SingleResourceProcessor:
                                 self.vector_generation_needed = True
                                 
                                 # Save to CSV using DataSaver
-                                self.data_saver.save_definition(page_definitions)
-                                self.data_saver.save_project(page_projects)
-                                self.data_saver.save_method(page_methods)
+                                self.data_saver.save_definitions(page_definitions)
+                                self.data_saver.save_projects(page_projects)
+                                self.data_saver.save_methods(page_methods)
                                 
                                 # Cache the content to the temporary file for vector building later
                                 content_obj = {
@@ -515,9 +515,9 @@ class SingleResourceProcessor:
                     self.vector_generation_needed = True
                     
                     # Save to CSV using DataSaver
-                    self.data_saver.save_definition(page_definitions)
-                    self.data_saver.save_project(page_projects)
-                    self.data_saver.save_method(page_methods)
+                    self.data_saver.save_definitions(page_definitions)
+                    self.data_saver.save_projects(page_projects)
+                    self.data_saver.save_methods(page_methods)
                     
                     # Cache the content to the temporary file for vector building later
                     content_obj = {

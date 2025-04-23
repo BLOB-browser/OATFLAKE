@@ -256,61 +256,88 @@ class DataSaver:
             # Process projects, ensuring fields are properly formatted with universal structure
             processed_projects = []
             for p in projects:
-                p_copy = p.copy()
-                
-                # Add required universal fields with sensible defaults if missing
-                # 1. ID field - generate if missing
-                if 'id' not in p_copy:
-                    import uuid
-                    p_copy['id'] = str(uuid.uuid4())
-                
-                # 2. Content type
-                if 'content_type' not in p_copy:
-                    p_copy['content_type'] = 'project'
-                
-                # 3. Handle tags/fields conversion (for backward compatibility)
-                if 'tags' not in p_copy and 'fields' in p_copy:
-                    # Convert fields to tags for the new universal structure
-                    if isinstance(p_copy['fields'], list):
-                        p_copy['tags'] = p_copy['fields']
-                    elif isinstance(p_copy['fields'], str):
-                        # Try to parse JSON string if it's a string
-                        try:
-                            p_copy['tags'] = json.loads(p_copy['fields'])
-                        except:
-                            # If not valid JSON, treat as comma-separated string
-                            p_copy['tags'] = [tag.strip() for tag in p_copy['fields'].split(',')]
-                
-                # 4. Universal fields with defaults
-                if 'status' not in p_copy:
-                    p_copy['status'] = 'active'
-                if 'visibility' not in p_copy and 'privacy' in p_copy:
-                    # Convert privacy to visibility for backward compatibility
-                    p_copy['visibility'] = p_copy['privacy']
-                elif 'visibility' not in p_copy:
-                    p_copy['visibility'] = 'public'
+                try:
+                    p_copy = p.copy()
                     
-                if 'created_at' not in p_copy:
-                    p_copy['created_at'] = current_time
-                if 'last_updated_at' not in p_copy and 'modified_at' in p_copy:
-                    p_copy['last_updated_at'] = p_copy['modified_at']
-                elif 'last_updated_at' not in p_copy:
-                    p_copy['last_updated_at'] = current_time
-                
-                # 5. Analysis flag
-                if 'analysis_completed' not in p_copy:
-                    p_copy['analysis_completed'] = True  # Projects are typically created after analysis
-                
-                # 6. Creator defaults
-                if 'creator_id' not in p_copy:
-                    p_copy['creator_id'] = 'system'
-                
-                # 7. Convert lists to JSON strings for CSV storage
-                for key, value in p_copy.items():
-                    if isinstance(value, list):
-                        p_copy[key] = json.dumps(value)
-                
-                processed_projects.append(p_copy)
+                    # Debug information for project
+                    logger.debug(f"Processing project: {p_copy.get('title', 'Unnamed')}, tags: {p_copy.get('tags', [])}")
+                    
+                    # Add required universal fields with sensible defaults if missing
+                    # 1. ID field - generate if missing
+                    if 'id' not in p_copy:
+                        import uuid
+                        p_copy['id'] = str(uuid.uuid4())
+                    
+                    # 2. Content type
+                    if 'content_type' not in p_copy:
+                        p_copy['content_type'] = 'project'
+                    
+                    # 3. Handle tags/fields conversion (for backward compatibility)
+                    if 'tags' not in p_copy and 'fields' in p_copy:
+                        # Convert fields to tags for the new universal structure
+                        if isinstance(p_copy['fields'], list):
+                            p_copy['tags'] = p_copy['fields']
+                        elif isinstance(p_copy['fields'], str):
+                            # Try to parse JSON string if it's a string
+                            try:
+                                p_copy['tags'] = json.loads(p_copy['fields'])
+                            except Exception as tag_err:
+                                logger.warning(f"Error parsing fields JSON: {tag_err}, treating as comma-separated")
+                                # If not valid JSON, treat as comma-separated string
+                                p_copy['tags'] = [tag.strip() for tag in p_copy['fields'].split(',')]
+                    
+                    # Ensure tags exists with at least one value
+                    if 'tags' not in p_copy or not p_copy['tags']:
+                        p_copy['tags'] = ["project"]
+                        logger.debug(f"Added default 'project' tag to project '{p_copy.get('title', 'Unnamed')}'")
+                    
+                    # Make sure title and description are not empty
+                    if 'title' not in p_copy or not p_copy['title']:
+                        logger.warning(f"Project missing title, skipping: {p_copy}")
+                        continue
+                        
+                    if 'description' not in p_copy or not p_copy['description']:
+                        logger.warning(f"Project missing description, providing default for: {p_copy.get('title')}")
+                        p_copy['description'] = f"Project related to {p_copy.get('title')}"
+                    
+                    # 4. Universal fields with defaults
+                    if 'status' not in p_copy:
+                        p_copy['status'] = 'active'
+                    if 'visibility' not in p_copy and 'privacy' in p_copy:
+                        # Convert privacy to visibility for backward compatibility
+                        p_copy['visibility'] = p_copy['privacy']
+                    elif 'visibility' not in p_copy:
+                        p_copy['visibility'] = 'public'
+                        
+                    if 'created_at' not in p_copy:
+                        p_copy['created_at'] = current_time
+                    if 'last_updated_at' not in p_copy and 'modified_at' in p_copy:
+                        p_copy['last_updated_at'] = p_copy['modified_at']
+                    elif 'last_updated_at' not in p_copy:
+                        p_copy['last_updated_at'] = current_time
+                    
+                    # 5. Analysis flag
+                    if 'analysis_completed' not in p_copy:
+                        p_copy['analysis_completed'] = True  # Projects are typically created after analysis
+                    
+                    # 6. Creator defaults
+                    if 'creator_id' not in p_copy:
+                        p_copy['creator_id'] = 'system'
+                    
+                    # 7. Convert lists to JSON strings for CSV storage
+                    for key, value in p_copy.items():
+                        if isinstance(value, list):
+                            p_copy[key] = json.dumps(value)
+                    
+                    processed_projects.append(p_copy)
+                    logger.debug(f"Successfully processed project: {p_copy.get('title')}")
+                except Exception as e:
+                    logger.error(f"Error processing project: {e}")
+                    # Try to log some details about the problematic project
+                    try:
+                        logger.error(f"Project that caused error: title={p.get('title', 'unknown')}, has_tags={('tags' in p)}")
+                    except:
+                        pass
             
             df = pd.DataFrame(processed_projects)
             
@@ -379,42 +406,71 @@ class DataSaver:
         if csv_path is None:
             csv_path = os.path.join(self.data_folder, 'methods.csv')
         
+        logger.info(f"Saving {len(methods)} methods to {csv_path}")
+        
         try:
             # Process methods, ensuring steps and tags are properly formatted
             processed_methods = []
-            for m in methods:
-                m_copy = m.copy()
-                
-                # Handle description field mapping to usecase for storage
-                if 'description' in m_copy and 'usecase' not in m_copy:
-                    m_copy['usecase'] = m_copy['description']
-                
-                # Format steps as JSON if they're a list
-                if 'steps' in m_copy and isinstance(m_copy['steps'], list):
-                    m_copy['steps'] = json.dumps(m_copy['steps'])
-                
-                # Format tags as JSON if they're a list - make sure tags is always present
-                if 'tags' not in m_copy:
-                    m_copy['tags'] = []
-                
-                if isinstance(m_copy['tags'], list):
-                    m_copy['tags'] = json.dumps(m_copy['tags'])
-                
-                # Set default values required for the Method model
-                if 'group_id' not in m_copy:
-                    m_copy['group_id'] = 'default'
+            for idx, m in enumerate(methods):
+                try:
+                    m_copy = m.copy()
                     
-                if 'creator_id' not in m_copy:
-                    m_copy['creator_id'] = 'system'
+                    # Log method details for debugging
+                    logger.debug(f"Processing method #{idx+1}: title={m_copy.get('title', 'Unnamed')}, steps_count={len(m_copy.get('steps', []))} steps")
                     
-                if 'created_at' not in m_copy:
-                    m_copy['created_at'] = datetime.now().isoformat()
+                    # Make sure title exists and is not empty
+                    if 'title' not in m_copy or not m_copy['title']:
+                        logger.warning(f"Method missing title, skipping: {m_copy}")
+                        continue
+                        
+                    # Handle description field mapping to usecase for storage
+                    if 'description' in m_copy and 'usecase' not in m_copy:
+                        m_copy['usecase'] = m_copy['description']
                     
-                # Set status flag for method
-                if 'status' not in m_copy:
-                    m_copy['status'] = 'active'
+                    # Format steps as JSON if they're a list
+                    if 'steps' in m_copy and isinstance(m_copy['steps'], list):
+                        # Ensure we have at least one step
+                        if not m_copy['steps']:
+                            logger.warning(f"Method '{m_copy.get('title')}' has no steps, adding placeholder")
+                            m_copy['steps'] = ["Step 1: Perform the method"]
+                        m_copy['steps'] = json.dumps(m_copy['steps'])
+                    elif 'steps' not in m_copy or not m_copy['steps']:
+                        logger.warning(f"Method '{m_copy.get('title')}' missing steps, adding placeholder")
+                        m_copy['steps'] = json.dumps(["Step 1: Perform the method"])
                     
-                processed_methods.append(m_copy)
+                    # Format tags as JSON if they're a list - make sure tags is always present
+                    if 'tags' not in m_copy:
+                        m_copy['tags'] = ["method"]
+                        logger.debug(f"Added default 'method' tag to method '{m_copy.get('title')}'")
+                    
+                    if isinstance(m_copy['tags'], list):
+                        # Ensure we have at least one tag
+                        if not m_copy['tags']:
+                            m_copy['tags'] = ["method"]
+                        m_copy['tags'] = json.dumps(m_copy['tags'])
+                    
+                    # Set default values required for the Method model
+                    if 'group_id' not in m_copy:
+                        m_copy['group_id'] = 'default'
+                        
+                    if 'creator_id' not in m_copy:
+                        m_copy['creator_id'] = 'system'
+                        
+                    if 'created_at' not in m_copy:
+                        m_copy['created_at'] = datetime.now().isoformat()
+                        
+                    # Set status flag for method
+                    if 'status' not in m_copy:
+                        m_copy['status'] = 'active'
+                        
+                    processed_methods.append(m_copy)
+                    logger.debug(f"Successfully processed method: {m_copy.get('title')}")
+                except Exception as e:
+                    logger.error(f"Error processing method #{idx+1}: {e}")
+                    try:
+                        logger.error(f"Method that caused error: title={m.get('title', 'unknown')}, has_steps={('steps' in m)}")
+                    except:
+                        pass
             
             df = pd.DataFrame(processed_methods)
             

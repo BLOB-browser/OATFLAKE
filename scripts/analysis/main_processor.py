@@ -258,6 +258,24 @@ class MainProcessor:
             stats["duration_seconds"] = (datetime.now() - stats["start_time"]).total_seconds()
             stats["status"] = "completed"
             
+            # Ensure all entity types are saved to CSV files
+            # Import DataSaver to save these directly
+            from scripts.services.storage import DataSaver
+            data_saver = DataSaver()
+            
+            # Save each entity type if we have any
+            if all_definitions:
+                logger.info(f"Ensuring {len(all_definitions)} definitions are saved to CSV")
+                data_saver.save_definitions(all_definitions)
+                
+            if all_projects:
+                logger.info(f"Ensuring {len(all_projects)} projects are saved to CSV")
+                data_saver.save_projects(all_projects)
+                
+            if all_methods:
+                logger.info(f"Ensuring {len(all_methods)} methods are saved to CSV")
+                data_saver.save_methods(all_methods)
+            
             # Include processed items in the stats
             stats["processed_resources"] = processed_resources
             stats["definitions"] = all_definitions

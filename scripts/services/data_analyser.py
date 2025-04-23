@@ -40,7 +40,7 @@ class DataAnalyser:
     
     def analyze_resources(self, csv_path: str = None, batch_size: int = 1, max_resources: int = None, force_reanalysis: bool = False) -> Tuple[List[Dict], List[Dict]]:
         """
-        Analyzes resources from CSV file, extracting definitions and identifying projects.
+        Analyzes resources from CSV file, extracting definitions, projects, and methods.
         
         This implementation delegates to the MainProcessor to handle the full processing pipeline.
         
@@ -125,12 +125,26 @@ class DataAnalyser:
             if "methods" in processing_result:
                 methods = processing_result.get("methods", [])
                 
+            # Explicitly save each entity type to ensure all data is properly stored
+            if projects:
+                logger.info(f"Explicitly saving {len(projects)} projects to CSV")
+                self.data_saver.save_projects(projects)
+                
+            if methods:
+                logger.info(f"Explicitly saving {len(methods)} methods to CSV")
+                self.data_saver.save_methods(methods)
+                
+            if definitions:
+                logger.info(f"Explicitly saving {len(definitions)} definitions to CSV")
+                self.data_saver.save_definitions(definitions)
+            
             logger.info(f"Analysis complete: {resources_processed} resources processed, {success_count} successful")
             logger.info(f"Found {len(definitions)} definitions, {len(projects)} projects, and {len(methods)} methods")
         else:
             # Handle processing error
             logger.error(f"Error in resource processing: {processing_result.get('error', 'Unknown error')}")
         
+        # Still return the original tuple for backward compatibility
         return updated_resources, projects
     
     def save_updated_resources(self, resources: List[Dict], csv_path: str = None) -> None:

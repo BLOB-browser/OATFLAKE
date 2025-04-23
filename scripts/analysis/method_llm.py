@@ -286,8 +286,14 @@ REQUIRED FORMAT:
                                                 tags_list = [str(tag).strip().lower() for tag in parsed_tags if tag]
                                         else:
                                             tags_list = [item['tags'].strip().lower()]
-                                    except:
+                                    except Exception as tag_err:
+                                        logger.warning(f"Error parsing tags JSON: {tag_err}, using as single tag")
                                         tags_list = [item['tags'].strip().lower()]
+                            
+                            # Ensure we have at least one tag
+                            if not tags_list:
+                                tags_list = ["method"]
+                                logger.debug(f"Added default 'method' tag to method: {title_str}")
                             
                             # Only add if we have the required fields with content
                             if title_str and desc_str and steps_list:

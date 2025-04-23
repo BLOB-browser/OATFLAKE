@@ -159,6 +159,7 @@ class ExtractionUtils:
                - "term": The technical term being defined (string, 1-5 words)
                - "definition": A clear, concise explanation (string, 1-3 sentences)
                - "category": The field this term belongs to (optional string)
+               - "tags": Array of strings representing relevant categories or topics (e.g., ["design", "technology"])
                - "source_text": A brief excerpt from the original content containing this term (optional string)
             3. Format response as a valid JSON array containing objects with these fields
             4. Include no explanation, just the JSON array
@@ -170,12 +171,14 @@ class ExtractionUtils:
                 "term": "Design Fiction",
                 "definition": "A design practice that combines elements of science fiction with product design to explore possible futures and their implications.",
                 "category": "Design Methodology",
+                "tags": ["design", "fiction", "futurism", "product design"],
                 "source_text": "Design fiction uses narrative elements to envision and explain possible futures for design."
               }},
               {{
                 "term": "Speculative Design",
                 "definition": "An approach that uses design to provoke questions about possible futures and alternative presents.",
                 "category": "Design Research",
+                "tags": ["design", "research", "futurism"],
                 "source_text": "Through speculative design, we question existing paradigms and imagine alternative scenarios."
               }}
             ]
@@ -446,7 +449,7 @@ If no definitions are found, return an empty array.
             - An exact project title as it appears on the site
             - A specific description of what the project actually produced or created
             - The stated goals or purpose of the project
-            - Relevant fields or categories that the project belongs to
+            - Relevant tags or categories that the project belongs to (2-5 tags)
             
             If no specific projects are described in enough detail, return an empty array.
             
@@ -498,27 +501,46 @@ If no definitions are found, return an empty array.
                                             parsed_tags = json.loads(item['tags'])
                                             if isinstance(parsed_tags, list):
                                                 tags_list = [str(tag).strip().lower() for tag in parsed_tags if tag]
-                                        except:
+                                        except Exception as tag_err:
+                                            logger.warning(f"Error parsing tags JSON: {tag_err}, using as single tag")
                                             # If parsing fails, use it as a single tag
                                             tags_list = [item['tags'].strip('[]').strip('"\'').strip().lower()]
                                     else:
                                         # Use as a single tag
                                         tags_list = [item['tags'].strip().lower()]
-                            # For backward compatibility, also check fields and convert to tags
-                            elif 'fields' in item:
+                            
+                            # Ensure we have at least one tag
+                            if not tags_list:
+                                tags_list = ["project"]
+                            # For backward compatibility, also check fields and combine with tags
+                            if 'fields' in item and tags_list:
+                                # If we already have tags, log the presence of both fields
+                                logger.debug(f"Project has both 'tags' and 'fields': {item.get('title', 'Unnamed')}")
+                            
+                            if 'fields' in item:
+                                fields_list = []
                                 if isinstance(item['fields'], list):
-                                    tags_list = [str(field).strip().lower() for field in item['fields'] if field]
+                                    fields_list = [str(field).strip().lower() for field in item['fields'] if field]
                                 elif isinstance(item['fields'], str):
                                     # Try to parse string as JSON array
                                     if item['fields'].startswith('[') and item['fields'].endswith(']'):
                                         try:
                                             parsed_fields = json.loads(item['fields'])
                                             if isinstance(parsed_fields, list):
-                                                tags_list = [str(field).strip().lower() for field in parsed_fields if field]
-                                        except:
-                                            tags_list = [item['fields'].strip('[]').strip('"\'').strip().lower()]
+                                                fields_list = [str(field).strip().lower() for field in parsed_fields if field]
+                                        except Exception as e:
+                                            logger.warning(f"Error parsing fields JSON: {e}")
+                                            fields_list = [item['fields'].strip('[]').strip('"\'').strip().lower()]
                                     else:
-                                        tags_list = [item['fields'].strip().lower()]
+                                        fields_list = [item['fields'].strip().lower()]
+                                
+                                # Combine fields with existing tags if any
+                                if fields_list:
+                                    # Add fields to existing tags, avoiding duplicates
+                                    for field in fields_list:
+                                        if field not in tags_list:
+                                            tags_list.append(field)
+                                    logger.debug(f"Combined 'fields' and 'tags' for project: {item.get('title', 'Unnamed')}")
                             
                             # Only add if we have the required fields with content
                             if title_str and desc_str:
