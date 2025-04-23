@@ -18,6 +18,36 @@ Our vision is to make as much of the system customizable through the interface a
 - API endpoints for various functionalities
 - Web-based user interface
 
+## Architecture
+
+OATFLAKE follows a modular architecture designed to provide flexibility and extensibility:
+
+### Core Components
+
+1. **FastAPI Backend**: Powers all API endpoints and server-side operations
+2. **Web Interface**: Modern, responsive JavaScript frontend for interacting with the system
+3. **RAG Pipeline**: End-to-end pipeline for document processing, analysis, and retrieval
+4. **Vector Storage**: FAISS-based vector storage for efficient similarity searches
+5. **Integrations**: Connections to external systems (Slack, OpenRouter, etc.)
+
+### Data Flow
+
+1. **Input Sources** → Document uploaded or URL provided
+2. **Content Processing** → Text extraction and chunking
+3. **Analysis** → LLM-powered analysis with entity extraction
+4. **Embedding Generation** → Vector embedding creation
+5. **Storage** → Persistence to vector stores and databases
+6. **Retrieval** → Context-sensitive document retrieval
+7. **Generation** → LLM-augmented response creation
+
+### Submodules
+
+- **Analysis Engine**: LLM-powered content analysis and entity extraction
+- **Storage Manager**: Vector store and file-based data persistence
+- **Scheduler System**: Task scheduling and automated processing
+- **UI Components**: Modular interface elements with independent functionality
+- **API Endpoints**: RESTful API organized by functional domain
+
 ## Prerequisites
 - Python 3.10 or higher
 - Poetry (for dependency management)
@@ -55,11 +85,11 @@ chmod +x start.sh
 ./start.sh
 ```
 
-#### Using PowerShell:
-```powershell
-# Run the PowerShell script
-.\run.ps1
-```
+This will:
+1. Start the FastAPI server
+2. Set up a ngrok tunnel for external access (if configured)
+3. Open the web interface in your default browser
+
 
 ### 3. Create a `.env` file
 Create a `.env` file in the root directory with the following content (replace with your actual credentials):
@@ -90,74 +120,42 @@ SUPABASE_KEY=your-supabase-key
 OPENROUTER_API_KEY=your-openrouter-api-key
 ```
 
-## Usage
-
-## Running the Application
-
-### On Mac:
-```bash
-# First time only - make the startup script executable
-chmod +x start_mac.sh
-
-# Then run the script
-./start_mac.sh
-```
-
-### On Windows:
-Double-click the `start.bat` file in File Explorer, or run it from the command line:
-```
-# In Command Prompt:
-start.bat
-
-# In PowerShell:
-.\start.bat
-```
-
-### On Linux:
-```bash
-# First time only - make the startup script executable
-chmod +x start.sh
-
-# Then run the script
-./start.sh
-```
-
-### Running the Application
-To start the application:
-```bash
-python run.py
-```
-
-This will:
-1. Start the FastAPI server
-2. Set up a ngrok tunnel for external access (if configured)
-3. Open the web interface in your default browser
-
-### Processing Knowledge
-To run the knowledge processing workflow:
-```bash
-python run_complete_processing.py
-```
-
-### Extracting Goals
-To run the goal extraction:
-```bash
-python run_goal_extraction.py
-```
-
-### Running Analysis
-To run analysis on your data:
-```bash
-python run_analysis.py
-```
 
 ## Project Structure
 - `api/`: API endpoints and routes
+  - `routes/`: RESTful endpoints organized by domain (knowledge, goals, analysis)
+  - `middleware/`: Request processing and authentication middleware
+  - `models/`: Pydantic data models for API requests and responses
+  - `dependencies/`: Reusable API dependencies and injected services
+  - `main.py`: Entry point and router registration
 - `scripts/`: Core processing and analysis scripts
-- `settings/`: Configuration files
+  - `analysis/`: LLM-powered content analysis modules
+  - `extraction/`: Text extraction from various document formats
+  - `embedding/`: Vector embedding generation and management
+  - `services/`: Background services and scheduled tasks
+  - `integration/`: External system connectors (Slack, OpenRouter)
+- `settings/`: Configuration files and environment settings
+  - `config.py`: Central configuration management
+  - `default_settings.json`: Default application settings
 - `static/`: Static assets for the web interface
-- `templates/`: HTML templates
-- `utils/`: Utility functions
+  - `js/`: JavaScript modules and UI components
+  - `css/`: Styling and theme definitions
+  - `img/`: Images, icons and visual assets
+  - `vendor/`: Third-party libraries and dependencies
+- `templates/`: HTML templates for web rendering
+  - `components/`: Reusable UI components
+  - `pages/`: Full page templates
+- `utils/`: Utility functions and helpers
+  - `logging/`: Logging configuration and utilities
+  - `helpers/`: Common utility functions
+  - `security/`: Authentication and authorization utilities
+- `data/`: Data storage and persistence
+  - `vector_stores/`: FAISS and other vector index storage
+  - `processed/`: Processed document outputs
+- `tests/`: Testing infrastructure and test cases
+- `run.py`: Main application entry point for running the server
+- `start.sh/bat`: Platform-specific startup scripts
+- `.env`: Environment configuration file (to be created by user)
 
 ## Future Development
 - In-app token management through the interface (under development)
