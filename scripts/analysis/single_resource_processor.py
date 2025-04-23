@@ -8,6 +8,7 @@ import csv
 from typing import Dict, List, Any, Callable, Optional, Tuple
 import tempfile
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,8 @@ class SingleResourceProcessor:
                     resource_copy = resource.copy()
                     resource_copy['partial_processing'] = True
                     resource_copy['level_processed'] = current_level
-                    service_saver.save_single_resource(resource_copy, csv_path, idx)
+                    # The method is called 'save_resource' in the services DataSaver, not 'save_single_resource'
+                    service_saver.save_resource(resource_copy, csv_path, idx)
                 
                 # Return early with empty but successful result
                 result["success"] = True
@@ -449,22 +451,82 @@ class SingleResourceProcessor:
                             logger.error(f"[{resource_id}] Error processing page {page_key}: {e}")
                             continue
             
-            # After all processing is complete, mark the URL as processed
-            # Only mark URL as processed if we actually extracted meaningful data
+            # Mark URL as processed if we extracted any meaningful data 
+            # (definitions, projects, or methods) or if we've tried too many times
+            
+            # Get current attempt count from url_storage
+            attempt_count = 0
+            try:
+                # Check if this URL already has attempt data
+                pending_urls = self.content_fetcher.url_storage.get_pending_urls()
+                for pending_url in pending_urls:
+                    if pending_url.get('url') == resource_url:
+                        attempt_count = pending_url.get('attempt_count', 0)
+                        break
+            except Exception as e:
+                logger.error(f"[{resource_id}] Error getting attempt count: {e}")
+                attempt_count = 0
+                
+            # Check if we got any data or if we've tried too many times
             if main_definitions or main_projects or main_methods:
-                logger.info(f"[{resource_id}] Marking main URL as processed after successful analysis: {resource_url}")
+                # We have data, mark as processed
+                logger.info(f"[{resource_id}] Marking main URL as processed after successful extraction: {resource_url}")
+                self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
+            elif attempt_count >= 2:  # After 3 attempts (0, 1, 2), force mark as processed
+                # Failed 3 times, force mark as processed to stop trying
+                logger.warning(f"[{resource_id}] Main URL failed to yield data after {attempt_count+1} attempts, force marking as processed: {resource_url}")
                 self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
             else:
-                logger.info(f"[{resource_id}] No data extracted from main URL, not marking as processed yet")
+                # Still have attempts left, increment attempt count and keep in pending
+                logger.info(f"[{resource_id}] No data extracted from main URL (attempt {attempt_count+1}), keeping in pending queue: {resource_url}")
+                self.content_fetcher.url_storage.save_pending_url(resource_url, depth=0, origin="", attempt_count=attempt_count+1)
             
-            # After all processing is complete, mark the resource as analyzed in the CSV
+            # For the resource entry in CSV, we need to be careful about setting analysis_completed
             if idx is not None and csv_path is not None:
                 # Update the CSV file
                 from scripts.services.storage import DataSaver as ServiceDataSaver
+                from scripts.analysis.url_storage import URLStorageManager
+                
+                # Initialize the service saver
                 service_saver = ServiceDataSaver()
                 resource_copy = resource.copy()
-                resource_copy['analysis_completed'] = True
-                service_saver.save_single_resource(resource_copy, csv_path, idx)
+                
+                # Get pending URLs to check if all levels are complete
+                url_storage = self.content_fetcher.url_storage
+                
+                # Check if there are any pending URLs left for this resource
+                pending_urls = []
+                try:
+                    # We only want to check pending URLs relevant to this resource
+                    for level in range(1, max_depth + 1):
+                        pending_for_level = url_storage.get_pending_urls(depth=level)
+                        # Filter to only keep URLs that originated from this resource
+                        pending_for_resource = [u for u in pending_for_level if u.get('origin') == resource_url]
+                        pending_urls.extend(pending_for_resource)
+                        
+                    # If no pending URLs left, mark as fully completed
+                    if not pending_urls:
+                        logger.info(f"[{resource_id}] No pending URLs left for any level, marking resource as fully analyzed")
+                        resource_copy['analysis_completed'] = True
+                        resource_copy['partial_processing'] = False
+                    else:
+                        # Still have pending URLs, mark as partial processing
+                        logger.info(f"[{resource_id}] Still have {len(pending_urls)} pending URLs across all levels, marking as partial processing")
+                        resource_copy['analysis_completed'] = False
+                        resource_copy['partial_processing'] = True
+                        resource_copy['pending_urls_count'] = len(pending_urls)
+                        # Store which levels are still pending
+                        pending_levels = sorted(set(u.get('depth') for u in pending_urls))
+                        resource_copy['pending_levels'] = str(pending_levels)
+                        
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error checking pending URLs: {e}")
+                    # Default to not completed in case of error
+                    resource_copy['analysis_completed'] = False
+                    resource_copy['partial_processing'] = True
+                
+                # The method is called 'save_resource' in the services DataSaver, not 'save_single_resource'
+                service_saver.save_resource(resource_copy, csv_path, idx)
             
             # Summary of results
             total_definitions = len(result["definitions"])
@@ -644,9 +706,85 @@ class SingleResourceProcessor:
                 
                 # Mark the URL as processed using ContentFetcher's method
                 # Only mark as processed if we actually extracted meaningful data
+                # Get current attempt count for this URL from url_storage
+                attempt_count = 0
+                try:
+                    # Check if this URL already has attempt data
+                    pending_urls = self.content_fetcher.url_storage.get_pending_urls()
+                    for pending_url in pending_urls:
+                        if pending_url.get('url') == url:
+                            attempt_count = pending_url.get('attempt_count', 0)
+                            break
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error getting attempt count: {e}")
+                    attempt_count = 0
+                
+                # Check if we got any data or if we've tried too many times
                 if page_definitions or page_projects or page_methods:
-                    logger.info(f"[{resource_id}] Marking URL as processed after successful analysis: {url}")
+                    # We have data, mark as processed
+                    logger.info(f"[{resource_id}] Marking URL as processed after successful extraction: {url}")
                     self.content_fetcher.mark_url_as_processed(url, depth=depth, origin=origin_url)
+                    successful_extraction = True
+                elif attempt_count >= 2:  # After 3 attempts (0, 1, 2), force mark as processed
+                    # Failed 3 times, force mark as processed to stop trying
+                    logger.warning(f"[{resource_id}] URL failed to yield data after {attempt_count+1} attempts, force marking as processed: {url}")
+                    self.content_fetcher.mark_url_as_processed(url, depth=depth, origin=origin_url)
+                    successful_extraction = False
+                else:
+                    # Still have attempts left, increment attempt count and keep in pending
+                    logger.info(f"[{resource_id}] No data extracted from URL (attempt {attempt_count+1}), keeping in pending queue: {url}")
+                    self.content_fetcher.url_storage.save_pending_url(url, depth=depth, origin=origin_url, attempt_count=attempt_count+1)
+                    successful_extraction = False
+                
+                # Only update the resource status if we've marked the URL as processed
+                if successful_extraction or attempt_count >= 2:
+                    # Check if this was the last URL for this resource and update the resource status in the CSV if needed
+                    try:
+                        # Get the original resource's CSV path and index
+                        from scripts.services.storage import DataSaver as ServiceDataSaver
+                        
+                        # Get all resources
+                        data_path = Path(self.data_folder)
+                        csv_path = data_path / "resources.csv"
+                        
+                        if csv_path.exists():
+                            # Find the resource by URL
+                            import pandas as pd
+                            resources_df = pd.read_csv(csv_path)
+                            resource_row = resources_df[resources_df['url'] == origin_url]
+                            
+                            if not resource_row.empty:
+                                idx = resource_row.index[0]
+                                
+                                # Check if we have any pending URLs left for this resource
+                                url_storage = self.content_fetcher.url_storage
+                                pending_urls = []
+                                
+                                # We only want to check pending URLs relevant to this resource
+                                for level in range(1, 5):  # Check levels 1-4
+                                    pending_for_level = url_storage.get_pending_urls(depth=level)
+                                    # Filter to only keep URLs that originated from this resource
+                                    pending_for_resource = [u for u in pending_for_level if u.get('origin') == origin_url]
+                                    pending_urls.extend(pending_for_resource)
+                                
+                                # Update resource status
+                                service_saver = ServiceDataSaver()
+                                resource_copy = resource.copy()
+                                
+                                if not pending_urls:
+                                    logger.info(f"[{resource_id}] No pending URLs left, marking resource as fully analyzed")
+                                    resource_copy['analysis_completed'] = True
+                                    resource_copy['partial_processing'] = False
+                                else:
+                                    logger.info(f"[{resource_id}] Still have {len(pending_urls)} pending URLs, keeping as partial processing")
+                                    resource_copy['analysis_completed'] = False
+                                    resource_copy['partial_processing'] = True
+                                    resource_copy['pending_urls_count'] = len(pending_urls)
+                                
+                                # Update the CSV
+                                service_saver.save_resource(resource_copy, str(csv_path), idx)
+                    except Exception as e:
+                        logger.error(f"[{resource_id}] Error updating resource status after URL processing: {e}")
                 else:
                     logger.info(f"[{resource_id}] No data extracted from URL, not marking as processed yet")
                 

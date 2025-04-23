@@ -218,12 +218,24 @@ class LevelBasedProcessor:
                 url = url_info["url"]
                 origin = url_info["origin"]
                 depth = url_info["depth"]
+                attempt_count = url_info.get("attempt_count", 0)
                 
                 # Skip if this URL is already processed (either from storage or current session)
                 if url in processed_urls or url in current_session_processed:
                     logger.info(f"Skipping already processed URL: {url}")
                     # Remove from pending URLs since it's already processed
                     self.url_storage.remove_pending_url(url)
+                    continue
+                
+                # If we've tried this URL too many times and it's constantly failing, 
+                # mark it as processed and skip
+                if attempt_count >= 3:  # More than 3 attempts (0, 1, 2, 3), force mark as processed
+                    logger.warning(f"URL {url} has been attempted {attempt_count} times, force marking as processed to avoid endless retries")
+                    self.url_storage.save_processed_url(url, depth=depth, origin=origin)
+                    # Also remove from pending list
+                    self.url_storage.remove_pending_url(url)
+                    stats["urls_processed"] += 1
+                    stats["forced_skip_count"] = stats.get("forced_skip_count", 0) + 1
                     continue
                 
                 # Add to current session processed set to avoid duplicates
@@ -253,7 +265,10 @@ class LevelBasedProcessor:
                     
                     # Log detailed results
                     logger.info(f"LEVEL PROCESSOR: URL {url} processed with result: success={result.get('success', False)}")
-                    logger.info(f"LEVEL PROCESSOR: Found {len(result.get('definitions', []))} definitions, {len(result.get('projects', []))} projects, {len(result.get('methods', []))} methods")
+                    definitions_count = len(result.get('definitions', []))
+                    projects_count = len(result.get('projects', []))
+                    methods_count = len(result.get('methods', []))
+                    logger.info(f"LEVEL PROCESSOR: Found {definitions_count} definitions, {projects_count} projects, {methods_count} methods")
                     
                     # Update statistics
                     stats["urls_processed"] += 1
@@ -261,9 +276,24 @@ class LevelBasedProcessor:
                     
                     if result.get("success", False):
                         stats["success_count"] += 1
-                        stats["definitions_found"] += len(result.get("definitions", []))
-                        stats["projects_found"] += len(result.get("projects", []))
-                        stats["methods_found"] += len(result.get("methods", []))
+                        stats["definitions_found"] += definitions_count
+                        stats["projects_found"] += projects_count
+                        stats["methods_found"] += methods_count
+                        
+                        # Check if we got any meaningful data
+                        data_extracted = (definitions_count > 0 or projects_count > 0 or methods_count > 0)
+                        
+                        # If no data was extracted, and we haven't reached max attempts yet
+                        if not data_extracted and attempt_count < 2:  # Allow 3 attempts (0, 1, 2)
+                            # Increment attempt count and put back in queue
+                            next_attempt = attempt_count + 1
+                            logger.info(f"LEVEL PROCESSOR: No data extracted (attempt {next_attempt}), saving back to pending queue: {url}")
+                            # Remove from pending first to avoid duplicate entries
+                            self.url_storage.remove_pending_url(url)
+                            # Add back with incremented attempt count
+                            self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt)
+                            # Mark this URL as unsuccessful despite "success" flag
+                            stats["empty_results_count"] = stats.get("empty_results_count", 0) + 1
                         
                         # Store the extracted data
                         all_definitions.extend(result.get("definitions", []))

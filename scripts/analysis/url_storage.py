@@ -46,15 +46,16 @@ class URLStorageManager:
             try:
                 with open(self.pending_urls_file, mode='w', newline='') as file:
                     writer = csv.writer(file)
-                    writer.writerow(["url", "depth", "origin", "discovery_timestamp"])
-                logger.info(f"Created new pending_urls.csv file for URL queue")
+                    # Add attempt_count field to track how many times we've tried to process this URL
+                    writer.writerow(["url", "depth", "origin", "discovery_timestamp", "attempt_count"])
+                logger.info(f"Created new pending_urls.csv file for URL queue with attempt tracking")
             except Exception as e:
                 logger.error(f"Failed to create pending_urls.csv: {e}")
                 # Fallback to current directory
                 self.pending_urls_file = "pending_urls.csv"
                 with open(self.pending_urls_file, mode='w', newline='') as file:
                     writer = csv.writer(file)
-                    writer.writerow(["url", "depth", "origin", "discovery_timestamp"])
+                    writer.writerow(["url", "depth", "origin", "discovery_timestamp", "attempt_count"])
         
         # Important: Load processed URLs during initialization
         logger.info("Loading processed URLs during initialization")
@@ -237,13 +238,14 @@ class URLStorageManager:
             stats[depth] += 1
         return stats
         
-    def save_pending_url(self, url: str, depth: int = 0, origin: str = "") -> bool:
-        """Save a pending URL to the CSV file with depth and origin information.
+    def save_pending_url(self, url: str, depth: int = 0, origin: str = "", attempt_count: int = 0) -> bool:
+        """Save a pending URL to the CSV file with depth, origin and attempt count information.
         
         Args:
             url: The URL to be processed later
             depth: The crawl depth level of this URL (0=main, 1=first level, etc.)
             origin: The URL that led to this URL (empty for main URLs)
+            attempt_count: Number of times this URL has been attempted to process
             
         Returns:
             Success flag
@@ -256,6 +258,9 @@ class URLStorageManager:
                 
             # Next, check if the URL is already in the pending list
             # by reading the pending URLs file
+            current_attempt_count = attempt_count
+            already_pending = False
+            
             if os.path.exists(self.pending_urls_file):
                 try:
                     with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
@@ -263,20 +268,40 @@ class URLStorageManager:
                         next(reader, None)  # Skip header
                         for row in reader:
                             if row and len(row) > 0 and row[0] == url:
-                                logger.debug(f"URL {url} is already in pending list, not saving again")
-                                return True
+                                # URL is already in pending, might need to update attempt count
+                                already_pending = True
+                                # Get current attempt count if available (in newer format)
+                                if len(row) >= 5 and row[4] and row[4].isdigit():
+                                    current_attempt_count = int(row[4])
+                                    
+                                logger.debug(f"URL {url} is already in pending list with {current_attempt_count} attempts")
+                                
+                                # If we're explicitly trying to increment the attempt count, do it
+                                if attempt_count > current_attempt_count:
+                                    # We need to update this URL's attempt count, so we'll do that by removing and re-adding
+                                    self.remove_pending_url(url)
+                                    already_pending = False
+                                    current_attempt_count = attempt_count
+                                    logger.info(f"Updating URL {url} attempt count to {attempt_count}")
+                                else:
+                                    # No need to update, keep as is
+                                    return True
                 except Exception as e:
                     logger.error(f"Error checking pending URLs file: {e}")
             
-            # URL is not processed and not pending, so save it
+            # If the URL is already pending and we don't need to update it, we're done
+            if already_pending:
+                return True
+            
+            # URL is not processed and either not pending or needs updating, so save it
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            logger.info(f"Saving pending URL to {self.pending_urls_file}: {url} (depth={depth}, origin={origin or 'main'})")
+            logger.info(f"Saving pending URL to {self.pending_urls_file}: {url} (depth={depth}, origin={origin or 'main'}, attempts={current_attempt_count})")
             
             # Open in append mode with explicit flush
             with open(self.pending_urls_file, mode='a', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
-                writer.writerow([url, depth, origin, timestamp])
+                writer.writerow([url, depth, origin, timestamp, current_attempt_count])
                 file.flush()
                 os.fsync(file.fileno())  # Force write to disk
             
@@ -315,6 +340,11 @@ class URLStorageManager:
                         row_depth = int(row[1]) if row[1].isdigit() else 0
                         origin = row[2]
                         
+                        # Get attempt count if available (in newer format)
+                        attempt_count = 0
+                        if len(row) >= 5 and row[4] and row[4].isdigit():
+                            attempt_count = int(row[4])
+                        
                         # Skip if this URL has already been processed
                         if self.url_is_processed(url):
                             continue
@@ -326,7 +356,8 @@ class URLStorageManager:
                         pending_urls.append({
                             "url": url,
                             "depth": row_depth,
-                            "origin": origin
+                            "origin": origin,
+                            "attempt_count": attempt_count
                         })
                         
                         # Stop if we've reached the maximum
