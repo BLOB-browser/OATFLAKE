@@ -127,10 +127,10 @@ class DataSaver:
                 except Exception as e:
                     logger.error(f"Error reading existing projects: {e}")
 
-            # Define standard fields
+            # Define standard fields - using only tags for consistency
             fields = [
                 'title', 'description', 'goal', 'achievement',
-                'fields', 'collaborators', 'documentation_url', 'created_at'
+                'tags', 'collaborators', 'documentation_url', 'created_at'
             ]
 
             # Process each project
@@ -145,20 +145,20 @@ class DataSaver:
                     logger.warning(f"Skipping project with missing title")
                     continue
 
-                # Process list fields to ensure they're stored as strings
-                fields_value = project_item.get('fields', [])
-                fields_str = fields_value if isinstance(fields_value, str) else ','.join(fields_value) if isinstance(fields_value, list) else ''
+                # Process tags (using fields for backward compatibility if needed)
+                tags_value = project_item.get('tags', project_item.get('fields', []))  # Fallback to fields if tags not present
+                tags_str = tags_value if isinstance(tags_value, str) else ','.join(tags_value) if isinstance(tags_value, list) else ''
 
                 collaborators_value = project_item.get('collaborators', [])
                 collaborators_str = collaborators_value if isinstance(collaborators_value, str) else ','.join(collaborators_value) if isinstance(collaborators_value, list) else ''
 
-                # Prepare row data
+                # Prepare row data - use only tags for consistency
                 row = {
                     'title': project_item.get('title', ''),
                     'description': project_item.get('description', ''),
                     'goal': project_item.get('goal', ''),
                     'achievement': project_item.get('achievement', ''),
-                    'fields': fields_str,
+                    'tags': tags_str,
                     'collaborators': collaborators_str,
                     'documentation_url': project_item.get('documentation_url', ''),
                     'created_at': project_item.get('created_at') or datetime.now().isoformat()
@@ -228,8 +228,8 @@ class DataSaver:
                 except Exception as e:
                     logger.error(f"Error reading existing methods: {e}")
 
-            # Define fields
-            fields = ['title', 'usecase', 'steps', 'created_at']
+            # Define fields - added tags field
+            fields = ['title', 'usecase', 'steps', 'tags', 'created_at']
 
             # Process each method
             saved_count = 0
@@ -246,12 +246,17 @@ class DataSaver:
                 # Process steps to ensure they're stored properly
                 steps = method_item.get('steps', [])
                 steps_str = steps if isinstance(steps, str) else '|'.join(steps) if isinstance(steps, list) else ''
+                
+                # Process tags to ensure they're stored properly
+                tags = method_item.get('tags', [])
+                tags_str = tags if isinstance(tags, str) else ','.join(tags) if isinstance(tags, list) else ''
 
-                # Prepare row data
+                # Prepare row data - fix field name mismatch between 'usecase' and 'description'
                 row = {
                     'title': method_item.get('title', ''),
-                    'usecase': method_item.get('usecase', ''),
+                    'usecase': method_item.get('description', method_item.get('usecase', '')),  # Get description first, fall back to usecase
                     'steps': steps_str,
+                    'tags': tags_str,
                     'created_at': method_item.get('created_at') or datetime.now().isoformat()
                 }
 

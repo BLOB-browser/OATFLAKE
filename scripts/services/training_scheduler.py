@@ -465,7 +465,9 @@ def _training_loop():
                             "batch_size": "1",                   # Process 1 resource at a time for stability
                             "force_update": "false",             # Let the API decide if processing is needed
                             "skip_vector_generation": "false",   # This parameter tells the API to generate vectors
-                            "check_unanalyzed": "true"           # Always check for unanalyzed resources
+                            "check_unanalyzed": "true",          # Always check for unanalyzed resources
+                            "skip_questions": str(time_to_end_minutes < 60).lower(),  # Skip questions if < 60 min left
+                            "skip_goals": str(time_to_end_minutes < 60).lower()       # Skip goals if < 60 min left
                         }
                         
                         logger.info(f"Calling knowledge processing API endpoint: {url}")

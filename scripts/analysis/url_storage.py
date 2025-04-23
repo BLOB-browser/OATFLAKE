@@ -5,7 +5,7 @@ import logging
 import os
 import csv
 from datetime import datetime
-from typing import Set, Dict, Any
+from typing import Set, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,16 @@ class URLStorageManager:
         self._processed_urls_cache = set()
         self.url_metadata = {}
         
+        # For pending URLs that haven't been processed yet
+        self.pending_urls_file = os.path.join(
+            os.path.dirname(self.processed_urls_file), 
+            "pending_urls.csv"
+        )
+        
         # Ensure the file directory exists
         os.makedirs(os.path.dirname(self.processed_urls_file), exist_ok=True)
         
-        # Check if the file exists and create it with header if it doesn't
+        # Check if the processed_urls file exists and create it with header if it doesn't
         if not os.path.exists(self.processed_urls_file):
             try:
                 with open(self.processed_urls_file, mode='w', newline='') as file:
@@ -34,6 +40,21 @@ class URLStorageManager:
                 with open(self.processed_urls_file, mode='w', newline='') as file:
                     writer = csv.writer(file)
                     writer.writerow(["url", "depth", "origin", "timestamp"])
+        
+        # Initialize the pending URLs file if it doesn't exist
+        if not os.path.exists(self.pending_urls_file):
+            try:
+                with open(self.pending_urls_file, mode='w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["url", "depth", "origin", "discovery_timestamp"])
+                logger.info(f"Created new pending_urls.csv file for URL queue")
+            except Exception as e:
+                logger.error(f"Failed to create pending_urls.csv: {e}")
+                # Fallback to current directory
+                self.pending_urls_file = "pending_urls.csv"
+                with open(self.pending_urls_file, mode='w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["url", "depth", "origin", "discovery_timestamp"])
         
         # Important: Load processed URLs during initialization
         logger.info("Loading processed URLs during initialization")
@@ -176,6 +197,21 @@ class URLStorageManager:
         """
         return self._processed_urls_cache
     
+    def get_urls_by_depth(self, depth: int) -> List[str]:
+        """Get all processed URLs at a specific depth level
+        
+        Args:
+            depth: The depth level to filter by (0=main, 1=first level, etc.)
+            
+        Returns:
+            List of URLs at the specified depth
+        """
+        urls = []
+        for url, metadata in self.url_metadata.items():
+            if metadata.get("depth") == depth:
+                urls.append(url)
+        return urls
+        
     def get_url_metadata(self, url: str) -> Dict[str, Any]:
         """Get metadata for a specific URL
         
@@ -186,3 +222,167 @@ class URLStorageManager:
             Dictionary with metadata (depth, origin, timestamp)
         """
         return self.url_metadata.get(url, {"depth": 0, "origin": "", "timestamp": ""})
+        
+    def get_depth_statistics(self) -> Dict[int, int]:
+        """Get statistics about URL counts at each depth level
+        
+        Returns:
+            Dictionary mapping depth levels to URL counts
+        """
+        stats = {}
+        for url, metadata in self.url_metadata.items():
+            depth = metadata.get("depth", 0)
+            if depth not in stats:
+                stats[depth] = 0
+            stats[depth] += 1
+        return stats
+        
+    def save_pending_url(self, url: str, depth: int = 0, origin: str = "") -> bool:
+        """Save a pending URL to the CSV file with depth and origin information.
+        
+        Args:
+            url: The URL to be processed later
+            depth: The crawl depth level of this URL (0=main, 1=first level, etc.)
+            origin: The URL that led to this URL (empty for main URLs)
+            
+        Returns:
+            Success flag
+        """
+        try:
+            # First check if the URL is already in the processed list
+            if self.url_is_processed(url):
+                logger.debug(f"URL {url} is already processed, not saving to pending")
+                return True
+                
+            # Next, check if the URL is already in the pending list
+            # by reading the pending URLs file
+            if os.path.exists(self.pending_urls_file):
+                try:
+                    with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                        reader = csv.reader(file)
+                        next(reader, None)  # Skip header
+                        for row in reader:
+                            if row and len(row) > 0 and row[0] == url:
+                                logger.debug(f"URL {url} is already in pending list, not saving again")
+                                return True
+                except Exception as e:
+                    logger.error(f"Error checking pending URLs file: {e}")
+            
+            # URL is not processed and not pending, so save it
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            logger.info(f"Saving pending URL to {self.pending_urls_file}: {url} (depth={depth}, origin={origin or 'main'})")
+            
+            # Open in append mode with explicit flush
+            with open(self.pending_urls_file, mode='a', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow([url, depth, origin, timestamp])
+                file.flush()
+                os.fsync(file.fileno())  # Force write to disk
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to save pending URL {url}: {e}")
+            return False
+            
+    def get_pending_urls(self, max_urls: int = 100, depth: int = None) -> List[Dict[str, Any]]:
+        """Get pending URLs to process from the CSV file
+        
+        Args:
+            max_urls: Maximum number of URLs to return
+            depth: Optional depth level to filter by
+            
+        Returns:
+            List of dictionaries with URL information
+        """
+        pending_urls = []
+        
+        if not os.path.exists(self.pending_urls_file):
+            logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
+            return pending_urls
+        
+        try:
+            # Read the CSV file
+            with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                header = next(reader, None)  # Skip header
+                
+                # Process each row
+                for row in reader:
+                    if len(row) >= 3:
+                        url = row[0]
+                        row_depth = int(row[1]) if row[1].isdigit() else 0
+                        origin = row[2]
+                        
+                        # Skip if this URL has already been processed
+                        if self.url_is_processed(url):
+                            continue
+                        
+                        # Filter by depth if specified
+                        if depth is not None and row_depth != depth:
+                            continue
+                        
+                        pending_urls.append({
+                            "url": url,
+                            "depth": row_depth,
+                            "origin": origin
+                        })
+                        
+                        # Stop if we've reached the maximum
+                        if len(pending_urls) >= max_urls:
+                            break
+                
+            logger.info(f"Retrieved {len(pending_urls)} pending URLs from file")
+            return pending_urls
+            
+        except Exception as e:
+            logger.error(f"Error reading pending URLs: {e}")
+            return []
+            
+    def remove_pending_url(self, url: str) -> bool:
+        """Remove a URL from the pending URLs file after it's been processed
+        
+        Args:
+            url: The URL to remove
+            
+        Returns:
+            Success flag
+        """
+        if not os.path.exists(self.pending_urls_file):
+            logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
+            return False
+        
+        try:
+            # Read all URLs from the file
+            pending_urls = []
+            url_found = False
+            
+            with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                header = next(reader, None)  # Get header
+                
+                # Keep all rows except the one to remove
+                for row in reader:
+                    if len(row) >= 1 and row[0] == url:
+                        url_found = True
+                        continue
+                    pending_urls.append(row)
+            
+            # If the URL wasn't found, there's nothing to do
+            if not url_found:
+                logger.warning(f"URL {url} not found in pending URLs file")
+                return False
+            
+            # Write the remaining URLs back to the file
+            with open(self.pending_urls_file, mode='w', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(["url", "depth", "origin", "discovery_timestamp"])  # Write header
+                writer.writerows(pending_urls)
+            
+            logger.info(f"Removed URL {url} from pending URLs file")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error removing pending URL {url}: {e}")
+            return False

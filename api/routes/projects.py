@@ -25,10 +25,10 @@ async def list_projects(request: Request):
         logger.info(f"Looking for projects CSV at: {projects_path}")
         
         if not projects_path.exists():
-            # Create new DataFrame with empty columns
+            # Create new DataFrame with empty columns - using only tags (no fields)
             df = pd.DataFrame(columns=[
                 'title', 'description', 'goals', 'achievement',
-                'documentation_url', 'fields', 'privacy', 'status',
+                'documentation_url', 'tags', 'privacy', 'status',
                 'creator_id', 'created_at', 'modified_at'
             ])
         else:

@@ -229,9 +229,11 @@ class GoalExtractor:
     async def _extract_goals_with_llm(self, content_samples: List[Dict[str, Any]], ollama_client) -> List[Dict[str, Any]]:
         """
         Extract goals from content samples using Mistral LLM.
+        Limits to a maximum of 50 most important goals.
         """
         goals = []
         extracted_goal_texts = set()  # To avoid duplicates
+        max_goals = 50  # Maximum number of goals to keep
         
         # Process content samples in batches
         batch_size = 3  # Process this many samples at once
@@ -268,10 +270,21 @@ class GoalExtractor:
             if batch_goals:
                 logger.info(f"Saving batch of {len(batch_goals)} goals to CSV")
                 self._save_goals_to_csv(batch_goals)
+                
+            # If we've collected more than max_goals, keep only the most important ones
+            if len(goals) > max_goals:
+                logger.info(f"Collected {len(goals)} goals, keeping only the top {max_goals} by importance")
+                # Sort goals by importance (high to low)
+                goals.sort(key=lambda g: g["importance"], reverse=True)
+                # Keep only the top max_goals
+                goals = goals[:max_goals]
+                # Update the extracted_goal_texts set to match the current goals
+                extracted_goal_texts = {goal["goal_text"] for goal in goals}
         
         # After the for loop completes, ALL batches have been processed
         # The function returns goals, indicating the process is complete
         goals.sort(key=lambda g: g["importance"], reverse=True)
+        logger.info(f"Final goal count: {len(goals)} (limited to maximum of {max_goals})")
         return goals
 
     async def _process_content_sample(self, sample: Dict[str, Any], ollama_client) -> List[Dict[str, Any]]:
@@ -404,6 +417,7 @@ Only output goals with clear educational or learning value. Format your response
     def _save_goals_to_csv(self, goals: List[Dict[str, Any]]) -> bool:
         """
         Save extracted goals to a CSV file.
+        Ensures a maximum of 50 goals are saved based on importance.
         
         Args:
             goals: List of goal dictionaries
@@ -412,6 +426,8 @@ Only output goals with clear educational or learning value. Format your response
             True if successful, False otherwise
         """
         try:
+            max_goals = 50  # Maximum number of goals to keep
+            
             # Create a DataFrame with the goals
             df = pd.DataFrame(goals)
             
@@ -451,8 +467,17 @@ Only output goals with clear educational or learning value. Format your response
                             
                             # Combine existing and new goals
                             combined_df = pd.concat([existing_df, new_goals], ignore_index=True)
+                            
+                            # If we have more than max_goals, keep only the most important ones
+                            if len(combined_df) > max_goals:
+                                logger.info(f"Combined goals exceeds limit of {max_goals}, keeping only the most important ones")
+                                # Ensure 'importance' column is a number for proper sorting
+                                combined_df['importance'] = pd.to_numeric(combined_df['importance'], errors='coerce').fillna(0)
+                                # Sort by importance (high to low) and keep top max_goals
+                                combined_df = combined_df.sort_values('importance', ascending=False).head(max_goals)
+                                
                             combined_df.to_csv(csv_path, index=False)
-                            logger.info(f"Added {len(new_goals)} new goals to existing {len(existing_df)} goals")
+                            logger.info(f"Added goals - final count: {len(combined_df)} goals (limit: {max_goals})")
                         else:
                             logger.info("No new goals to add to CSV")
                         
@@ -460,6 +485,13 @@ Only output goals with clear educational or learning value. Format your response
                         # If existing file doesn't have proper structure, overwrite it
                         # Add goal_id to all goals
                         df['goal_id'] = [f'goal_{i}' for i in range(len(df))]
+                        
+                        # If we have more than max_goals, keep only the most important ones
+                        if len(df) > max_goals:
+                            logger.info(f"Number of goals exceeds limit of {max_goals}, keeping only the most important ones")
+                            # Sort by importance (high to low) and keep top max_goals
+                            df = df.sort_values('importance', ascending=False).head(max_goals)
+                            
                         df.to_csv(csv_path, index=False)
                         logger.info(f"Saved {len(df)} goals to CSV (overwriting improperly formatted file)")
                         
@@ -468,14 +500,28 @@ Only output goals with clear educational or learning value. Format your response
                     # Fall back to overwriting the file
                     # Add goal_id to all goals
                     df['goal_id'] = [f'goal_{i}' for i in range(len(df))]
+                    
+                    # If we have more than max_goals, keep only the most important ones
+                    if len(df) > max_goals:
+                        logger.info(f"Number of goals exceeds limit of {max_goals}, keeping only the most important ones")
+                        # Sort by importance (high to low) and keep top max_goals
+                        df = df.sort_values('importance', ascending=False).head(max_goals)
+                        
                     df.to_csv(csv_path, index=False)
                     logger.info(f"Saved {len(df)} goals to CSV (overwriting after error)")
             else:
                 # Save to new file
                 # Add goal_id to all goals
                 df['goal_id'] = [f'goal_{i}' for i in range(len(df))]
+                
+                # If we have more than max_goals, keep only the most important ones
+                if len(df) > max_goals:
+                    logger.info(f"Number of goals exceeds limit of {max_goals}, keeping only the most important ones")
+                    # Sort by importance (high to low) and keep top max_goals
+                    df = df.sort_values('importance', ascending=False).head(max_goals)
+                    
                 df.to_csv(csv_path, index=False)
-                logger.info(f"Saved {len(df)} goals to new CSV file")
+                logger.info(f"Saved {len(df)} goals to new CSV file (limit: {max_goals})")
                 
             return True
                 

@@ -343,7 +343,53 @@ class ResourceLLM:
             # Return empty list if generation fails
             logger.warning(f"Failed to generate tags for {title}, returning empty list")
             return []
+            
     
+    def generate_purpose(self, title: str, url: str, content: str, description: str) -> str:
+        """
+        Generate the purpose of a resource.
+        
+        Args:
+            title: Resource title
+            url: Resource URL
+            content: Resource content text
+            description: Resource description
+            
+        Returns:
+            Purpose statement or empty string if generation fails
+        """
+        # Use a moderate content size
+        max_content_length = 2000
+        truncated_content = content[:max_content_length] if content else ""
+        
+        prompt = f"""<s>[INST] You are analyzing a web resource to determine its purpose or use case.
+
+        Title: {title}
+        URL: {url}
+        Description: {description}
+        
+        Content excerpt:
+        {truncated_content}
+        
+        Your task: Write a concise 1-2 sentence statement about the purpose or use case of this resource.
+        Focus on answering: "What is this resource intended to help users accomplish or learn?"
+        
+        Keep your response under 100 words. Be specific and avoid generic statements.
+        [/INST]</s>"""
+        
+        # Use text format for purpose
+        response = self.generate_structured_response(prompt, format_type="text", temperature=0.3)
+        
+        if response:
+            # Clean up any potential formatting artifacts
+            purpose = response.strip()
+            logger.info(f"Generated purpose for {title}: {purpose[:50]}...")
+            return purpose
+        else:
+            # Return empty string if generation fails
+            logger.warning(f"Failed to generate purpose for {title}")
+            return ""
+            
     def _extract_json_robustly(self, text: str) -> Any:
         """
         Extract JSON from text with multiple fallback approaches.

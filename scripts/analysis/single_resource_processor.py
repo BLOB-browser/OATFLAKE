@@ -4,13 +4,21 @@
 import logging
 import json
 import os
+import csv
+from typing import Dict, List, Any, Callable, Optional, Tuple
+import tempfile
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Import interruptible handling
+# Import analyzer modules
+from scripts.analysis.llm_analyzer import LLMAnalyzer
+from scripts.analysis.resource_llm import ResourceLLM
+from scripts.analysis.extraction_utils import ExtractionUtils
+from scripts.analysis.content_fetcher import ContentFetcher
+from scripts.analysis.method_llm import MethodLLM
+from scripts.analysis.goal_llm import GoalLLM
+from scripts.analysis.data_saver import DataSaver
 from scripts.analysis.interruptible_llm import is_interrupt_requested, clear_interrupt
 # Import HTML extraction functions
 from scripts.analysis.html_extractor import extract_text, extract_page_texts
@@ -18,7 +26,21 @@ from scripts.analysis.html_extractor import extract_text, extract_page_texts
 class SingleResourceProcessor:
     """
     Processes a single resource through content fetching, analysis and storage.
-    This class handles the detailed processing of individual resource entries.
+    Extracts definitions, projects, and methods from the resource content.
+    
+    Implementation supports two processing modes:
+    1. Full resource processing - processes the main URL and discovers internal links
+    2. Level-based processing - processes URLs at specific depth levels
+    
+    The level-based approach is the preferred method for large websites:
+    - Level 1: Navigation links from the main page
+    - Level 2: Project/category pages linked from navigation
+    - Level 3+: Detail pages with specific content
+    
+    When processing by level, URLs are discovered but not immediately processed beyond level 1.
+    Instead, they're saved to pending_urls.csv for later processing through the level_processor.
+    This ensures that all resources' level 1 URLs are processed before any level 2 URLs,
+    which prevents memory issues and enables more efficient processing.
     """
     
     def __init__(self, data_folder: str):
@@ -30,35 +52,43 @@ class SingleResourceProcessor:
         """
         self.data_folder = data_folder
         
-        # Import required services
-        from scripts.analysis.content_fetcher import ContentFetcher
-        from scripts.analysis.llm_analyzer import LLMAnalyzer
-        from scripts.analysis.method_llm import MethodLLM
-        from scripts.storage.content_storage_service import ContentStorageService
-        from scripts.storage.temporary_storage_service import TemporaryStorageService
-        from scripts.services.storage import DataSaver
-        
-        # Initialize services
+        # Initialize component modules
         self.content_fetcher = ContentFetcher()
         self.llm_analyzer = LLMAnalyzer()
+        self.resource_llm = ResourceLLM()
+        self.extraction_utils = ExtractionUtils()
         self.method_llm = MethodLLM()
-        self.content_storage = ContentStorageService(data_folder)
-        self.temp_storage = TemporaryStorageService(data_folder)
-        self.data_saver = DataSaver()
+        self.goal_llm = GoalLLM()
+        self.data_saver = DataSaver(data_folder)
         
-        # Track whether vector generation is needed
+        # For temporary storage of content
+        from scripts.storage.temporary_storage_service import TemporaryStorageService
+        self.temp_storage = TemporaryStorageService(data_folder)
+        
+        # For long-term storage of content
+        from scripts.storage.content_storage_service import ContentStorageService
+        self.content_storage = ContentStorageService(data_folder)
+        
+        # Track if vector generation is needed after processing
         self.vector_generation_needed = False
+        
+        logger.info(f"SingleResourceProcessor initialized with data folder: {data_folder}")
     
-    def process_resource(self, resource: Dict, resource_id: str, idx: int, csv_path: str, on_subpage_processed=None) -> Dict[str, Any]:
+    def process_resource(self, resource: Dict, resource_id: str, idx: int = None, csv_path: str = None,
+                      on_subpage_processed: Callable = None, process_by_level: bool = True, 
+                      max_depth: int = 4, current_level: int = None) -> Dict[str, Any]:
         """
         Process a single resource through content fetching, analysis and storage.
         
         Args:
-            resource: The resource dictionary 
+            resource: Dictionary with resource data
             resource_id: String identifier for logging
             idx: Index in the CSV file
             csv_path: Path to the CSV file for saving updates
             on_subpage_processed: Optional callback function to call after each subpage is processed
+            process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
+            max_depth: Maximum crawl depth (1=just main page links, 2=two levels, 3=three levels, etc.)
+            current_level: If specified, only process URLs at this specific level (for level-based processing)
             
         Returns:
             Dictionary with processing results
@@ -89,108 +119,106 @@ class SingleResourceProcessor:
             resource_slug = resource_title.replace(" ", "_").lower()[:30]
             temp_path = self.temp_storage.create_temp_file(prefix=resource_slug)
             
-            # Fetch main page and extract links
-            success, main_data = self.content_fetcher.get_main_page_with_links(resource_url, max_depth=2)
-            
-            if not success or "error" in main_data:
-                error_msg = main_data.get("error", "Unknown error")
-                logger.warning(f"[{resource_id}] Failed to fetch {resource_url}: {error_msg}")
-                result["error"] = f"Fetch error: {error_msg}"
-                return result
-            
-            # Get content from main page
-            main_html = main_data["main_html"]
-            additional_urls = main_data["additional_urls"]
-            
-            # Don't limit additional pages - process all of them
-            logger.info(f"[{resource_id}] Processing all {len(additional_urls)} additional pages without limitation")
-            
-            # Extract text from main page using html_extractor
-            main_page_text = extract_text(main_html, 2000)
-            if not main_page_text:
-                logger.warning(f"[{resource_id}] Failed to extract text from {resource_url}")
-                result["error"] = "Text extraction failed"
-                return result
+            # If only processing a specific level, skip the initial fetch if it's not level 0
+            if current_level is not None and current_level > 0:
+                logger.info(f"[{resource_id}] Skipping main page fetch, only processing level {current_level}")
                 
-            # Initialize collectors for extracted information
-            all_definitions = []
-            all_projects = []
-            all_methods = []
+                # Mark the resource as partially processed in the CSV
+                if idx is not None and csv_path is not None:
+                    # Update the CSV field to indicate partial processing
+                    from scripts.services.storage import DataSaver as ServiceDataSaver
+                    service_saver = ServiceDataSaver()
+                    resource_copy = resource.copy()
+                    resource_copy['partial_processing'] = True
+                    resource_copy['level_processed'] = current_level
+                    service_saver.save_single_resource(resource_copy, csv_path, idx)
+                
+                # Return early with empty but successful result
+                result["success"] = True
+                return result
+            
+            # Fetch content with the specified depth level
+            success, page_data = self.content_fetcher.fetch_content(
+                resource_url, 
+                max_depth=max_depth,
+                process_by_level=process_by_level
+            )
+            
+            if not success:
+                error_msg = page_data.get("error", "Unknown error")
+                logger.error(f"[{resource_id}] Failed to fetch content: {error_msg}")
+                result["error"] = f"Failed to fetch content: {error_msg}"
+                return result
+            
+            # Extract main page HTML and get the list of additional URLs
+            main_html = page_data.get("main", "")
+            
+            if not main_html:
+                logger.error(f"[{resource_id}] Failed to extract main HTML content")
+                result["error"] = "Failed to extract main HTML content"
+                return result
+            
+            headers = page_data.get("headers", {})
+            visited_urls = page_data.get("visited_urls", set())
+            
+            # Get additional URLs by level
+            urls_by_level = page_data.get("urls_by_level", {})
+            level1_urls = urls_by_level.get(1, [])
+            additional_urls = page_data.get("additional_urls", [])
+            
+            # Log discoveries by level
+            for level, urls in urls_by_level.items():
+                logger.info(f"[{resource_id}] Discovered {len(urls)} URLs at level {level}")
+            
+            # Extract text content from main HTML
+            main_page_text = extract_text(main_html)
+            
+            # Initialize tracking structures
             page_results = {}
             
-            # Write main page to temp file
+            # Extract LLM results from main page text
             try:
-                content_to_write = f"MAIN PAGE: {resource_title}\n\n{main_page_text}"
-                total_bytes = self.temp_storage.write_to_file(temp_path, content_to_write, mode="w")
-                logger.info(f"[{resource_id}] Wrote main page ({total_bytes/1024:.1f} KB) to temporary file")
-            except Exception as e:
-                logger.error(f"[{resource_id}] Error writing to temp file: {e}")
-            
-            # Store content for later vector generation (instead of immediate embedding)
-            self.content_storage.store_original_content(resource_title, resource_url, main_page_text, resource_id)
-            self.vector_generation_needed = True  # Flag that we'll need vector generation at the end
-            
-            # STEP 2: Process main page
-            logger.info(f"[{resource_id}] Analyzing main page")
-            
-            # Check for cancellation before extraction starts
-            if is_interrupt_requested():
-                logger.info(f"[{resource_id}] Resource processing cancelled")
-                return result
-            
-            # Extract definitions, projects, and methods
-            try:
-                # Extract definitions if requested
-                main_definitions = self.llm_analyzer.extract_definitions(
-                    f"{resource_title} - main", resource_url, main_page_text
+                # STEP 2: Extract definition and content classification
+                main_definitions = self.extraction_utils.extract_definitions(
+                    title=resource_title, 
+                    url=resource_url, 
+                    content=main_page_text
                 )
-                if main_definitions and not is_interrupt_requested():
-                    for definition in main_definitions:
-                        definition['source'] = resource_url
-                        definition['resource_url'] = resource_url
-                    all_definitions.extend(main_definitions)
-                    logger.info(f"[{resource_id}] Found {len(main_definitions)} definitions on main page")
-                    # Save to CSV using DataSaver instead of function call
-                    self.data_saver.save_definition(main_definitions)
                 
-                # Identify projects if requested
-                main_projects = self.llm_analyzer.identify_projects(
-                    f"{resource_title} - main", resource_url, main_page_text
+                # Log definition extraction results
+                definitions_found = len(main_definitions)
+                logger.info(f"[{resource_id}] Extracted {definitions_found} definition(s) from main page")
+                
+                # STEP 3: Extract project information
+                main_projects = self.extraction_utils.identify_projects(
+                    title=resource_title, 
+                    url=resource_url, 
+                    content=main_page_text
                 )
-                if main_projects and not is_interrupt_requested():
-                    for project in main_projects:
-                        # Only set source if not already set by the extractor
-                        if 'source' not in project:
-                            project['source'] = resource_url
-                        # Always set resource_url (main page URL)
-                        project['resource_url'] = resource_url
-                        # Ensure origin_title is set if not already
-                        if 'origin_title' not in project:
-                            project['origin_title'] = resource_title
-                    all_projects.extend(main_projects)
-                    logger.info(f"[{resource_id}] Found {len(main_projects)} projects on main page")
-                    
-                    # Save to CSV using DataSaver
-                    self.data_saver.save_project(main_projects)
                 
-                # Extract methods if requested
+                # Log project extraction results
+                projects_found = len(main_projects)
+                logger.info(f"[{resource_id}] Identified {projects_found} project(s) from main page")
+                
+                # STEP 4: Extract methods
                 main_methods = self.method_llm.extract_methods(
-                    f"{resource_title} - main", resource_url, main_page_text
+                    title=resource_title, 
+                    url=resource_url, 
+                    content=main_page_text
                 )
-                if main_methods and not is_interrupt_requested():
-                    for method in main_methods:
-                        # Only set source if not already set by the extractor
-                        if 'source' not in method:
-                            method['source'] = resource_url
-                        # Always set resource_url (main page URL)
-                        method['resource_url'] = resource_url
-                        # Ensure origin_title is set if not already
-                        if 'origin_title' not in method:
-                            method['origin_title'] = resource_title
-                    all_methods.extend(main_methods)
-                    logger.info(f"[{resource_id}] Found {len(main_methods)} methods on main page")
+                
+                # Log method extraction results
+                methods_found = len(main_methods)
+                logger.info(f"[{resource_id}] Extracted {methods_found} method(s) from main page")
+                
+                # STEP 5: Save extracted results to storage
+                # Save to vector store
+                if main_definitions or main_projects or main_methods:
+                    self.vector_generation_needed = True
                     
                     # Save to CSV using DataSaver
+                    self.data_saver.save_definition(main_definitions)
+                    self.data_saver.save_project(main_projects)
                     self.data_saver.save_method(main_methods)
                 
                 # Check for cancellation before finalizing
@@ -211,354 +239,316 @@ class SingleResourceProcessor:
                 "content": main_page_text[:500] + "..." if len(main_page_text) > 500 else main_page_text
             }
             
-            # STEP 3: Process additional pages
-            logger.info(f"[{resource_id}] Processing {len(additional_urls)} additional pages")
-            headers = main_data.get("headers", {})
+            # Update overall result with main page extraction
+            result["definitions"].extend(main_definitions)
+            result["projects"].extend(main_projects)
+            result["methods"].extend(main_methods)
             
-            # Create a dictionary to store all HTML content for batch processing
-            additional_pages_html = {}
+            # Cache the content to the temporary file for vector building later
+            content_obj = {
+                "source": resource_url,
+                "title": resource_title,
+                "content": main_page_text,
+                "extracted_at": datetime.now().isoformat(),
+                "resource_id": resource_id,
+                "page_type": "main"
+            }
+            self.temp_storage.append_to_temp_file(temp_path, json.dumps(content_obj))
             
-            # Track subpage count for the result
-            subpage_count = len(additional_urls)
+            # Call the callback if provided, e.g., for incremental vector generation
+            if on_subpage_processed:
+                on_subpage_processed()
             
-            # First, fetch all pages
-            for idx, additional_url in enumerate(additional_urls):
-                try:
-                    # Fetch page content
-                    logger.info(f"[{resource_id}] Fetching page {idx+1}/{len(additional_urls)}: {additional_url}")
-                    success, html_content = self.content_fetcher.fetch_additional_page(additional_url, headers)
-                    
-                    if not success or not html_content:
-                        logger.warning(f"[{resource_id}] Failed to fetch {additional_url}, skipping")
-                        continue
-                    
-                    # Use page name as key (simplified URL)
-                    page_name = additional_url.rsplit('/', 1)[-1] or f'page{idx+1}'
-                    additional_pages_html[page_name] = html_content
-                    
-                except Exception as e:
-                    logger.error(f"[{resource_id}] Error fetching page {additional_url}: {e}")
-                    continue
+            # Skip additional pages if only processing level 0
+            if current_level is not None and current_level == 0:
+                logger.info(f"[{resource_id}] Only processing level 0, skipping additional pages")
+                result["success"] = True
+                return result
             
-            # Process all pages at once using extract_page_texts
-            if additional_pages_html:
-                logger.info(f"[{resource_id}] Extracting text from {len(additional_pages_html)} pages")
-                extracted_pages = extract_page_texts(additional_pages_html, 2000)
+            # Process additional pages if any
+            if additional_urls:
+                logger.info(f"[{resource_id}] Processing {len(additional_urls)} additional pages")
                 
-                # Process each extracted page
-                for page_name, page_text in extracted_pages.items():
-                    additional_url = additional_urls[list(additional_pages_html.keys()).index(page_name)] if page_name in list(additional_pages_html.keys()) else "unknown"
+                # If we're only processing a specific level, filter URLs to that level
+                if current_level is not None:
+                    # Get URLs from the specific level
+                    level_urls = urls_by_level.get(current_level, [])
+                    logger.info(f"[{resource_id}] Filtering to process only {len(level_urls)} URLs at level {current_level}")
                     
-                    # Append to temp file
+                    # Only process URLs at the specified level
+                    additional_urls = level_urls
+                
+                if not additional_urls:
+                    logger.info(f"[{resource_id}] No additional URLs to process at this level")
+                    result["success"] = True
+                    return result
+                
+                # Collections for storing page content
+                additional_pages_html = {}
+                
+                # Fetch each additional page
+                for idx, additional_url in enumerate(additional_urls):
+                    # Check for interruption
+                    if is_interrupt_requested():
+                        logger.info(f"[{resource_id}] Processing interrupted during additional page fetching")
+                        break
+                        
                     try:
-                        content_to_append = f"\n\n--- PAGE: {page_name} ---\n\n{page_text}"
-                        page_bytes = self.temp_storage.append_to_file(temp_path, content_to_append)
-                        logger.info(f"[{resource_id}] Wrote page {page_name} ({page_bytes/1024:.1f} KB) to temp file")
+                        logger.info(f"[{resource_id}] Fetching page {idx+1}/{len(additional_urls)}: {additional_url}")
+                        success, html_content = self.content_fetcher.fetch_additional_page(additional_url, headers)
+                        
+                        if not success or not html_content:
+                            logger.warning(f"[{resource_id}] Failed to fetch {additional_url}, skipping")
+                            continue
+                        
+                        # Use page name as key (simplified URL)
+                        page_name = additional_url.rsplit('/', 1)[-1] or f'page{idx+1}'
+                        additional_pages_html[page_name] = html_content
+                        
                     except Exception as e:
-                        logger.error(f"[{resource_id}] Error appending to temp file: {e}")
-                    
-                    # Process page content
-                    page_definitions = self.llm_analyzer.extract_definitions(
-                        f"{resource_title} - {page_name}", additional_url, page_text
-                    )
-                    page_projects = self.llm_analyzer.identify_projects(
-                        f"{resource_title} - {page_name}", additional_url, page_text
-                    )
-                    page_methods = self.method_llm.extract_methods(
-                        f"{resource_title} - {page_name}", additional_url, page_text
-                    )
-                    
-                    # Store results for this page
-                    page_results[page_name] = {
-                        "definitions": page_definitions,
-                        "projects": page_projects,
-                        "methods": page_methods,
-                        "url": additional_url,
-                        "content": page_text[:500] + "..." if len(page_text) > 500 else page_text
-                    }
-                    
-                    # Process and add source information
-                    if page_definitions:
-                        for definition in page_definitions:
-                            # Only set source if not already set by the extractor
-                            if 'source' not in definition:
-                                definition['source'] = additional_url
-                            # Always set resource_url (main page URL)
-                            definition['resource_url'] = resource_url
-                            # Ensure origin_title is set if not already
-                            if 'origin_title' not in definition:
-                                definition['origin_title'] = f"{resource_title} - {page_name}"
-                        all_definitions.extend(page_definitions)
-                        # Use DataSaver
-                        self.data_saver.save_definition(page_definitions)
-                        logger.info(f"[{resource_id}] Found {len(page_definitions)} definitions on page '{page_name}'")
-                    
-                    # Process page-specific projects
-                    if page_projects:
-                        for project in page_projects:
-                            # Only set source if not already set by the extractor
-                            if 'source' not in project:
-                                project['source'] = additional_url
-                            # Always set resource_url (main page URL)
-                            project['resource_url'] = resource_url
-                            # Ensure origin_title is set if not already  
-                            if 'origin_title' not in project:
-                                project['origin_title'] = f"{resource_title} - {page_name}"
-                        all_projects.extend(page_projects)
-                        # Use DataSaver
-                        self.data_saver.save_project(page_projects)
-                        logger.info(f"[{resource_id}] Found {len(page_projects)} projects on page '{page_name}'")
-                    
-                    # Process page-specific methods
-                    if page_methods:
-                        for method in page_methods:
-                            # Only set source if not already set by the extractor
-                            if 'source' not in method:
-                                method['source'] = additional_url
-                            # Always set resource_url (main page URL)
-                            method['resource_url'] = resource_url
-                            # Ensure origin_title is set if not already
-                            if 'origin_title' not in method:
-                                method['origin_title'] = f"{resource_title} - {page_name}"
-                        all_methods.extend(page_methods)
-                        # Use DataSaver
-                        self.data_saver.save_method(page_methods)
-                        logger.info(f"[{resource_id}] Found {len(page_methods)} methods on page '{page_name}'")
-                    
-                    # Store page content for later vector generation
-                    self.content_storage.store_original_content(
-                        f"{resource_title} - {page_name}", 
-                        additional_url, 
-                        page_text, 
-                        f"{resource_id} - {page_name}"
-                    )
-                    
-                    # Mark this URL as processed immediately after successful analysis
-                    self.content_fetcher.mark_url_as_processed(additional_url, depth=1, origin=resource_url)
-                    logger.info(f"[{resource_id}] Marked subpage as processed: {additional_url}")
-                    
-                    # Call the callback after each subpage is processed
-                    if on_subpage_processed is not None:
-                        on_subpage_processed()
-            
-            # STEP 4: Store analysis results
-            logger.info(f"[{resource_id}] Completed processing all pages")
-            
-            # Initialize analysis_results if needed
-            if 'analysis_results' not in resource:
-                resource['analysis_results'] = {}
-            
-            # Ensure analysis_results is a dictionary
-            if isinstance(resource['analysis_results'], str):
-                try:
-                    resource['analysis_results'] = json.loads(resource['analysis_results'])
-                except:
-                    resource['analysis_results'] = {}
-            
-            if not isinstance(resource['analysis_results'], dict):
-                resource['analysis_results'] = {}
-                    
-            # Store all the page results in the resource
-            resource['analysis_results']['pages'] = page_results
-            resource['analysis_results']['definitions'] = all_definitions
-            resource['analysis_results']['projects'] = all_projects
-            resource['analysis_results']['methods'] = all_methods
-            
-            # STEP 5: Generate description if needed
-            if not resource.get('description') or len(resource.get('description', '').strip()) < 10:
-                logger.info(f"[{resource_id}] Generating description")
+                        logger.error(f"[{resource_id}] Error fetching page {additional_url}: {e}")
+                        continue
                 
-                # Read from temp file
-                try:
-                    combined_text = self.temp_storage.read_from_file(temp_path, max_size=10000)
-                    if not combined_text:
-                        combined_text = main_page_text
-                except Exception as e:
-                    logger.error(f"[{resource_id}] Error reading from temp file: {e}")
-                    combined_text = main_page_text
-                
-                # Generate description
-                description = self.llm_analyzer.generate_description(
-                    resource_title, resource_url, combined_text
-                )
-                
-                resource['description'] = description
-                logger.info(f"[{resource_id}] Generated description: {len(description)} chars")
-            
-            # STEP 6: Generate tags if needed
-            if not resource.get('tags') or not isinstance(resource.get('tags'), list) or len(resource.get('tags')) < 3:
-                logger.info(f"[{resource_id}] Generating tags")
-                
-                # Prepare existing tags
-                existing_tags = []
-                if resource.get('tags'):
-                    if isinstance(resource.get('tags'), str):
+                # Process all pages at once using extract_page_texts
+                if additional_pages_html:
+                    logger.info(f"[{resource_id}] Extracting text from {len(additional_pages_html)} pages")
+                    extracted_pages = extract_page_texts(additional_pages_html, 2000)
+                    
+                    # Process each extracted page
+                    for page_key, page_text in extracted_pages.items():
+                        # Check for interruption
+                        if is_interrupt_requested():
+                            logger.info(f"[{resource_id}] Processing interrupted during page analysis")
+                            break
+                            
                         try:
-                            existing_tags = json.loads(resource['tags'].replace("'", '"'))
-                        except:
-                            pass
-                    elif isinstance(resource.get('tags'), list):
-                        existing_tags = resource.get('tags')
-                
-                # Create context for tag generation
-                all_terms = [d.get('term', '').lower() for d in all_definitions 
-                            if isinstance(d, dict) and 'term' in d]
-                all_project_titles = [p.get('title', '') for p in all_projects 
-                                     if isinstance(p, dict) and 'title' in p]
-                
-                tag_context = f"""
-                Resource Title: {resource_title}
-                URL: {resource_url}
-                
-                Description: {resource.get('description', '')}
-                
-                Key terms: {', '.join(all_terms[:20])}
-                Projects: {', '.join(all_project_titles[:5])}
-                """
-                
-                # Generate tags
-                tags = self.llm_analyzer.generate_tags(
-                    resource_title, resource_url, tag_context,
-                    resource.get('description', ''), existing_tags
-                )
-                    
-                resource['tags'] = tags
-                logger.info(f"[{resource_id}] Generated tags: {tags}")
-            
-            # STEP 7: Process batches for vector storage
-            logger.info(f"[{resource_id}] Processing content in batches for later vector generation")
-            
-            try:
-                # Check if temp file exists
-                if os.path.exists(temp_path):
-                    file_size = os.path.getsize(temp_path)
-                    logger.info(f"[{resource_id}] Processing temp file: {file_size/1024/1024:.2f} MB")
-                    
-                    # Process in batches
-                    batch_size = 32 * 1024  # 32KB per batch
-                    
-                    with open(temp_path, 'r', encoding='utf-8') as f:
-                        # Get file size
-                        f.seek(0, os.SEEK_END)
-                        total_size = f.tell()
-                        f.seek(0)
-                        
-                        batch_number = 1
-                        total_processed = 0
-                        
-                        # Process each batch
-                        while True:
-                            batch_text = f.read(batch_size)
-                            if not batch_text:
-                                break
-                                
-                            # Track progress
-                            total_processed += len(batch_text)
-                            progress = (total_processed / total_size) * 100
+                            # Get the URL for this page
+                            page_url = next((url for url in additional_urls if page_key in url), page_key)
                             
-                            # Store batch for later vector generation
-                            batch_title = f"{resource_title} - Batch {batch_number}"
-                            batch_metadata = {
-                                "resource_title": resource_title,
-                                "resource_url": resource_url,
-                                "batch_number": batch_number,
-                                "progress_percent": progress,
-                                "definitions_count": len(all_definitions),
-                                "projects_count": len(all_projects),
-                                "methods_count": len(all_methods)
-                            }
-                            
-                            # Add tags from the resource for topic store creation
-                            if 'tags' in resource and resource['tags']:
-                                batch_metadata["tags"] = resource['tags']
-                            
-                            # Store content batch - this just stores it for later, no vector generation now
-                            self.content_storage.store_content_batch(
-                                batch_title, resource_url, batch_text,
-                                all_definitions, all_projects, all_methods, batch_metadata
+                            # STEP 2: Extract definitions
+                            page_definitions = self.extraction_utils.extract_definitions(
+                                title=f"{resource_title} - {page_key}", 
+                                url=page_url, 
+                                content=page_text
                             )
                             
-                            logger.info(f"[{resource_id}] Processed batch {batch_number} ({progress:.1f}%)")
-                            batch_number += 1
+                            # STEP 3: Extract project information
+                            page_projects = self.extraction_utils.identify_projects(
+                                title=f"{resource_title} - {page_key}", 
+                                url=page_url, 
+                                content=page_text
+                            )
                             
-                    logger.info(f"[{resource_id}] Completed processing {batch_number-1} batches")
-                    
-                    # Delete temp file
-                    try:
-                        os.unlink(temp_path)
-                        logger.info(f"[{resource_id}] Deleted temporary file")
-                    except Exception as e:
-                        logger.warning(f"[{resource_id}] Failed to delete temporary file: {e}")
+                            # STEP 4: Extract methods
+                            page_methods = self.method_llm.extract_methods(
+                                title=f"{resource_title} - {page_key}", 
+                                url=page_url, 
+                                content=page_text
+                            )
+                            
+                            # Log extraction results
+                            logger.info(f"[{resource_id}] Extracted {len(page_definitions)} definition(s), {len(page_projects)} project(s), {len(page_methods)} method(s) from {page_key}")
+                            
+                            # Update overall results
+                            result["definitions"].extend(page_definitions)
+                            result["projects"].extend(page_projects)
+                            result["methods"].extend(page_methods)
+                            
+                            # Store page results
+                            page_results[page_key] = {
+                                "definitions": page_definitions,
+                                "projects": page_projects,
+                                "methods": page_methods,
+                                "url": page_url,
+                                "content": page_text[:500] + "..." if len(page_text) > 500 else page_text
+                            }
+                            
+                            # Save to storage if we have results
+                            if page_definitions or page_projects or page_methods:
+                                self.vector_generation_needed = True
+                                
+                                # Save to CSV using DataSaver
+                                self.data_saver.save_definition(page_definitions)
+                                self.data_saver.save_project(page_projects)
+                                self.data_saver.save_method(page_methods)
+                                
+                                # Cache the content to the temporary file for vector building later
+                                content_obj = {
+                                    "source": page_url,
+                                    "title": f"{resource_title} - {page_key}",
+                                    "content": page_text,
+                                    "extracted_at": datetime.now().isoformat(),
+                                    "resource_id": resource_id,
+                                    "page_type": "subpage"
+                                }
+                                self.temp_storage.append_to_temp_file(temp_path, json.dumps(content_obj))
+                            
+                            # Call the callback after each page if provided
+                            if on_subpage_processed:
+                                on_subpage_processed()
+                                
+                        except Exception as e:
+                            logger.error(f"[{resource_id}] Error processing page {page_key}: {e}")
+                            continue
             
-            except Exception as e:
-                logger.error(f"[{resource_id}] Error processing batches: {e}")
-                # If batch processing failed, store everything at once
-                try:
-                    combined_text = self.temp_storage.read_from_file(temp_path)
-                    if combined_text:
-                        # Add resource tags to definitions metadata for storage
-                        if 'tags' in resource and resource['tags']:
-                            # Add tags to first definition metadata
-                            for definition in all_definitions:
-                                if isinstance(definition, dict):
-                                    definition["resource_tags"] = resource['tags']
-                                    break
-                                    
-                        self.content_storage.store_content_with_analysis(
-                            resource_title, resource_url, combined_text,
-                            all_definitions, all_projects, all_methods
-                        )
-                        logger.info(f"[{resource_id}] Stored combined content as fallback")
-                except Exception as fallback_error:
-                    logger.error(f"[{resource_id}] Fallback storage failed: {fallback_error}")
+            # After all processing is complete, mark the resource as analyzed in the CSV
+            if idx is not None and csv_path is not None:
+                # Update the CSV file
+                from scripts.services.storage import DataSaver as ServiceDataSaver
+                service_saver = ServiceDataSaver()
+                resource_copy = resource.copy()
+                resource_copy['analysis_completed'] = True
+                service_saver.save_single_resource(resource_copy, csv_path, idx)
             
-            # Check if processing was at least partially successful
-            # We'll mark with appropriate status rather than just boolean:
-            # - "completed": Successfully processed with data extracted or pages processed
-            # - "failed": Complete failure to process
-            has_extracted_data = bool(all_definitions or all_projects or all_methods)
-            has_processed_pages = bool(page_results) and any(
-                page.get('content') for page in page_results.values() if isinstance(page, dict)
-            )
+            # Summary of results
+            total_definitions = len(result["definitions"])
+            total_projects = len(result["projects"])
+            total_methods = len(result["methods"])
             
-            # Set analysis status based on processing results
-            if has_extracted_data or has_processed_pages:
-                resource['analysis_completed'] = True
-                resource['analysis_status'] = "completed"
-            else:
-                resource['analysis_completed'] = False
-                resource['analysis_status'] = "failed"
+            logger.info(f"[{resource_id}] Processing complete: Found {total_definitions} definition(s), {total_projects} project(s), {total_methods} method(s)")
             
-            logger.info(f"[{resource_id}] Setting analysis status to '{resource.get('analysis_status', 'unknown')}' " +
-                        f"(analysis_completed={resource['analysis_completed']}, " +
-                        f"data extracted: {has_extracted_data}, pages processed: {has_processed_pages})")
-
-            # Use DataSaver for saving resource - ensure idx is passed properly
-            success = self.data_saver.save_resource(resource, csv_path, idx)
-            if not success:
-                logger.warning(f"[{resource_id}] Failed to save resource to CSV")
-            
-            # Update result
+            # Mark the operation as successful
             result["success"] = True
-            result["resource"] = resource
-            result["definitions"] = all_definitions
-            result["projects"] = all_projects
-            result["methods"] = all_methods
-            
-            # Update result with subpage count
-            result["subpage_count"] = subpage_count
-            
-            # Calculate duration
-            duration = (datetime.now() - start_time).total_seconds()
-            logger.info(f"✓ [{resource_id}] Processing completed in {duration:.2f}s: {len(all_definitions)} definitions, {len(all_projects)} projects, {len(all_methods)} methods")
+            result["processing_time_seconds"] = (datetime.now() - start_time).total_seconds()
             
             return result
             
         except Exception as e:
-            logger.error(f"[{resource_id}] Error processing resource: {e}", exc_info=True)
+            logger.error(f"[{resource_id}] Error processing resource: {e}")
             result["error"] = str(e)
             return result
     
-    def save_single_resource(self, resource, csv_path, idx):
-        """Save a single resource to the CSV file using DataSaver."""
-        return self.data_saver.save_resource(resource, csv_path, idx)
+    def process_specific_url(self, url: str, origin_url: str, resource: Dict, depth: int) -> Dict[str, Any]:
+        """
+        Process a specific URL for a resource.
+        This is used for level-based processing where we process all URLs at a given depth level.
+        
+        Args:
+            url: The specific URL to process
+            origin_url: The original resource URL that this URL was found from
+            resource: The resource dictionary containing metadata
+            depth: The depth level of this URL
+            
+        Returns:
+            Dictionary with processing results
+        """
+        start_time = datetime.now()
+        
+        # Reset interruption state
+        clear_interrupt()
+        
+        # Create a resource ID for logging
+        resource_title = resource.get('title', 'Unnamed')
+        resource_id = f"{resource_title}::{url}"
+        
+        # Initialize result structure
+        result = {
+            "success": False,
+            "url": url,
+            "origin_url": origin_url,
+            "depth": depth,
+            "definitions": [],
+            "projects": [],
+            "methods": [],
+            "error": None
+        }
+        
+        try:
+            # Create temp file for storing content
+            resource_slug = resource_title.replace(" ", "_").lower()[:30]
+            temp_path = self.temp_storage.create_temp_file(prefix=f"{resource_slug}_level{depth}")
+            
+            # Fetch just this specific URL
+            logger.info(f"[{resource_id}] Fetching level {depth} URL: {url}")
+            
+            # Create headers using WebFetcher
+            headers = self.content_fetcher.web_fetcher.create_headers()
+            
+            # Fetch the page
+            success, html_content = self.content_fetcher.fetch_additional_page(url, headers)
+            
+            if not success or not html_content:
+                logger.warning(f"[{resource_id}] Failed to fetch {url}, skipping")
+                result["error"] = "Failed to fetch URL"
+                return result
+            
+            # Extract text content from HTML
+            page_text = extract_text(html_content)
+            
+            # Process the extracted text
+            try:
+                # Use a combined page title
+                page_key = url.rsplit('/', 1)[-1] or f'level{depth}_page'
+                combined_title = f"{resource_title} - {page_key}"
+                
+                # STEP 1: Extract definitions
+                page_definitions = self.extraction_utils.extract_definitions(
+                    title=combined_title, 
+                    url=url, 
+                    content=page_text
+                )
+                
+                # STEP 2: Extract project information
+                page_projects = self.extraction_utils.identify_projects(
+                    title=combined_title, 
+                    url=url, 
+                    content=page_text
+                )
+                
+                # STEP 3: Extract methods
+                page_methods = self.method_llm.extract_methods(
+                    title=combined_title, 
+                    url=url, 
+                    content=page_text
+                )
+                
+                # Log extraction results
+                logger.info(f"[{resource_id}] Extracted {len(page_definitions)} definition(s), {len(page_projects)} project(s), {len(page_methods)} method(s)")
+                
+                # Update results
+                result["definitions"] = page_definitions
+                result["projects"] = page_projects
+                result["methods"] = page_methods
+                
+                # Save to storage if we have results
+                if page_definitions or page_projects or page_methods:
+                    self.vector_generation_needed = True
+                    
+                    # Save to CSV using DataSaver
+                    self.data_saver.save_definition(page_definitions)
+                    self.data_saver.save_project(page_projects)
+                    self.data_saver.save_method(page_methods)
+                    
+                    # Cache the content to the temporary file for vector building later
+                    content_obj = {
+                        "source": url,
+                        "title": combined_title,
+                        "content": page_text,
+                        "extracted_at": datetime.now().isoformat(),
+                        "resource_id": resource_id,
+                        "page_type": f"level{depth}"
+                    }
+                    self.temp_storage.append_to_temp_file(temp_path, json.dumps(content_obj))
+                
+                # Mark the URL as processed - use URL storage
+                from scripts.analysis.url_storage import URLStorageManager
+                from utils.config import get_data_path
+                processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                url_storage = URLStorageManager(processed_urls_file)
+                
+                # Mark as processed
+                url_storage.save_processed_url(url, depth=depth, origin=origin_url)
+                
+                # Mark the operation as successful
+                result["success"] = True
+                result["processing_time_seconds"] = (datetime.now() - start_time).total_seconds()
+                
+            except Exception as e:
+                logger.error(f"[{resource_id}] Error processing URL content: {e}")
+                result["error"] = str(e)
+                
+        except Exception as e:
+            logger.error(f"[{resource_id}] Error processing URL: {e}")
+            result["error"] = str(e)
+            
+        return result

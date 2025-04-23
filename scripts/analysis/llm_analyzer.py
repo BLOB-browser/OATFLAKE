@@ -71,6 +71,41 @@ class LLMAnalyzer:
         except Exception as e:
             logger.error(f"Error generating tags: {e}")
             return []
+            
+    def generate_purpose(self, title: str, url: str, content: str, description: str) -> str:
+        """
+        Generate a concise statement of purpose for a resource.
+        
+        Args:
+            title: Resource title
+            url: Resource URL
+            content: Resource content text
+            description: Resource description
+            
+        Returns:
+            Purpose statement or empty string if generation fails
+        """
+        try:
+            logger.info(f"Generating purpose for {title}")
+            # If ResourceLLM has generate_purpose method, use it
+            if hasattr(self.resource_llm, 'generate_purpose'):
+                purpose = self.resource_llm.generate_purpose(title, url, content, description)
+                logger.info(f"Generated purpose for {title}: {purpose[:50]}...")
+                return purpose
+            else:
+                # Otherwise create a default purpose based on title and description
+                logger.warning(f"ResourceLLM doesn't have generate_purpose method, using default")
+                if description and len(description) > 30:
+                    # Extract first sentence from description as purpose
+                    first_sentence = description.split('.')[0].strip()
+                    if len(first_sentence) > 20:
+                        return first_sentence
+                
+                # Fall back to generic purpose if description not usable
+                return f"Resource for learning about {title}"
+        except Exception as e:
+            logger.error(f"Error generating purpose: {e}")
+            return f"Resource related to {title}"
 
     # Delegate all extraction methods to the ExtractionUtils
     def extract_definitions(self, title: str, url: str, content: str) -> List[Dict]:

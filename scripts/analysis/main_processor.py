@@ -83,7 +83,8 @@ class MainProcessor:
         """Check if processing should be cancelled for backward compatibility"""
         return is_interrupt_requested()
     
-    def process_resources(self, csv_path: str = None, max_resources: int = None, force_reanalysis: bool = False, skip_vector_generation: bool = False) -> Dict[str, Any]:
+    def process_resources(self, csv_path: str = None, max_resources: int = None, force_reanalysis: bool = False, 
+                      skip_vector_generation: bool = False, process_by_level: bool = True, max_depth: int = 4) -> Dict[str, Any]:
         """
         Process resources from a CSV file.
         
@@ -92,6 +93,8 @@ class MainProcessor:
             max_resources: Maximum number of resources to process
             force_reanalysis: Whether to force reanalysis of already processed resources
             skip_vector_generation: Whether to skip vector generation after processing
+            process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
+            max_depth: Maximum crawl depth (1=just main page links, 2=two levels, 3=three levels, etc.)
             
         Returns:
             Dictionary with processing statistics
@@ -212,7 +215,9 @@ class MainProcessor:
                         resource_id, 
                         idx, 
                         csv_path,
-                        on_subpage_processed=lambda: self._check_and_generate_vectors(url_storage, stats, skip_vector_generation)
+                        on_subpage_processed=lambda: self._check_and_generate_vectors(url_storage, stats, skip_vector_generation),
+                        process_by_level=process_by_level,  # Pass the level-processing parameter
+                        max_depth=max_depth  # Pass the maximum crawl depth
                     )
                     
                     # Update statistics

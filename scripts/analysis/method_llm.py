@@ -12,6 +12,8 @@ import re
 import requests
 import time
 from typing import Dict, List, Any, Optional, Union
+import uuid
+from datetime import datetime
 
 # Add import for interruptible requests
 from scripts.analysis.interruptible_llm import (
@@ -19,6 +21,9 @@ from scripts.analysis.interruptible_llm import (
     setup_interrupt_handling, restore_interrupt_handling,
     clear_interrupt
 )
+
+# Import Method schema for validation
+from scripts.models.schemas import Method
 
 logger = logging.getLogger(__name__)
 
@@ -286,12 +291,40 @@ REQUIRED FORMAT:
                             
                             # Only add if we have the required fields with content
                             if title_str and desc_str and steps_list:
-                                validated_methods.append({
-                                    'title': title_str,
-                                    'description': desc_str,
-                                    'steps': steps_list,
-                                    'tags': tags_list
-                                })
+                                try:
+                                    # Create a Method object with all required fields using the schema
+                                    method_model = Method(
+                                        id=str(uuid.uuid4()),
+                                        title=title_str,
+                                        description=desc_str,
+                                        content_type="method",
+                                        tags=tags_list,
+                                        steps=steps_list,
+                                        creator_id="system",
+                                        group_id="default",
+                                        created_at=datetime.now(),
+                                        status="active",
+                                        visibility="public",
+                                        analysis_completed=True,
+                                        purpose="To document a methodology or process"
+                                    )
+                                    
+                                    # Convert to dictionary
+                                    valid_method = method_model.dict()
+                                    
+                                    # Add the validated method
+                                    validated_methods.append(valid_method)
+                                    logger.debug(f"Added validated method: {title_str}")
+                                except Exception as validation_err:
+                                    logger.warning(f"Method validation error for {title_str}: {validation_err}")
+                                    # Fallback to the original dictionary if schema validation fails
+                                    validated_methods.append({
+                                        'title': title_str,
+                                        'description': desc_str,
+                                        'steps': steps_list,
+                                        'tags': tags_list
+                                    })
+                                    logger.debug(f"Added unvalidated method: {title_str}")
                     except Exception as item_err:
                         logger.warning(f"Error validating method item: {item_err}")
                         continue

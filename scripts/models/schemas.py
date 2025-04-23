@@ -4,12 +4,46 @@ from typing import Optional, List, Dict
 import uuid
 
 class Definition(BaseModel):
-    term: str
-    definition: str
-    tags: List[str] = []
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    term: str  # Title equivalent for definitions
+    definition: str  # Description equivalent for definitions
+    content_type: str = "definition"  # Type of content
+    origin_url: Optional[str] = None  # Primary source URL for the content
+    tags: List[str] = []  # Array of keywords or tags
+    purpose: Optional[str] = None  # Purpose or usecase of data
+    related_url: Optional[str] = None  # Additional related URLs
+    status: str = "active"  # Current status of the item
+    creator_id: Optional[str] = None  # ID of the content creator
+    collaborators: Optional[str] = None  # IDs of collaborators
+    group_id: Optional[str] = None  # ID of the associated group
+    created_at: datetime = Field(default_factory=datetime.now)  # Timestamp of creation
+    last_updated_at: Optional[datetime] = None  # Timestamp of last update
+    analysis_completed: bool = False  # Boolean indicating if analysis is complete
+    visibility: str = "public"  # Status of visibility
+    
+    # Fields for backward compatibility
     source: Optional[str] = None
     resource_url: Optional[str] = None
-    created_at: Optional[datetime] = None
+    
+    @validator('content_type')
+    def validate_content_type(cls, v):
+        if v != "definition":
+            raise ValueError('content_type must be "definition"')
+        return v
+        
+    @validator('status')
+    def validate_status(cls, v):
+        valid_statuses = ['active', 'archive', 'draft', 'deprecated']
+        if v not in valid_statuses:
+            raise ValueError(f'status must be one of: {", ".join(valid_statuses)}')
+        return v
+        
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        valid_visibility = ['public', 'private', 'group']
+        if v not in valid_visibility:
+            raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
+        return v
 
 class JsonRequest(BaseModel):
     path: str
@@ -24,41 +58,85 @@ class ConnectionResponse(BaseModel):
     server_version: str = "0.1.0"
 
 class Project(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     description: str
+    content_type: str = "project"  # Type of content (method, definition, material, project, resource)
+    origin_url: Optional[str] = None  # Primary source URL for the content
+    tags: List[str] = []  # Array of keywords or tags - replacing fields for consistency
+    purpose: Optional[str] = None  # Purpose or usecase of data
+    related_url: Optional[str] = None  # Additional related URLs
+    status: str = "active"  # Current status of the item (active, archive, etc.)
+    creator_id: str  # ID of the content creator
+    collaborators: Optional[str] = None  # IDs of collaborators
+    group_id: Optional[str] = None  # ID of the associated group
+    created_at: datetime = Field(default_factory=datetime.now)  # Timestamp of creation
+    last_updated_at: Optional[datetime] = None  # Timestamp of last update
+    analysis_completed: bool = False  # Boolean indicating if analysis is complete
+    visibility: str = "public"  # Status of visibility (public, private, etc.)
+    
+    # Project-specific fields
     goals: str
     achievement: str
     documentation_url: Optional[str] = None
-    fields: str
-    privacy: str  # public or private
-    status: str   # active or archived
-    creator_id: str
-    source: Optional[str] = None
+    
+    # Fields for backward compatibility
     resource_url: Optional[str] = None
-    created_at: Optional[datetime] = None
-    modified_at: Optional[datetime] = None
-
-    @validator('privacy')
-    def validate_privacy(cls, v):
-        if v not in ['public', 'private']:
-            raise ValueError('Privacy must be either public or private')
+    source: Optional[str] = None
+    
+    @validator('content_type')
+    def validate_content_type(cls, v):
+        if v != "project":
+            raise ValueError('content_type must be "project"')
         return v
-
+        
     @validator('status')
     def validate_status(cls, v):
-        if v not in ['active', 'archived']:  # Fixed extra parenthesis here
-            raise ValueError('Status must be either active or archived')
+        valid_statuses = ['active', 'archive', 'draft', 'deprecated']
+        if v not in valid_statuses:
+            raise ValueError(f'status must be one of: {", ".join(valid_statuses)}')
         return v
+        
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        valid_visibility = ['public', 'private', 'group']
+        if v not in valid_visibility:
+            raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
+        return v
+        
+    class Config:
+        # Allow privacy to be provided as visibility for backward compatibility
+        fields = {
+            'visibility': {'alias': 'privacy'}
+        }
 
 class Method(BaseModel):
-    group_id: str
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     description: str
-    steps: List[str] = []  # Make steps optional with default empty list
-    tags: List[str] = []   # Make tags optional with default empty list
-    creator_id: str
-    created_at: Optional[datetime] = None
-
+    content_type: str = "method"  # Type of content (method, definition, material, project, resource)
+    origin_url: Optional[str] = None  # Primary source URL for the content
+    tags: List[str] = []  # Array of keywords or tags
+    purpose: Optional[str] = None  # Purpose or usecase of data
+    related_url: Optional[str] = None  # Additional related URLs
+    status: str = "active"  # Current status of the item (active, archive, etc.)
+    creator_id: str  # ID of the content creator
+    collaborators: Optional[str] = None  # IDs of collaborators
+    group_id: str  # ID of the associated group
+    created_at: datetime = Field(default_factory=datetime.now)  # Timestamp of creation
+    last_updated_at: Optional[datetime] = None  # Timestamp of last update
+    analysis_completed: bool = False  # Boolean indicating if analysis is complete
+    visibility: str = "public"  # Status of visibility (public, private, etc.)
+    
+    # Method-specific fields
+    steps: List[str] = []  # Steps for the method
+    
+    @validator('content_type')
+    def validate_content_type(cls, v):
+        if v != "method":
+            raise ValueError('content_type must be "method"')
+        return v
+    
     @validator('steps')
     def validate_steps(cls, v):
         if not v:
@@ -70,22 +148,117 @@ class Method(BaseModel):
         if not v:
             return []  # Return empty list if None
         return v
+        
+    @validator('status')
+    def validate_status(cls, v):
+        valid_statuses = ['active', 'archive', 'draft', 'deprecated']
+        if v not in valid_statuses:
+            raise ValueError(f'status must be one of: {", ".join(valid_statuses)}')
+        return v
+        
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        valid_visibility = ['public', 'private', 'group']
+        if v not in valid_visibility:
+            raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
+        return v
 
 class Resource(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
-    url: HttpUrl
     description: str
-    type: str  # TODO: Could be made into Enum if types are fixed
-    category: str
-    tags: List[str] = []
-    created_at: Optional[datetime] = None
+    content_type: str = "resource"  # Type of content (method, definition, material, project, resource)
+    origin_url: HttpUrl  # Primary source URL for the content
+    tags: List[str] = []  # Array of keywords or tags
+    purpose: Optional[str] = None  # Purpose or usecase of data
+    related_url: Optional[str] = None  # Additional related URLs
+    status: str = "active"  # Current status of the item (active, archive, etc.)
+    creator_id: Optional[str] = None  # ID of the content creator
+    collaborators: Optional[str] = None  # IDs of collaborators
+    group_id: Optional[str] = None  # ID of the associated group
+    created_at: datetime = Field(default_factory=datetime.now)  # Timestamp of creation
+    last_updated_at: Optional[datetime] = None  # Timestamp of last update
+    analysis_completed: bool = False  # Boolean indicating if analysis is complete
+    visibility: str = "public"  # Status of visibility (public, private, etc.)
+    category: Optional[str] = None  # Category for backward compatibility
+    
+    @validator('content_type')
+    def validate_content_type(cls, v):
+        valid_types = ['method', 'definition', 'material', 'project', 'resource']
+        if v not in valid_types:
+            raise ValueError(f'content_type must be one of: {", ".join(valid_types)}')
+        return v
+        
+    @validator('status')
+    def validate_status(cls, v):
+        valid_statuses = ['active', 'archive', 'draft', 'deprecated']
+        if v not in valid_statuses:
+            raise ValueError(f'status must be one of: {", ".join(valid_statuses)}')
+        return v
+        
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        valid_visibility = ['public', 'private', 'group']
+        if v not in valid_visibility:
+            raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
+        return v
+        
+    class Config:
+        # Allow URL to be provided as origin_url for backward compatibility
+        fields = {
+            'origin_url': {'alias': 'url'}
+        }
 
 class ReadingMaterial(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     description: Optional[str] = None
-    fields: List[str] = []
-    created_at: Optional[datetime] = None
+    content_type: str = "material"  # Type of content
+    origin_url: Optional[str] = None  # Primary source URL or file path
+    tags: List[str] = []  # Array of keywords or tags (replacing fields)
+    purpose: Optional[str] = None  # Purpose or usecase of data
+    related_url: Optional[str] = None  # Additional related URLs
+    status: str = "active"  # Current status of the item
+    creator_id: Optional[str] = None  # ID of the content creator
+    collaborators: Optional[str] = None  # IDs of collaborators
+    group_id: Optional[str] = None  # ID of the associated group
+    created_at: datetime = Field(default_factory=datetime.now)  # Timestamp of creation
+    last_updated_at: Optional[datetime] = None  # Timestamp of last update
+    analysis_completed: bool = False  # Boolean indicating if analysis is complete
+    visibility: str = "public"  # Status of visibility
+    
+    # Reading material specific fields
     file_path: Optional[str] = None  # Will be set after file upload
+    
+    # For backward compatibility
+    fields: List[str] = []  # Old name for tags
+    
+    @validator('content_type')
+    def validate_content_type(cls, v):
+        if v != "material":
+            raise ValueError('content_type must be "material"')
+        return v
+        
+    @validator('status')
+    def validate_status(cls, v):
+        valid_statuses = ['active', 'archive', 'draft', 'deprecated']
+        if v not in valid_statuses:
+            raise ValueError(f'status must be one of: {", ".join(valid_statuses)}')
+        return v
+        
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        valid_visibility = ['public', 'private', 'group']
+        if v not in valid_visibility:
+            raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
+        return v
+        
+    @validator('tags')
+    def validate_tags(cls, v, values):
+        # If tags is empty but fields exists (for backward compatibility), copy fields to tags
+        if not v and 'fields' in values and values['fields']:
+            return values['fields']
+        return v
 
 class WebRequest(BaseModel):
     prompt: str

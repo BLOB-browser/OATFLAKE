@@ -49,7 +49,9 @@ class ResourceBatchProcessor:
         """Check if processing should be cancelled"""
         return self._cancel_processing or is_interrupt_requested()
     
-    def process_resources(self, csv_path: str = None, max_resources: int = None, force_reanalysis: bool = False, skip_vector_generation: bool = False) -> Dict[str, Any]:
+    def process_resources(self, csv_path: str = None, max_resources: int = None, force_reanalysis: bool = False,
+                      skip_vector_generation: bool = False, process_by_level: bool = True, max_depth: int = 4, 
+                      process_cross_resource: bool = True, current_level: int = None) -> Dict[str, Any]:
         """
         Process resources from a CSV file.
         
@@ -58,6 +60,10 @@ class ResourceBatchProcessor:
             max_resources: Maximum number of resources to process
             force_reanalysis: Whether to force reanalysis of already processed resources
             skip_vector_generation: Whether to skip vector generation after processing
+            process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
+            max_depth: Maximum crawl depth (1=just main page links, 2=two levels, 3=three levels, etc.)
+            process_cross_resource: If True, process all resource URLs at one level before moving to the next level
+            current_level: If specified, only process URLs at this specific level
             
         Returns:
             Dictionary with processing statistics
@@ -157,7 +163,14 @@ class ResourceBatchProcessor:
                 
                 try:
                     # Process this resource using the single resource processor
-                    result = self.single_processor.process_resource(resource, resource_id, idx, csv_path)
+                    result = self.single_processor.process_resource(
+                        resource, 
+                        resource_id, 
+                        idx, 
+                        csv_path,
+                        process_by_level=process_by_level,  # Pass the level-processing parameter
+                        max_depth=max_depth  # Pass the maximum crawl depth
+                    )
                     
                     # Update statistics
                     stats["resources_processed"] += 1

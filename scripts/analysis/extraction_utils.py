@@ -9,9 +9,14 @@ This module separates extraction logic for better modularity and code maintenanc
 import logging
 import json
 from typing import Dict, List, Any, Optional
+import uuid
+from datetime import datetime
 
 # Add import for interrupt handling
 from scripts.analysis.interruptible_llm import is_interrupt_requested
+
+# Import schemas for validation
+from scripts.models.schemas import Definition, Project, Method
 
 logger = logging.getLogger(__name__)
 
@@ -266,13 +271,73 @@ class ExtractionUtils:
                                     'origin_title': title  # The title of the content source
                                 }
                                 
-                                # Add optional fields if they exist in the response
-                                if 'category' in item and item['category']:
-                                    definition_obj['category'] = str(item['category']).strip()
-                                if 'source_text' in item and item['source_text']:
-                                    definition_obj['source_text'] = str(item['source_text']).strip()
+                                # Get tags from response or create default ones
+                                tags_list = []
+                                if 'tags' in item:
+                                    # Process tags as a list
+                                    if isinstance(item['tags'], list):
+                                        tags_list = [str(tag).strip().lower() for tag in item['tags'] if tag]
+                                    # Process tags as a string that might be JSON
+                                    elif isinstance(item['tags'], str):
+                                        if item['tags'].startswith('[') and item['tags'].endswith(']'):
+                                            try:
+                                                parsed_tags = json.loads(item['tags'])
+                                                if isinstance(parsed_tags, list):
+                                                    tags_list = [str(tag).strip().lower() for tag in parsed_tags if tag]
+                                            except:
+                                                tags_list = [item['tags'].strip('[]').strip('"\'').strip().lower()]
+                                        else:
+                                            tags_list = [item['tags'].strip().lower()]
+                                # For backward compatibility, use category as a tag if no tags
+                                elif 'category' in item and item['category']:
+                                    category = str(item['category']).strip()
+                                    tags_list = [category.lower()]
+                                    # Keep category for backward compatibility
+                                    definition_obj['category'] = category
+                                else:
+                                    # Default tags based on term if none provided
+                                    tags_list = ["terminology"]
                                 
-                                validated_definitions.append(definition_obj)
+                                # Add source text if available
+                                source_text = None
+                                if 'source_text' in item and item['source_text']:
+                                    source_text = str(item['source_text']).strip()
+                                    
+                                # Use the Definition schema to validate
+                                try:
+                                    # Create a Definition object with all the required fields
+                                    definition_model = Definition(
+                                        id=str(uuid.uuid4()),
+                                        term=term,
+                                        definition=definition,
+                                        content_type="definition",
+                                        tags=tags_list,
+                                        source=url,
+                                        resource_url=url,
+                                        origin_url=url,
+                                        created_at=datetime.now(),
+                                        status="active",
+                                        visibility="public",
+                                        analysis_completed=True,
+                                        purpose="To define terminology and concepts"
+                                    )
+                                    
+                                    # Convert to dictionary and add any additional fields
+                                    valid_definition = definition_model.dict()
+                                    if source_text:
+                                        valid_definition['source_text'] = source_text
+                                    if 'category' in definition_obj:
+                                        valid_definition['category'] = definition_obj['category']
+                                    
+                                    # Add the validated definition
+                                    validated_definitions.append(valid_definition)
+                                    logger.debug(f"Added validated definition for term: {term}")
+                                except Exception as validation_err:
+                                    logger.warning(f"Definition validation error for {term}: {validation_err}")
+                                    # Fallback to the original dictionary if schema validation fails
+                                    definition_obj['tags'] = tags_list
+                                    validated_definitions.append(definition_obj)
+                                    logger.debug(f"Added unvalidated definition for term: {term}")
                     except Exception as item_err:
                         logger.warning(f"Error validating definition item: {item_err}")
                         continue
@@ -391,7 +456,7 @@ If no definitions are found, return an empty array.
                - "title": The exact name of the specific project (string)
                - "description": A brief description (string, 1-2 sentences)
                - "goals": The stated objectives of this project (string, if available)
-               - "fields": Array of strings with 2-5 relevant field/category tags
+               - "tags": Array of strings with 2-5 relevant category or topic tags
             3. Return ONLY the JSON array with no explanation text before or after
             4. If no projects are found, return an empty array: []
             5. The JSON MUST be valid and parseable
@@ -402,7 +467,7 @@ If no definitions are found, return an empty array.
                 "title": "Project Name",
                 "description": "Brief description of what this project is",
                 "goals": "The stated objectives of this project",
-                "fields": ["field1", "field2", "field3"]
+                "tags": ["tag1", "tag2", "tag3"]
               }}
             ]
             [/INST]</s>"""
@@ -421,38 +486,88 @@ If no definitions are found, return an empty array.
                             desc_str = str(item['description']).strip()
                             goals_str = str(item.get('goals', '')).strip()
                             
-                            # Ensure fields are lists of strings if present
-                            fields_list = []
-                            if 'fields' in item:
-                                if isinstance(item['fields'], list):
-                                    fields_list = [str(field).strip() for field in item['fields'] if field]
-                                elif isinstance(item['fields'], str):
+                            # Ensure tags are lists of strings if present
+                            tags_list = []
+                            if 'tags' in item:
+                                if isinstance(item['tags'], list):
+                                    tags_list = [str(tag).strip().lower() for tag in item['tags'] if tag]
+                                elif isinstance(item['tags'], str):
                                     # Try to parse string as JSON array if it looks like one
+                                    if item['tags'].startswith('[') and item['tags'].endswith(']'):
+                                        try:
+                                            parsed_tags = json.loads(item['tags'])
+                                            if isinstance(parsed_tags, list):
+                                                tags_list = [str(tag).strip().lower() for tag in parsed_tags if tag]
+                                        except:
+                                            # If parsing fails, use it as a single tag
+                                            tags_list = [item['tags'].strip('[]').strip('"\'').strip().lower()]
+                                    else:
+                                        # Use as a single tag
+                                        tags_list = [item['tags'].strip().lower()]
+                            # For backward compatibility, also check fields and convert to tags
+                            elif 'fields' in item:
+                                if isinstance(item['fields'], list):
+                                    tags_list = [str(field).strip().lower() for field in item['fields'] if field]
+                                elif isinstance(item['fields'], str):
+                                    # Try to parse string as JSON array
                                     if item['fields'].startswith('[') and item['fields'].endswith(']'):
                                         try:
                                             parsed_fields = json.loads(item['fields'])
                                             if isinstance(parsed_fields, list):
-                                                fields_list = [str(field).strip() for field in parsed_fields if field]
+                                                tags_list = [str(field).strip().lower() for field in parsed_fields if field]
                                         except:
-                                            # If parsing fails, use it as a single tag
-                                            fields_list = [item['fields'].strip('[]').strip('"\'').strip()]
+                                            tags_list = [item['fields'].strip('[]').strip('"\'').strip().lower()]
                                     else:
-                                        # Use as a single tag
-                                        fields_list = [item['fields'].strip()]
+                                        tags_list = [item['fields'].strip().lower()]
                             
                             # Only add if we have the required fields with content
                             if title_str and desc_str:
-                                project_obj = {
-                                    'title': title_str,
-                                    'description': desc_str,
-                                    'goals': goals_str,
-                                    'fields': fields_list,
-                                    # Add source information
-                                    'source': url,  # The specific URL this project was found on
-                                    'resource_url': url,  # The main resource URL (same in this case)
-                                    'origin_title': title  # The title of the content source
-                                }
-                                validated_projects.append(project_obj)
+                                # Use the Project schema to validate
+                                try:
+                                    # Create a Project object with all the required fields
+                                    project_model = Project(
+                                        id=str(uuid.uuid4()),
+                                        title=title_str,
+                                        description=desc_str,
+                                        goals=goals_str,
+                                        content_type="project",
+                                        tags=tags_list,
+                                        origin_url=url,
+                                        source=url,
+                                        resource_url=url,
+                                        created_at=datetime.now(),
+                                        status="active",
+                                        visibility="public",
+                                        analysis_completed=True,
+                                        purpose="To document a project or initiative",
+                                        creator_id="system",
+                                        achievement=""  # Required by Project schema
+                                    )
+                                    
+                                    # Convert to dictionary and add additional fields
+                                    valid_project = project_model.dict()
+                                    
+                                    # Set origin title (don't set fields anymore, using tags only)
+                                    valid_project['origin_title'] = title
+                                    
+                                    # Add the validated project
+                                    validated_projects.append(valid_project)
+                                    logger.debug(f"Added validated project: {title_str}")
+                                except Exception as validation_err:
+                                    logger.warning(f"Project validation error for {title_str}: {validation_err}")
+                                    # Fallback to the original dictionary if schema validation fails
+                                    project_obj = {
+                                        'title': title_str,
+                                        'description': desc_str,
+                                        'goals': goals_str,
+                                        'tags': tags_list,  # Use tags only
+                                        # Add source information
+                                        'source': url,  # The specific URL this project was found on
+                                        'resource_url': url,  # The main resource URL (same in this case)
+                                        'origin_title': title  # The title of the content source
+                                    }
+                                    validated_projects.append(project_obj)
+                                    logger.debug(f"Added unvalidated project: {title_str}")
                     except Exception as item_err:
                         logger.warning(f"Error validating project item: {item_err}")
                         continue

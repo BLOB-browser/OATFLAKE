@@ -94,7 +94,9 @@ async def process_knowledge_base(
     resource_limit: Optional[int] = None,
     force_update: bool = False,
     skip_vector_generation: bool = False,
-    check_unanalyzed: bool = True  # New parameter to check for unanalyzed resources
+    check_unanalyzed: bool = True,  # New parameter to check for unanalyzed resources
+    skip_questions: bool = False,   # Skip question generation (useful when time is limited)
+    skip_goals: bool = False        # Skip goal extraction (useful when time is limited)
 ):
     """
     Process all knowledge base files and generate embeddings.
@@ -128,6 +130,8 @@ async def process_knowledge_base(
         skip_vector_generation: If True, skip vector generation in this step (for when it will be done later)
         check_unanalyzed: If True, always processes resources that haven't been analyzed yet,
                           even when no file changes are detected
+        skip_questions: If True, skip question generation step (useful when time is limited)
+        skip_goals: If True, skip goal extraction step (useful when time is limited)
     """
     global _processing_active, _processor_cancel_event
     
@@ -637,63 +641,77 @@ async def process_knowledge_base(
             logger.info("Vector generation explicitly skipped")
             result["vector_generation"] = {"status": "skipped", "reason": "explicitly skipped"}
 
-        # Step 6: Extract goals from vector stores
-        logger.info("STEP 6: EXTRACTING GOALS FROM VECTOR STORES")
-        logger.info("=========================================")
-        
-        try:
-            # Initialize goal extractor
-            goal_extractor = GoalExtractor(str(data_path))
-            
-            # Extract goals using the current ollama client
-            goals_result = await goal_extractor.extract_goals(ollama_client=request.app.state.ollama_client)
-            
-            if goals_result.get("status") == "success":
-                logger.info(f"Successfully extracted {goals_result.get('stats', {}).get('goals_extracted', 0)} goals")
-                result["goals"] = {
-                    "goals_extracted": goals_result.get("stats", {}).get("goals_extracted", 0),
-                    "stores_analyzed": goals_result.get("stats", {}).get("stores_analyzed", []),
-                    "duration_seconds": goals_result.get("stats", {}).get("duration_seconds", 0)
-                }
-            else:
-                logger.warning(f"Goal extraction issue: {goals_result.get('message')}")
-                result["goals"] = {
-                    "status": "warning",
-                    "message": goals_result.get("message", "Unknown issue during goal extraction")
-                }
-        except Exception as goal_error:
-            logger.error(f"Error during goal extraction: {goal_error}", exc_info=True)
+        # Step 6: Extract goals from vector stores (unless skipped)
+        if skip_goals:
+            logger.info("STEP 6: SKIPPING GOAL EXTRACTION (skip_goals=True)")
             result["goals"] = {
-                "status": "error",
-                "error": str(goal_error)
+                "status": "skipped",
+                "message": "Goal extraction explicitly skipped"
             }
-        
-        # Step 7: Generate questions after processing the knowledge base
-        logger.info("STEP 7: GENERATING QUESTIONS FROM PROCESSED KNOWLEDGE")
-        logger.info("===================================================")
-        try:
-            # Generate more questions to ensure variety
-            questions = await generate_questions(num_questions=15)
-            questions_result = {}
+        else:
+            logger.info("STEP 6: EXTRACTING GOALS FROM VECTOR STORES")
+            logger.info("=========================================")
             
-            if questions:
-                questions_saved = await save_questions(questions)
-                questions_result = {
-                    "questions_generated": len(questions),
-                    "questions_saved": questions_saved
+            try:
+                # Initialize goal extractor
+                goal_extractor = GoalExtractor(str(data_path))
+                
+                # Extract goals using the current ollama client
+                goals_result = await goal_extractor.extract_goals(ollama_client=request.app.state.ollama_client)
+                
+                if goals_result.get("status") == "success":
+                    logger.info(f"Successfully extracted {goals_result.get('stats', {}).get('goals_extracted', 0)} goals")
+                    result["goals"] = {
+                        "goals_extracted": goals_result.get("stats", {}).get("goals_extracted", 0),
+                        "stores_analyzed": goals_result.get("stats", {}).get("stores_analyzed", []),
+                        "duration_seconds": goals_result.get("stats", {}).get("duration_seconds", 0)
+                    }
+                else:
+                    logger.warning(f"Goal extraction issue: {goals_result.get('message')}")
+                    result["goals"] = {
+                        "status": "warning",
+                        "message": goals_result.get("message", "Unknown issue during goal extraction")
+                    }
+            except Exception as goal_error:
+                logger.error(f"Error during goal extraction: {goal_error}", exc_info=True)
+                result["goals"] = {
+                    "status": "error",
+                    "error": str(goal_error)
                 }
-                logger.info(f"Successfully generated {len(questions)} new questions from knowledge base")
-            else:
-                logger.warning("No questions could be generated")
+        
+        # Step 7: Generate questions after processing the knowledge base (unless skipped)
+        if skip_questions:
+            logger.info("STEP 7: SKIPPING QUESTION GENERATION (skip_questions=True)")
+            questions_result = {
+                "status": "skipped",
+                "message": "Question generation explicitly skipped"
+            }
+        else:
+            logger.info("STEP 7: GENERATING QUESTIONS FROM PROCESSED KNOWLEDGE")
+            logger.info("===================================================")
+            try:
+                # Generate more questions to ensure variety
+                questions = await generate_questions(num_questions=15)
+                questions_result = {}
+                
+                if questions:
+                    questions_saved = await save_questions(questions)
+                    questions_result = {
+                        "questions_generated": len(questions),
+                        "questions_saved": questions_saved
+                    }
+                    logger.info(f"Successfully generated {len(questions)} new questions from knowledge base")
+                else:
+                    logger.warning("No questions could be generated")
+                    questions_result = {
+                        "questions_generated": 0,
+                        "questions_saved": False,
+                        "error": "No questions generated - possible timeout or empty context"
+                    }
+            except Exception as question_error:
+                logger.error(f"Error generating questions: {question_error}", exc_info=True)
                 questions_result = {
                     "questions_generated": 0,
-                    "questions_saved": False,
-                    "error": "No questions generated - possible timeout or empty context"
-                }
-        except Exception as question_error:
-            logger.error(f"Error generating questions: {question_error}", exc_info=True)
-            questions_result = {
-                "questions_generated": 0,
                 "questions_saved": False,
                 "error": str(question_error)
             }
