@@ -220,15 +220,37 @@ class DataSaver:
             
             # Handle combining with existing data if file exists
             file_exists = os.path.isfile(csv_path)
+            logger.info(f"DEBUG DEFINITIONS: File {csv_path} exists? {file_exists}")
             if file_exists:
-                # Read existing to avoid duplicates
-                existing_df = pd.read_csv(csv_path)
-                combined_df = pd.concat([existing_df, df]).drop_duplicates(subset=['term'])
-                combined_df.to_csv(csv_path, index=False)
-                logger.info(f"Updated definitions in {csv_path} (total: {len(combined_df)})")
+                try:
+                    # Read existing to avoid duplicates
+                    existing_df = pd.read_csv(csv_path)
+                    logger.info(f"DEBUG DEFINITIONS: Loaded existing file with {len(existing_df)} rows")
+                    combined_df = pd.concat([existing_df, df]).drop_duplicates(subset=['term'])
+                    combined_df.to_csv(csv_path, index=False)
+                    logger.info(f"Updated definitions in {csv_path} (total: {len(combined_df)})")
+                    
+                    # Verify the file was written correctly
+                    if os.path.exists(csv_path):
+                        file_size = os.path.getsize(csv_path)
+                        logger.info(f"DEBUG DEFINITIONS: After write: file exists with size {file_size} bytes")
+                    else:
+                        logger.warning(f"DEBUG DEFINITIONS: After write: file does not exist!")
+                        
+                except Exception as e:
+                    logger.error(f"DEBUG DEFINITIONS: Error merging definitions: {e}")
+                    df.to_csv(csv_path, index=False)
+                    logger.info(f"DEBUG DEFINITIONS: Created new file with {len(df)} definitions after error")
             else:
                 df.to_csv(csv_path, index=False)
-                logger.info(f"Created {csv_path} with {len(df)} definitions")
+                logger.info(f"DEBUG DEFINITIONS: Created new file {csv_path} with {len(df)} definitions")
+                
+                # Verify the file was written correctly
+                if os.path.exists(csv_path):
+                    file_size = os.path.getsize(csv_path)
+                    logger.info(f"DEBUG DEFINITIONS: After write: file exists with size {file_size} bytes")
+                else:
+                    logger.warning(f"DEBUG DEFINITIONS: After write: file does not exist!")
                 
         except Exception as e:
             logger.error(f"Error saving definitions CSV: {e}")
@@ -343,10 +365,13 @@ class DataSaver:
             
             # Handle combining with existing data if file exists
             file_exists = os.path.isfile(csv_path)
+            logger.info(f"DEBUG PROJECTS: File {csv_path} exists? {file_exists}")
+            
             if file_exists:
                 try:
                     # Read existing to avoid duplicates
                     existing_df = pd.read_csv(csv_path)
+                    logger.info(f"DEBUG PROJECTS: Loaded existing file with {len(existing_df)} rows")
                     
                     # If we have IDs in both, use that for merging
                     if 'id' in existing_df.columns and 'id' in df.columns:
@@ -365,7 +390,7 @@ class DataSaver:
                         # Combine everything
                         combined_df = pd.concat([existing_df, updates, inserts], ignore_index=True)
                         
-                        logger.info(f"Updated {len(updates)} existing projects and added {len(inserts)} new projects")
+                        logger.info(f"DEBUG PROJECTS: Updated {len(updates)} existing projects and added {len(inserts)} new projects")
                     else:
                         # Use title as identifier if no ID
                         combined_df = pd.concat([existing_df, df], ignore_index=True)
@@ -375,18 +400,40 @@ class DataSaver:
                             combined_df = combined_df.drop_duplicates(subset=['title'], keep='last')
                         else:
                             # Just keep everything if no good identifiers
-                            logger.warning("No good identifiers for deduplication - may create duplicates")
+                            logger.warning("DEBUG PROJECTS: No good identifiers for deduplication - may create duplicates")
                     
                     combined_df.to_csv(csv_path, index=False)
-                    logger.info(f"Updated projects in {csv_path} (total: {len(combined_df)})")
+                    logger.info(f"DEBUG PROJECTS: Updated projects in {csv_path} (total: {len(combined_df)})")
+                    
+                    # Verify the file was written correctly
+                    if os.path.exists(csv_path):
+                        file_size = os.path.getsize(csv_path)
+                        logger.info(f"DEBUG PROJECTS: After write: file exists with size {file_size} bytes")
+                    else:
+                        logger.warning(f"DEBUG PROJECTS: After write: file does not exist!")
+                        
                 except Exception as merge_err:
-                    logger.error(f"Error merging with existing projects CSV, overwriting: {merge_err}")
+                    logger.error(f"DEBUG PROJECTS: Error merging with existing projects CSV: {merge_err}")
                     # If merge fails, fall back to overwriting
                     df.to_csv(csv_path, index=False)
-                    logger.info(f"Created {csv_path} with {len(df)} projects (overwrite)")
+                    logger.info(f"DEBUG PROJECTS: Created {csv_path} with {len(df)} projects (overwrite)")
+                    
+                    # Check if the file was created successfully
+                    if os.path.exists(csv_path):
+                        file_size = os.path.getsize(csv_path)
+                        logger.info(f"DEBUG PROJECTS: After error recovery: file exists with size {file_size} bytes")
+                    else:
+                        logger.warning(f"DEBUG PROJECTS: After error recovery: file does not exist!")
             else:
                 df.to_csv(csv_path, index=False)
-                logger.info(f"Created {csv_path} with {len(df)} projects (new file)")
+                logger.info(f"DEBUG PROJECTS: Created {csv_path} with {len(df)} projects (new file)")
+                
+                # Verify the file was written correctly
+                if os.path.exists(csv_path):
+                    file_size = os.path.getsize(csv_path)
+                    logger.info(f"DEBUG PROJECTS: After write: file exists with size {file_size} bytes")
+                else:
+                    logger.warning(f"DEBUG PROJECTS: After write: file does not exist!")
                 
         except Exception as e:
             logger.error(f"Error saving projects CSV: {e}", exc_info=True)
@@ -476,20 +523,55 @@ class DataSaver:
             
             # Handle combining with existing data if file exists
             file_exists = os.path.isfile(csv_path)
+            logger.info(f"DEBUG METHODS: File {csv_path} exists? {file_exists}")
+            
             if file_exists:
-                # Read existing to avoid duplicates
-                existing_df = pd.read_csv(csv_path)
-                # Use title + source as a composite key to avoid duplicates
-                combined_df = pd.concat([existing_df, df])
-                if 'title' in combined_df.columns and 'source' in combined_df.columns:
-                    combined_df = combined_df.drop_duplicates(subset=['title', 'source'])
-                else:
-                    combined_df = combined_df.drop_duplicates()
-                combined_df.to_csv(csv_path, index=False)
-                logger.info(f"Updated methods in {csv_path} (total: {len(combined_df)})")
+                try:
+                    # Read existing to avoid duplicates
+                    existing_df = pd.read_csv(csv_path)
+                    logger.info(f"DEBUG METHODS: Loaded existing file with {len(existing_df)} rows")
+                    
+                    # Use title + source as a composite key to avoid duplicates
+                    combined_df = pd.concat([existing_df, df])
+                    if 'title' in combined_df.columns and 'source' in combined_df.columns:
+                        combined_df = combined_df.drop_duplicates(subset=['title', 'source'])
+                        logger.info(f"DEBUG METHODS: Deduplicating by title and source")
+                    else:
+                        combined_df = combined_df.drop_duplicates()
+                        logger.info(f"DEBUG METHODS: Deduplicating by all columns (no title/source columns found)")
+                        
+                    combined_df.to_csv(csv_path, index=False)
+                    logger.info(f"DEBUG METHODS: Updated methods in {csv_path} (total: {len(combined_df)})")
+                    
+                    # Verify the file was written correctly
+                    if os.path.exists(csv_path):
+                        file_size = os.path.getsize(csv_path)
+                        logger.info(f"DEBUG METHODS: After write: file exists with size {file_size} bytes")
+                    else:
+                        logger.warning(f"DEBUG METHODS: After write: file does not exist!")
+                        
+                except Exception as merge_err:
+                    logger.error(f"DEBUG METHODS: Error merging with existing methods CSV: {merge_err}")
+                    # If merge fails, fall back to overwriting
+                    df.to_csv(csv_path, index=False)
+                    logger.info(f"DEBUG METHODS: Created {csv_path} with {len(df)} methods (overwrite)")
+                    
+                    # Check if the file was created successfully
+                    if os.path.exists(csv_path):
+                        file_size = os.path.getsize(csv_path)
+                        logger.info(f"DEBUG METHODS: After error recovery: file exists with size {file_size} bytes")
+                    else:
+                        logger.warning(f"DEBUG METHODS: After error recovery: file does not exist!")
             else:
                 df.to_csv(csv_path, index=False)
-                logger.info(f"Created {csv_path} with {len(df)} methods")
+                logger.info(f"DEBUG METHODS: Created {csv_path} with {len(df)} methods (new file)")
+                
+                # Verify the file was written correctly
+                if os.path.exists(csv_path):
+                    file_size = os.path.getsize(csv_path)
+                    logger.info(f"DEBUG METHODS: After write: file exists with size {file_size} bytes")
+                else:
+                    logger.warning(f"DEBUG METHODS: After write: file does not exist!")
                 
         except Exception as e:
             logger.error(f"Error saving methods CSV: {e}")

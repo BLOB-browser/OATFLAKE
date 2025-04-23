@@ -400,6 +400,9 @@ class ResourceLLM:
         Returns:
             Parsed JSON object or None if extraction fails
         """
+        # Log sample of the text for debugging
+        logger.debug(f"Attempting to extract JSON from text: {text[:100]}...")
+        
         # Try direct parsing first
         try:
             return json.loads(text)
@@ -409,13 +412,22 @@ class ResourceLLM:
         # Try to find JSON array/object boundaries with regex
         import re
         
-        # Look for array pattern
+        # Look for array patterns with either objects or simple values
+        # Pattern for arrays containing objects: [{...}, {...}]
         array_match = re.search(r'\[\s*{.*}\s*\]', text, re.DOTALL)
         if array_match:
             try:
                 return json.loads(array_match.group(0))
             except json.JSONDecodeError:
                 logger.warning("Array pattern extraction failed")
+                
+        # Pattern for simple arrays: ["value1", "value2"]
+        simple_array_match = re.search(r'\[\s*".*"\s*\]', text, re.DOTALL)
+        if simple_array_match:
+            try:
+                return json.loads(simple_array_match.group(0))
+            except json.JSONDecodeError:
+                logger.warning("Simple array pattern extraction failed")
         
         # Look for object pattern
         object_match = re.search(r'{.*}', text, re.DOTALL)
@@ -445,8 +457,74 @@ class ResourceLLM:
                         try:
                             return json.loads(json_block)
                         except json.JSONDecodeError:
-                            continue
+                            # Try cleaning the block
+                            try:
+                                cleaned_block = self._clean_json_text(json_block)
+                                return json.loads(cleaned_block)
+                            except:
+                                continue
         
+        # ADVANCED FALLBACK: Try to create a valid array from lines
+        try:
+            # Look for lines that might be list items
+            potential_items = []
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines
+                if not line:
+                    continue
+                    
+                # Skip lines that look like prompts or code block markers
+                if line.startswith('```') or line == '```json' or '[INST]' in line or '[/INST]' in line:
+                    continue
+                    
+                # If it looks like an array item (starts with quote or number), add it
+                if line.startswith('"') or line.startswith("'") or re.match(r'^\d+', line):
+                    # Clean up the line
+                    cleaned_line = line.strip(',')  # Remove trailing commas
+                    potential_items.append(cleaned_line)
+                    
+            # If we found items, try to construct a valid array
+            if potential_items:
+                array_text = f"[{','.join(potential_items)}]"
+                try:
+                    return json.loads(array_text)
+                except:
+                    # Try further cleaning
+                    try:
+                        cleaned_array = self._clean_json_text(array_text)
+                        return json.loads(cleaned_array)
+                    except:
+                        pass
+        except Exception as e:
+            logger.warning(f"Advanced fallback failed: {e}")
+        
+        # VERY AGGRESSIVE FALLBACK: Try to extract any list/array structure
+        try:
+            # Extract any bulleted or numbered lists
+            list_items = []
+            for line in lines:
+                line = line.strip()
+                # Check for bullet points (-, *, •) or numbered items (1., 2., etc.)
+                if re.match(r'^[-*•]\s+(.+)$', line) or re.match(r'^\d+\.\s+(.+)$', line):
+                    # Extract the content after the bullet or number
+                    content = re.sub(r'^[-*•]\s+', '', line)
+                    content = re.sub(r'^\d+\.\s+', '', content)
+                    # Add as a quoted string
+                    list_items.append(f'"{content.strip()}"')
+                    
+            if list_items:
+                # Construct a valid JSON array
+                array_text = f"[{','.join(list_items)}]"
+                try:
+                    return json.loads(array_text)
+                except Exception as e:
+                    logger.warning(f"Failed to parse bulleted list as JSON: {e}")
+                    pass
+        except Exception as e:
+            logger.warning(f"Failed to extract bulleted list: {e}")
+            pass
+            
         logger.error(f"Error extracting JSON: Could not find valid JSON in the response")
         return None
 

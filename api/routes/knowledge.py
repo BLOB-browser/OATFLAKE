@@ -12,7 +12,7 @@ from scripts.data.markdown_processor import MarkdownProcessor
 from scripts.services.data_analyser import DataAnalyser
 from scripts.services.question_generator import generate_questions, save_questions, get_config_path
 from scripts.analysis.goal_extractor import GoalExtractor
-from utils.config import BACKEND_CONFIG
+from utils.config import BACKEND_CONFIG, get_data_path
 
 # Import check_for_file_changes from stats file to maintain compatibility
 from .stats import check_for_file_changes
@@ -359,6 +359,24 @@ async def process_knowledge_base(
                             # Get extracted definitions
                             definitions = analyzer._get_definitions_from_resources(updated_resources)
                             
+                            # We can't get methods directly from processing_result since analyze_resources doesn't return it
+                            # Instead, extract methods from CSV or create an empty list
+                            methods_path = os.path.join(get_data_path(), 'methods.csv')
+                            methods = []
+                            
+                            # If methods CSV exists, read it
+                            if os.path.exists(methods_path):
+                                try:
+                                    methods_df = pd.read_csv(methods_path)
+                                    # Get only recent methods (last 24 hours)
+                                    recent_time = (datetime.now() - pd.Timedelta(days=1)).isoformat()
+                                    if 'created_at' in methods_df.columns:
+                                        recent_methods = methods_df[methods_df['created_at'] > recent_time]
+                                        methods = recent_methods.to_dict('records')
+                                        logger.info(f"Retrieved {len(methods)} recently added methods from {methods_path}")
+                                except Exception as m_err:
+                                    logger.error(f"Error retrieving methods from CSV: {m_err}")
+                            
                             # Count resources that were actually processed by the LLM
                             resources_with_llm = sum(1 for r in updated_resources 
                                                 if r.get('analysis_results') and 
@@ -375,7 +393,15 @@ async def process_knowledge_base(
                                 analyzer.save_projects_csv(projects)
                                 logger.info(f"Saved {len(projects)} identified projects to projects.csv")
                             
-                            logger.info(f"Found {len(definitions)} definitions (already saved by MainProcessor)")
+                            # Save methods separately if any were found
+                            if methods:
+                                # Use data_saver directly to ensure methods get saved
+                                from scripts.services.storage import DataSaver
+                                data_saver = DataSaver()
+                                data_saver.save_methods(methods)
+                                logger.info(f"Saved {len(methods)} extracted methods to methods.csv")
+                            
+                            logger.info(f"Found {len(definitions)} definitions, {len(projects)} projects, and {len(methods)} methods")
                             logger.info(f"✅ Resource analysis phase complete - continuing to vector embedding phase")
                             
                             resource_analysis_result = {

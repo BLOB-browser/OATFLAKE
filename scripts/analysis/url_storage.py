@@ -354,6 +354,9 @@ class URLStorageManager:
             return False
         
         try:
+            # Add detailed debug logging
+            logger.info(f"DEBUG URL STORAGE: Removing URL {url} from pending URLs file: {self.pending_urls_file}")
+            
             # Read all URLs from the file
             pending_urls = []
             url_found = False
@@ -366,12 +369,13 @@ class URLStorageManager:
                 for row in reader:
                     if len(row) >= 1 and row[0] == url:
                         url_found = True
+                        logger.info(f"DEBUG URL STORAGE: Found URL {url} to remove at row: {row}")
                         continue
                     pending_urls.append(row)
             
             # If the URL wasn't found, there's nothing to do
             if not url_found:
-                logger.warning(f"URL {url} not found in pending URLs file")
+                logger.warning(f"DEBUG URL STORAGE: URL {url} not found in pending URLs file")
                 return False
             
             # Write the remaining URLs back to the file
@@ -380,9 +384,22 @@ class URLStorageManager:
                 writer.writerow(["url", "depth", "origin", "discovery_timestamp"])  # Write header
                 writer.writerows(pending_urls)
             
-            logger.info(f"Removed URL {url} from pending URLs file")
+            # Verify the file was updated
+            pending_count_after = 0
+            try:
+                with open(self.pending_urls_file, mode='r', encoding='utf-8') as check_file:
+                    reader = csv.reader(check_file)
+                    next(reader, None)  # Skip header
+                    for _ in reader:
+                        pending_count_after += 1
+                        
+                logger.info(f"DEBUG URL STORAGE: After removal, pending URLs file has {pending_count_after} URLs")
+            except Exception as check_err:
+                logger.error(f"DEBUG URL STORAGE: Error verifying pending URLs count: {check_err}")
+            
+            logger.info(f"DEBUG URL STORAGE: Successfully removed URL {url} from pending URLs file")
             return True
             
         except Exception as e:
-            logger.error(f"Error removing pending URL {url}: {e}")
+            logger.error(f"DEBUG URL STORAGE: Error removing pending URL {url}: {e}")
             return False

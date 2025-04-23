@@ -240,13 +240,20 @@ class LevelBasedProcessor:
                 origin_resource = resource_row.iloc[0].to_dict()
                 
                 try:
-                    # Process just this specific URL
+                    # Process just this specific URL with detailed logging
+                    logger.info(f"LEVEL PROCESSOR: Processing URL {url} at depth {depth} from origin {origin}")
+                    logger.info(f"LEVEL PROCESSOR: Using resource: {origin_resource.get('title', 'Untitled')}")
+                    
                     result = self.single_processor.process_specific_url(
                         url=url,
                         origin_url=origin,
                         resource=origin_resource,
                         depth=depth
                     )
+                    
+                    # Log detailed results
+                    logger.info(f"LEVEL PROCESSOR: URL {url} processed with result: success={result.get('success', False)}")
+                    logger.info(f"LEVEL PROCESSOR: Found {len(result.get('definitions', []))} definitions, {len(result.get('projects', []))} projects, {len(result.get('methods', []))} methods")
                     
                     # Update statistics
                     stats["urls_processed"] += 1
@@ -263,8 +270,10 @@ class LevelBasedProcessor:
                         all_projects.extend(result.get("projects", []))
                         all_methods.extend(result.get("methods", []))
                         
-                        # Remove this URL from pending
-                        self.url_storage.remove_pending_url(url)
+                        # Remove this URL from pending with confirmation
+                        logger.info(f"LEVEL PROCESSOR: Removing {url} from pending URLs")
+                        removal_success = self.url_storage.remove_pending_url(url)
+                        logger.info(f"LEVEL PROCESSOR: Removal successful? {removal_success}")
                     else:
                         stats["error_count"] += 1
                     

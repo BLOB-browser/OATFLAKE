@@ -216,9 +216,20 @@ class SingleResourceProcessor:
                 if main_definitions or main_projects or main_methods:
                     self.vector_generation_needed = True
                     
-                    # Save to CSV using DataSaver
+                    # Save to CSV using DataSaver with detailed logging
+                    logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_definitions)} definitions to CSV")
                     self.data_saver.save_definitions(main_definitions)
+                    
+                    logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_projects)} projects to CSV")
+                    if main_projects:
+                        for idx, proj in enumerate(main_projects):
+                            logger.info(f"[{resource_id}] SAVING PROJECT #{idx+1}: {proj.get('title', 'Untitled')} with tags: {proj.get('tags', [])}")
                     self.data_saver.save_projects(main_projects)
+                    
+                    logger.info(f"[{resource_id}] SAVING DATA: Saving {len(main_methods)} methods to CSV")
+                    if main_methods:
+                        for idx, method in enumerate(main_methods):
+                            logger.info(f"[{resource_id}] SAVING METHOD #{idx+1}: {method.get('title', 'Untitled')} with {len(method.get('steps', []))} steps")
                     self.data_saver.save_methods(main_methods)
                 
                 # Check for cancellation before finalizing
@@ -367,9 +378,20 @@ class SingleResourceProcessor:
                             if page_definitions or page_projects or page_methods:
                                 self.vector_generation_needed = True
                                 
-                                # Save to CSV using DataSaver
+                                # Save to CSV using DataSaver with detailed logging
+                                logger.info(f"[{resource_id}] SAVING DATA FROM {page_key}: Saving {len(page_definitions)} definitions to CSV")
                                 self.data_saver.save_definitions(page_definitions)
+                                
+                                logger.info(f"[{resource_id}] SAVING DATA FROM {page_key}: Saving {len(page_projects)} projects to CSV")
+                                if page_projects:
+                                    for idx, proj in enumerate(page_projects):
+                                        logger.info(f"[{resource_id}] SAVING PROJECT #{idx+1} FROM {page_key}: {proj.get('title', 'Untitled')} with tags: {proj.get('tags', [])}")
                                 self.data_saver.save_projects(page_projects)
+                                
+                                logger.info(f"[{resource_id}] SAVING DATA FROM {page_key}: Saving {len(page_methods)} methods to CSV")
+                                if page_methods:
+                                    for idx, method in enumerate(page_methods):
+                                        logger.info(f"[{resource_id}] SAVING METHOD #{idx+1} FROM {page_key}: {method.get('title', 'Untitled')} with {len(method.get('steps', []))} steps")
                                 self.data_saver.save_methods(page_methods)
                                 
                                 # Cache the content to the temporary file for vector building later
@@ -514,9 +536,20 @@ class SingleResourceProcessor:
                 if page_definitions or page_projects or page_methods:
                     self.vector_generation_needed = True
                     
-                    # Save to CSV using DataSaver
+                    # Save to CSV using DataSaver with detailed logging
+                    logger.info(f"[{resource_id}] SAVING DATA FROM SPECIFIC URL: Saving {len(page_definitions)} definitions to CSV")
                     self.data_saver.save_definitions(page_definitions)
+                    
+                    logger.info(f"[{resource_id}] SAVING DATA FROM SPECIFIC URL: Saving {len(page_projects)} projects to CSV")
+                    if page_projects:
+                        for idx, proj in enumerate(page_projects):
+                            logger.info(f"[{resource_id}] SAVING PROJECT #{idx+1} FROM SPECIFIC URL: {proj.get('title', 'Untitled')} with tags: {proj.get('tags', [])}")
                     self.data_saver.save_projects(page_projects)
+                    
+                    logger.info(f"[{resource_id}] SAVING DATA FROM SPECIFIC URL: Saving {len(page_methods)} methods to CSV")
+                    if page_methods:
+                        for idx, method in enumerate(page_methods):
+                            logger.info(f"[{resource_id}] SAVING METHOD #{idx+1} FROM SPECIFIC URL: {method.get('title', 'Untitled')} with {len(method.get('steps', []))} steps")
                     self.data_saver.save_methods(page_methods)
                     
                     # Cache the content to the temporary file for vector building later
