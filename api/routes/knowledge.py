@@ -475,58 +475,94 @@ async def process_knowledge_base(
                 processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
                 url_storage = URLStorageManager(processed_urls_file)
                 
-                # Get the status of all levels
-                level_processor = LevelBasedProcessor(str(data_path))
-                level_status = level_processor.get_level_status()
+                # Get the CSV path for resources
+                resources_csv_path = str(resources_path) if resources_path.exists() else None
                 
-                pending_levels = []
-                total_pending_urls = 0
+                # Counter for total URLs processed across all iterations
+                total_urls_processed = 0
+                all_level_processing_results = []
                 
-                # Find levels with pending URLs
-                for level, status in level_status.items():
-                    if not status["is_complete"]:
-                        pending_count = status["pending"]
-                        if pending_count > 0:
-                            pending_levels.append(level)
-                            total_pending_urls += pending_count
+                # Process pending URLs in a continuous loop until no more pending URLs are found
+                # or processing is cancelled by the training scheduler
+                processing_rounds = 0
                 
-                if pending_levels:
-                    logger.info(f"Found {total_pending_urls} pending URLs across {len(pending_levels)} levels: {pending_levels}")
+                while not _processor_cancel_event.is_set():
+                    processing_rounds += 1
+                    
+                    # Get the status of all levels
+                    level_processor = LevelBasedProcessor(str(data_path))
+                    level_status = level_processor.get_level_status()
+                    
+                    pending_levels = []
+                    total_pending_urls = 0
+                    
+                    # Find levels with pending URLs
+                    for level, status in level_status.items():
+                        if not status["is_complete"]:
+                            pending_count = status["pending"]
+                            if pending_count > 0:
+                                pending_levels.append(level)
+                                total_pending_urls += pending_count
+                    
+                    # If no more pending URLs, break the loop
+                    if not pending_levels:
+                        logger.info(f"No more pending URLs found after {processing_rounds} processing rounds")
+                        break
+                        
+                    logger.info(f"Round {processing_rounds}: Found {total_pending_urls} pending URLs across {len(pending_levels)} levels: {pending_levels}")
                     
                     # Process all pending levels, starting from the lowest level
                     pending_levels.sort()  # Sort levels in ascending order
-                    level_processing_results = []
+                    round_level_results = []
                     
                     for next_level in pending_levels:
-                        logger.info(f"Processing level {next_level} which has pending URLs")
+                        logger.info(f"Round {processing_rounds}: Processing level {next_level} which has pending URLs")
                         
-                        # Process this level
+                        # Process this level with a larger batch size to process more URLs at once
                         level_result = level_processor.process_level(
                             level=next_level,
-                            csv_path=str(resources_path) if resources_path.exists() else None,
+                            csv_path=resources_csv_path,
+                            max_urls=100,  # Process more URLs at once
                             skip_vector_generation=True  # Skip vector generation here, we'll do it in the next step
                         )
                         
-                        level_processing_results.append({
+                        urls_processed = level_result.get("urls_processed", 0)
+                        total_urls_processed += urls_processed
+                        
+                        round_level_results.append({
                             "level": next_level,
                             "result": level_result
                         })
                         
-                        logger.info(f"Level {next_level} processing completed with result: {level_result}")
+                        logger.info(f"Round {processing_rounds}: Level {next_level} processing completed with result: processed {urls_processed} URLs")
                         
                         # Check if processing was cancelled mid-way
                         if _processor_cancel_event.is_set():
                             logger.info("Processing cancelled during level processing")
                             break
                     
+                    # Add the results from this round to the overall results
+                    all_level_processing_results.append({
+                        "round": processing_rounds,
+                        "levels_processed": round_level_results
+                    })
+                    
+                    # Check again if we should continue processing
+                    if level_processor.check_cancellation():
+                        logger.info("Processing cancelled after level processing round")
+                        break
+                
+                # Add the final results to the overall result
+                if total_urls_processed > 0:
                     result["level_processing"] = {
                         "status": "success",
-                        "levels_processed": len(level_processing_results),
-                        "details": level_processing_results
+                        "total_urls_processed": total_urls_processed,
+                        "processing_rounds": processing_rounds,
+                        "details": all_level_processing_results
                     }
                 else:
-                    logger.info("No pending URLs found at any level")
-                    result["level_processing"] = {"status": "skipped", "reason": "no pending URLs"}
+                    logger.info("No pending URLs were processed at any level")
+                    result["level_processing"] = {"status": "skipped", "reason": "no pending URLs processed"}
                     
             except Exception as level_error:
                 logger.error(f"Error processing pending URLs at deeper levels: {level_error}", exc_info=True)
