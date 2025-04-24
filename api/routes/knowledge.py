@@ -141,8 +141,10 @@ async def process_knowledge_base(
     
     logger.info(f"Starting comprehensive knowledge base processing... group_id={group_id}, force_update={force_update}")
     try:
+        # Ensure we're using the imported BACKEND_CONFIG
+        from utils.config import BACKEND_CONFIG as config
         # Get data path from config
-        data_path = Path(BACKEND_CONFIG['data_path'])
+        data_path = Path(config['data_path'])
         # Always use "default" for group_id since we don't store in group-specific folders
         group_id_to_use = "default"
         
@@ -396,8 +398,9 @@ async def process_knowledge_base(
                             # Save methods separately if any were found
                             if methods:
                                 # Use data_saver directly to ensure methods get saved
-                                from scripts.services.storage import DataSaver
-                                data_saver = DataSaver()
+                                from scripts.analysis.data_saver import DataSaver
+                                from utils.config import BACKEND_CONFIG
+                                data_saver = DataSaver(BACKEND_CONFIG['data_path'])
                                 data_saver.save_methods(methods)
                                 logger.info(f"Saved {len(methods)} extracted methods to methods.csv")
                             
@@ -457,6 +460,77 @@ async def process_knowledge_base(
                 
                 # After processing all content, update result
                 result["content_processing"] = {"status": "success"}
+        
+        # Step 4.5: Process pending URLs at deeper levels (if any)
+        if not _processor_cancel_event.is_set():
+            logger.info("STEP 4.5: CHECKING FOR PENDING URLS AT DEEPER LEVELS")
+            logger.info("===================================================")
+            try:
+                # Import necessary components
+                from scripts.analysis.url_storage import URLStorageManager
+                from scripts.analysis.level_processor import LevelBasedProcessor
+                import os
+                
+                # Initialize URL storage manager
+                processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                url_storage = URLStorageManager(processed_urls_file)
+                
+                # Get the status of all levels
+                level_processor = LevelBasedProcessor(str(data_path))
+                level_status = level_processor.get_level_status()
+                
+                pending_levels = []
+                total_pending_urls = 0
+                
+                # Find levels with pending URLs
+                for level, status in level_status.items():
+                    if not status["is_complete"]:
+                        pending_count = status["pending"]
+                        if pending_count > 0:
+                            pending_levels.append(level)
+                            total_pending_urls += pending_count
+                
+                if pending_levels:
+                    logger.info(f"Found {total_pending_urls} pending URLs across {len(pending_levels)} levels: {pending_levels}")
+                    
+                    # Process all pending levels, starting from the lowest level
+                    pending_levels.sort()  # Sort levels in ascending order
+                    level_processing_results = []
+                    
+                    for next_level in pending_levels:
+                        logger.info(f"Processing level {next_level} which has pending URLs")
+                        
+                        # Process this level
+                        level_result = level_processor.process_level(
+                            level=next_level,
+                            csv_path=str(resources_path) if resources_path.exists() else None,
+                            skip_vector_generation=True  # Skip vector generation here, we'll do it in the next step
+                        )
+                        
+                        level_processing_results.append({
+                            "level": next_level,
+                            "result": level_result
+                        })
+                        
+                        logger.info(f"Level {next_level} processing completed with result: {level_result}")
+                        
+                        # Check if processing was cancelled mid-way
+                        if _processor_cancel_event.is_set():
+                            logger.info("Processing cancelled during level processing")
+                            break
+                    
+                    result["level_processing"] = {
+                        "status": "success",
+                        "levels_processed": len(level_processing_results),
+                        "details": level_processing_results
+                    }
+                else:
+                    logger.info("No pending URLs found at any level")
+                    result["level_processing"] = {"status": "skipped", "reason": "no pending URLs"}
+                    
+            except Exception as level_error:
+                logger.error(f"Error processing pending URLs at deeper levels: {level_error}", exc_info=True)
+                result["level_processing"] = {"status": "error", "error": str(level_error)}
         
         # Generate vector stores if not cancelled
         if not skip_vector_generation and not _processor_cancel_event.is_set():

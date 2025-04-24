@@ -282,33 +282,75 @@ class ResourceBatchProcessor:
                 logger.info("Vector generation needed but explicitly skipped - will be handled at a higher level")
                 stats["vector_generation_skipped"] = True
             
-            # Check if we should start processing a new batch (if not cancelled)
+            # Check if we should start processing a new batch or next level (if not cancelled)
             if not self.check_cancellation():
-                # Read resources CSV file again to check for more unprocessed resources
-                try:
-                    new_df = pd.read_csv(csv_path)
-                    unprocessed_mask = ~new_df['analysis_completed'].fillna(False).astype(bool)
-                    unprocessed_count = unprocessed_mask.sum()
-                    
-                    if unprocessed_count > 0:
-                        logger.info(f"Found {unprocessed_count} more resources that need processing, starting new batch automatically")
-                        # Recursively call process_resources to start a new batch without waiting for scheduler
-                        stats["continued_with_new_batch"] = True
-                        next_batch_stats = self.process_resources(
-                            csv_path=csv_path, 
-                            max_resources=max_resources,
-                            force_reanalysis=force_reanalysis,
-                            skip_vector_generation=skip_vector_generation,
-                            process_by_level=process_by_level,
-                            max_depth=max_depth,
-                            process_cross_resource=process_cross_resource,
-                            current_level=current_level
-                        )
-                        stats["next_batch_stats"] = next_batch_stats
-                    else:
-                        logger.info("No more resources need processing")
-                except Exception as e:
-                    logger.error(f"Error checking for more resources to process: {e}")
+                # First check for pending URLs at higher levels if processing by level
+                next_level_processed = False
+                
+                if process_by_level:
+                    # Import URL storage manager to check for pending URLs at higher levels
+                    try:
+                        from scripts.analysis.url_storage import URLStorageManager
+                        from utils.config import get_data_path
+                        import os
+                        
+                        # Initialize URL storage manager
+                        processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                        url_storage = URLStorageManager(processed_urls_file)
+                        
+                        # If a current_level was specified, look for pending URLs at the next level
+                        next_level = (current_level or 1) + 1
+                        if next_level <= max_depth:
+                            # Check for pending URLs at the next level
+                            pending_urls = url_storage.get_pending_urls(depth=next_level)
+                            
+                            if pending_urls:
+                                logger.info(f"Found {len(pending_urls)} pending URLs at level {next_level}, processing next level")
+                                
+                                # Import and use the LevelBasedProcessor to process the next level
+                                from scripts.analysis.level_processor import LevelBasedProcessor
+                                level_processor = LevelBasedProcessor(self.data_folder)
+                                
+                                # Process the next level
+                                level_stats = level_processor.process_level(
+                                    level=next_level,
+                                    csv_path=csv_path,
+                                    skip_vector_generation=skip_vector_generation
+                                )
+                                
+                                stats["next_level_processed"] = True
+                                stats["level_stats"] = level_stats
+                                next_level_processed = True
+                                logger.info(f"Completed processing level {next_level}")
+                    except Exception as e:
+                        logger.error(f"Error checking for pending URLs at higher levels: {e}")
+                
+                # If we didn't process the next level, check for more unprocessed resources in CSV
+                if not next_level_processed:
+                    try:
+                        new_df = pd.read_csv(csv_path)
+                        unprocessed_mask = ~new_df['analysis_completed'].fillna(False).astype(bool)
+                        unprocessed_count = unprocessed_mask.sum()
+                        
+                        if unprocessed_count > 0:
+                            logger.info(f"Found {unprocessed_count} more resources that need processing, starting new batch automatically")
+                            # Recursively call process_resources to start a new batch without waiting for scheduler
+                            stats["continued_with_new_batch"] = True
+                            next_batch_stats = self.process_resources(
+                                csv_path=csv_path, 
+                                max_resources=max_resources,
+                                force_reanalysis=force_reanalysis,
+                                skip_vector_generation=skip_vector_generation,
+                                process_by_level=process_by_level,
+                                max_depth=max_depth,
+                                process_cross_resource=process_cross_resource,
+                                current_level=current_level if not process_by_level else next_level
+                            )
+                            stats["next_batch_stats"] = next_batch_stats
+                        else:
+                            logger.info("No more resources need processing")
+                    except Exception as e:
+                        logger.error(f"Error checking for more resources to process: {e}")
             
             return stats
             
