@@ -294,18 +294,40 @@ class LevelBasedProcessor:
                             self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt)
                             # Mark this URL as unsuccessful despite "success" flag
                             stats["empty_results_count"] = stats.get("empty_results_count", 0) + 1
-                        
-                        # Store the extracted data
-                        all_definitions.extend(result.get("definitions", []))
-                        all_projects.extend(result.get("projects", []))
-                        all_methods.extend(result.get("methods", []))
-                        
-                        # Remove this URL from pending with confirmation
-                        logger.info(f"LEVEL PROCESSOR: Removing {url} from pending URLs")
-                        removal_success = self.url_storage.remove_pending_url(url)
-                        logger.info(f"LEVEL PROCESSOR: Removal successful? {removal_success}")
+                        else:
+                            # Either data was extracted OR we've reached max attempts
+                            # Remove this URL from pending with confirmation
+                            logger.info(f"LEVEL PROCESSOR: Removing {url} from pending URLs")
+                            removal_success = self.url_storage.remove_pending_url(url)
+                            logger.info(f"LEVEL PROCESSOR: Removal successful? {removal_success}")
+                            
+                            # Store the extracted data
+                            all_definitions.extend(result.get("definitions", []))
+                            all_projects.extend(result.get("projects", []))
+                            all_methods.extend(result.get("methods", []))
                     else:
+                        # URL processing failed
                         stats["error_count"] += 1
+                        
+                        # Check if we've attempted this URL too many times
+                        if attempt_count >= 2:  # Allow 3 attempts (0, 1, 2)
+                            # We've tried enough times, mark as processed to move on
+                            logger.warning(f"URL {url} has failed {attempt_count + 1} times, marking as processed to move on")
+                            
+                            # Mark as processed (even though it failed) to avoid getting stuck
+                            self.url_storage.save_processed_url(url, depth=depth, origin=origin)
+                            # Remove from pending URLs
+                            self.url_storage.remove_pending_url(url)
+                            # Track these forced completions
+                            stats["forced_completions"] = stats.get("forced_completions", 0) + 1
+                        else:
+                            # Increment attempt count and put back in queue
+                            next_attempt = attempt_count + 1
+                            logger.info(f"LEVEL PROCESSOR: URL processing failed (attempt {next_attempt}), saving back to pending queue: {url}")
+                            # Remove from pending first to avoid duplicate entries
+                            self.url_storage.remove_pending_url(url)
+                            # Add back with incremented attempt count
+                            self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt)
                     
                     # Check if vector generation is needed
                     if self.single_processor.vector_generation_needed:
