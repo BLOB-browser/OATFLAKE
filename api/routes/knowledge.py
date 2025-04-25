@@ -96,7 +96,8 @@ async def process_knowledge_base(
     skip_vector_generation: bool = False,
     check_unanalyzed: bool = True,  # New parameter to check for unanalyzed resources
     skip_questions: bool = False,   # Skip question generation (useful when time is limited)
-    skip_goals: bool = False        # Skip goal extraction (useful when time is limited)
+    skip_goals: bool = False,       # Skip goal extraction (useful when time is limited)
+    max_depth: int = 4              # Maximum depth for crawling (higher = deeper crawling)
 ):
     """
     Process all knowledge base files and generate embeddings.
