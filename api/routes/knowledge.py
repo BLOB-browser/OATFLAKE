@@ -505,9 +505,61 @@ async def process_knowledge_base(
                                 pending_levels.append(level)
                                 total_pending_urls += pending_count
                     
-                    # If no more pending URLs, break the loop
+                    # If no more pending URLs, check if we should advance to the next level
                     if not pending_levels:
                         logger.info(f"No more pending URLs found after {processing_rounds} processing rounds")
+                        
+                        # Check if we should discover URLs at the next level
+                        current_max_level = max([int(level) for level in level_status.keys()]) if level_status else 1
+                        next_level = current_max_level + 1
+                        
+                        # Only proceed if we're still within max_depth
+                        if next_level <= max_depth:
+                            logger.info(f"Advancing to next depth level: {next_level} (max_depth: {max_depth})")
+                            
+                            # Initialize ContentFetcher to discover URLs at the next level
+                            from scripts.analysis.content_fetcher import ContentFetcher
+                            content_fetcher = ContentFetcher()
+                            
+                            # Get some processed URLs from the previous level to use as starting points
+                            processed_urls = url_storage.get_processed_urls_by_level(current_max_level)
+                            
+                            if processed_urls:
+                                logger.info(f"Found {len(processed_urls)} processed URLs from level {current_max_level} to use as starting points")
+                                
+                                # Take a sample of URLs to process (to avoid excessive processing)
+                                sample_size = min(len(processed_urls), 20)
+                                urls_to_process = processed_urls[:sample_size]
+                                
+                                # Process each URL to discover links at the next level
+                                for url_data in urls_to_process:
+                                    url = url_data.get('url')
+                                    if url:
+                                        logger.info(f"Discovering level {next_level} URLs from {url}")
+                                        try:
+                                            # Use get_main_page_with_links with discover_only_level set to next_level
+                                            content_fetcher.get_main_page_with_links(
+                                                url=url,
+                                                max_depth=max_depth,
+                                                discover_only_level=next_level
+                                            )
+                                        except Exception as e:
+                                            logger.error(f"Error discovering URLs for level {next_level} from {url}: {e}")
+                                
+                                logger.info(f"Completed discovery for level {next_level}")
+                                
+                                # Check if we discovered any new URLs for the next level
+                                level_status = level_processor.get_level_status()
+                                if str(next_level) in level_status and level_status[str(next_level)]["pending"] > 0:
+                                    logger.info(f"Successfully discovered {level_status[str(next_level)]['pending']} URLs for level {next_level}")
+                                    # Continue the loop to process these newly discovered URLs
+                                    continue
+                            else:
+                                logger.info(f"No processed URLs found from level {current_max_level} to use as starting points")
+                        else:
+                            logger.info(f"Reached maximum depth ({max_depth}), not discovering deeper levels")
+                        
+                        # If we didn't continue the loop above, break out now
                         break
                         
                     logger.info(f"Round {processing_rounds}: Found {total_pending_urls} pending URLs across {len(pending_levels)} levels: {pending_levels}")
