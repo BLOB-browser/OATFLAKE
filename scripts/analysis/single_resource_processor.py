@@ -25,55 +25,37 @@ from scripts.analysis.interruptible_llm import is_interrupt_requested, clear_int
 from scripts.analysis.html_extractor import extract_text, extract_page_texts
 
 class SingleResourceProcessor:
-    """
-    Processes a single resource through content fetching, analysis and storage.
-    Extracts definitions, projects, and methods from the resource content.
+    """Processes a single resource to extract structured data"""
     
-    Implementation supports two processing modes:
-    1. Full resource processing - processes the main URL and discovers internal links
-    2. Level-based processing - processes URLs at specific depth levels
-    
-    The level-based approach is the preferred method for large websites:
-    - Level 1: Navigation links from the main page
-    - Level 2: Project/category pages linked from navigation
-    - Level 3+: Detail pages with specific content
-    
-    When processing by level, URLs are discovered but not immediately processed beyond level 1.
-    Instead, they're saved to pending_urls.csv for later processing through the level_processor.
-    This ensures that all resources' level 1 URLs are processed before any level 2 URLs,
-    which prevents memory issues and enables more efficient processing.
-    """
-    
-    def __init__(self, data_folder: str):
-        """
-        Initialize the SingleResourceProcessor.
+    def __init__(self, data_folder: str = None):
+        """Initialize SingleResourceProcessor
         
         Args:
             data_folder: Path to the data directory
         """
-        self.data_folder = data_folder
+        logger.info(f"SingleResourceProcessor initialized with data folder: {data_folder}")
+        from utils.config import get_data_path
+        self.data_folder = data_folder or get_data_path()
         
-        # Initialize component modules
+        # Initialize content fetcher for URL processing
         self.content_fetcher = ContentFetcher()
-        self.llm_analyzer = LLMAnalyzer()
-        self.resource_llm = ResourceLLM()
-        self.extraction_utils = ExtractionUtils()
-        self.method_llm = MethodLLM()
-        self.goal_llm = GoalLLM()
-        self.data_saver = DataSaver(data_folder)
         
-        # For temporary storage of content
+        # Flag for forcing URL refetching
+        self.force_fetch = False
+        
+        # Set up temporary storage for content
         from scripts.storage.temporary_storage_service import TemporaryStorageService
-        self.temp_storage = TemporaryStorageService(data_folder)
-        
-        # For long-term storage of content
         from scripts.storage.content_storage_service import ContentStorageService
-        self.content_storage = ContentStorageService(data_folder)
+        self.temp_storage = TemporaryStorageService(self.data_folder)
+        self.content_storage = ContentStorageService(self.data_folder)
         
-        # Track if vector generation is needed after processing
+        # Track if vector generation is needed
         self.vector_generation_needed = False
         
-        logger.info(f"SingleResourceProcessor initialized with data folder: {data_folder}")
+        # Initialize analyzer components
+        self.extraction_utils = ExtractionUtils()
+        self.method_llm = MethodLLM()
+        self.data_saver = DataSaver(self.data_folder)
     
     def process_resource(self, resource: Dict, resource_id: str, idx: int = None, csv_path: str = None,
                       on_subpage_processed: Callable = None, process_by_level: bool = True, 
@@ -113,6 +95,12 @@ class SingleResourceProcessor:
             resource_title = resource.get('title', 'Unnamed')
             resource_url = resource.get('url', '')
             
+            # Validate URL before proceeding
+            if not resource_url or not resource_url.startswith(('http://', 'https://')):
+                logger.error(f"[{resource_id}] Invalid URL format: {resource_url}")
+                result["error"] = f"Invalid URL format: {resource_url}"
+                return result
+            
             # STEP 1: Fetch main page content
             logger.info(f"[{resource_id}] Fetching content from {resource_url}")
             
@@ -143,7 +131,8 @@ class SingleResourceProcessor:
             success, page_data = self.content_fetcher.fetch_content(
                 resource_url, 
                 max_depth=max_depth,
-                process_by_level=process_by_level
+                process_by_level=process_by_level,
+                force_reprocess=self.force_fetch  # Use our force_fetch flag
             )
             
             if not success:
@@ -586,55 +575,22 @@ class SingleResourceProcessor:
             resource_slug = resource_title.replace(" ", "_").lower()[:30]
             temp_path = self.temp_storage.create_temp_file(prefix=f"{resource_slug}_level{depth}")
             
-            # When processing a higher level URL, we want to also discover URLs at that level
-            # This is important for level 2+ URLs where we need to find new URLs at that depth
-            if depth > 1:
-                logger.info(f"[{resource_id}] Processing level {depth} URL: {url} with discovery enabled")
-                
-                # Pass current_level explicitly so this URL discovers links at its own level
-                success, pages_dict = self.content_fetcher.fetch_content(
-                    url=url,
-                    max_depth=depth,  # Match the max_depth to this URL's depth
-                    process_by_level=True,
-                    batch_size=1,  # Just process this single URL
-                    current_level=depth  # Explicitly tell it what level we're processing
-                )
-                
-                if not success:
-                    logger.warning(f"[{resource_id}] Failed to fetch/discover content from {url}")
-                    result["error"] = f"Failed to fetch content: {pages_dict.get('error', 'Unknown error')}"
-                    return result
-                    
-                # Extract the HTML content for this URL
-                html_content = pages_dict.get('main', '')
-                
-                if not html_content:
-                    logger.error(f"[{resource_id}] Failed to extract HTML content from {url}")
-                    result["error"] = "Failed to extract HTML content"
-                    return result
-                    
-                # Create headers from the returned data
-                headers = pages_dict.get('headers', {})
-                if not headers:
-                    # Create headers using WebFetcher if not in returned data
-                    headers = self.content_fetcher.web_fetcher.create_headers()
-            else:
-                # For level 1 URLs, just fetch the content directly
-                logger.info(f"[{resource_id}] Fetching level {depth} URL: {url}")
-                
-                # Create headers using WebFetcher
-                headers = self.content_fetcher.web_fetcher.create_headers()
-                
-                # Fetch the page
-                success, html_content = self.content_fetcher.fetch_additional_page(url, headers)
-                
-                if not success or not html_content:
-                    logger.warning(f"[{resource_id}] Failed to fetch {url}")
-                    result["error"] = "Failed to fetch URL"
-                    return result
+            # When processing any URL, we just want to get its content without additional discovery
+            # The discovery phase has already happened separately at the beginning
+            logger.info(f"[{resource_id}] Processing level {depth} URL: {url} without extra discovery")
             
-            # Remove redundant check since we now do this in the if/else blocks
+            # Create headers using WebFetcher
+            headers = self.content_fetcher.web_fetcher.create_headers()
             
+            # Directly fetch this URL's content without discovering additional URLs
+            success, html_content = self.content_fetcher.web_fetcher.fetch_page(url, headers)
+            
+            # Check if the fetch was successful
+            if not success or not html_content:
+                logger.error(f"[{resource_id}] Failed to fetch URL: {url}")
+                result["error"] = "Failed to fetch URL content"
+                return result
+                
             # Extract text content from HTML
             page_text = extract_text(html_content)
             

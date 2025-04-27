@@ -81,7 +81,12 @@ class ContentFetcher:
         self.url_storage = URLStorageManager(processed_urls_file)
         logger.info(f"Using processed URLs file at: {processed_urls_file}")
 
-    def get_main_page_with_links(self, url: str, max_depth: int = 4, go_deeper: bool = None, breadth_first: bool = True, discover_only_level: int = 1) -> Tuple[bool, Dict[str, Any]]:
+        # Add flag to control whether to analyze immediately or defer analysis
+        self.defer_analysis = False
+        self.discovery_only_mode = False  # When True, focus on URL discovery only
+
+    def get_main_page_with_links(self, url: str, max_depth: int = 4, go_deeper: bool = None, breadth_first: bool = True, 
+                               discover_only_level: int = 4, force_reprocess: bool = False) -> Tuple[bool, Dict[str, Any]]:
         """
         Retrieves the main page content and identifies links to additional pages.
         Can go multiple layers deep to find more content-rich pages.
@@ -91,7 +96,8 @@ class ContentFetcher:
             max_depth: Maximum depth level to crawl (1=just main page links, 2=two levels, 3=three levels)
             go_deeper: (Deprecated) If True, will look for links two levels deep (use max_depth instead)
             breadth_first: If True, will discover all URLs in breadth-first order (completing all level 1 URLs before level 2)
-            discover_only_level: Maximum level to discover URLs (default 1). URLs beyond this level will not be discovered.
+            discover_only_level: Maximum level to discover URLs (default 4). URLs beyond this level will not be discovered.
+            force_reprocess: If True, process URLs even if they've already been processed
             
         Returns:
             Tuple of (success_flag, dict with main_html and additional_urls)
@@ -109,10 +115,14 @@ class ContentFetcher:
             url = clean_url(url)
                 
             # Check if the main URL has already been processed - do this check first
-            # to avoid unnecessary network requests
-            if self.url_storage.url_is_processed(url):
+            # to avoid unnecessary network requests (unless force_reprocess is true)
+            if self.url_storage.url_is_processed(url) and not force_reprocess:
                 logger.info(f"Main URL {url} already processed, skipping fetch")
                 return False, {"error": "URL already processed"}
+                
+            # If force_reprocess is true for already processed URL, log it
+            if self.url_storage.url_is_processed(url) and force_reprocess:
+                logger.info(f"Force reprocessing already processed URL: {url}")
             
             # Store the base domain for building absolute URLs
             base_domain, base_path, base_url = get_base_domain_and_url(url)
@@ -134,11 +144,11 @@ class ContentFetcher:
             # Initialize a dictionary to store URLs by level
             urls_by_level = {level: [] for level in range(1, max_depth + 1)}
             
-            # Limit discovery to only specified level (default: level 1)
+            # Use discover_only_level to determine how many levels to crawl (default: level 4)
             effective_max_depth = min(max_depth, discover_only_level)
             
             # Log the max depth being used
-            logger.info(f"URL discovery limited to level {effective_max_depth} (max_depth={max_depth}, discover_only_level={discover_only_level})")
+            logger.info(f"URL discovery set to max level {effective_max_depth} (max_depth={max_depth}, discover_only_level={discover_only_level})")
             
             # Load processed URLs to avoid re-fetching content we've already analyzed
             processed_urls = self.url_storage.get_processed_urls()
@@ -152,7 +162,8 @@ class ContentFetcher:
                     headers=headers,
                     max_depth=effective_max_depth,  # Use the limited depth for discovery
                     visited_urls=visited_urls,
-                    urls_by_level=urls_by_level
+                    urls_by_level=urls_by_level,
+                    force_reprocess=force_reprocess  # Pass the force_reprocess flag
                 )
             else:
                 # Use the original recursive (depth-first) crawling
@@ -161,7 +172,8 @@ class ContentFetcher:
                     base_url=url,
                     base_domain=base_domain, 
                     headers=headers,
-                    current_level=1, 
+                    current_level=1,
+                    force_reprocess=force_reprocess,  # Pass the force_reprocess flag
                     max_depth=effective_max_depth,  # Use the limited depth for discovery
                     visited_urls=visited_urls,
                     urls_by_level=urls_by_level
@@ -198,7 +210,7 @@ class ContentFetcher:
             logger.error(f"Error fetching main page {url}: {e}")
             return False, {"error": str(e)}
             
-    def _crawl_recursive(self, soup, base_url, base_domain, headers, current_level, max_depth, visited_urls, urls_by_level):
+    def _crawl_recursive(self, soup, base_url, base_domain, headers, current_level, max_depth, visited_urls, urls_by_level, force_reprocess=False):
         """
         Recursively crawls pages up to a specified depth, collecting unprocessed URLs.
         This uses a depth-first approach (not recommended for level-by-level processing).
@@ -212,6 +224,7 @@ class ContentFetcher:
             max_depth: Maximum depth to crawl
             visited_urls: Set of already visited URLs
             urls_by_level: Dictionary to store URLs by their depth level
+            force_reprocess: If True, include URLs even if they've already been processed
         """
         if current_level > max_depth:
             return
@@ -233,11 +246,14 @@ class ContentFetcher:
         # Process the found links
         found_urls = process_links(links, base_domain, base_url, visited_urls)
         
-        # Filter out already processed URLs
+        # Filter out already processed URLs (unless force_reprocess is True)
         filtered_urls = []
         for url in found_urls:
-            if self.url_storage.url_is_processed(url):
+            if self.url_storage.url_is_processed(url) and not force_reprocess:
                 logger.info(f"URL {url} already processed, filtering out from level {current_level}")
+            elif self.url_storage.url_is_processed(url) and force_reprocess:
+                logger.info(f"URL {url} already processed but force_reprocess is True, including at level {current_level}")
+                filtered_urls.append(url)
             else:
                 filtered_urls.append(url)
                 
@@ -280,13 +296,14 @@ class ContentFetcher:
                         current_level=current_level + 1,
                         max_depth=max_depth,
                         visited_urls=visited_urls,
-                        urls_by_level=urls_by_level
+                        urls_by_level=urls_by_level,
+                        force_reprocess=force_reprocess  # Pass the force_reprocess flag
                     )
                     
                 except Exception as e:
                     logger.warning(f"Error processing URL {next_url} at level {current_level}: {e}")
                     
-    def _discover_urls_breadth_first(self, root_soup, root_url, base_domain, headers, max_depth=4, visited_urls=None, urls_by_level=None):
+    def _discover_urls_breadth_first(self, root_soup, root_url, base_domain, headers, max_depth=4, visited_urls=None, urls_by_level=None, force_reprocess=False):
         """
         Discovers URLs in a breadth-first manner, completing all URLs at one level before
         moving to the next. This ensures all level 1 URLs are found before level 2, etc.
@@ -299,6 +316,7 @@ class ContentFetcher:
             max_depth: Maximum depth to crawl
             visited_urls: Set of already visited URLs
             urls_by_level: Dictionary to store URLs by their depth level
+            force_reprocess: If True, include URLs even if they've already been processed
         """
         # Start with the root URL at level 0
         pages_to_process = {
@@ -337,11 +355,16 @@ class ContentFetcher:
                 # Process the found links
                 found_urls = process_links(links, base_domain, page_url, visited_urls)
                 
-                # Filter out already processed URLs
+                # Filter out already processed URLs (unless force_reprocess is True)
                 filtered_urls = []
                 for url in found_urls:
-                    if self.url_storage.url_is_processed(url):
+                    if self.url_storage.url_is_processed(url) and not force_reprocess:
                         logger.info(f"URL {url} already processed, filtering out")
+                    elif self.url_storage.url_is_processed(url) and force_reprocess:
+                        logger.info(f"URL {url} already processed but force_reprocess is True, including in discovery")
+                        filtered_urls.append(url)
+                        # Re-save to pending URLs file for reprocessing
+                        self.url_storage.save_pending_url(url, depth=current_level, origin=page_url)
                     else:
                         filtered_urls.append(url)
                         # Save to pending URLs file to reduce memory usage
@@ -365,20 +388,30 @@ class ContentFetcher:
                             # Mark as visited to avoid re-processing
                             visited_urls.add(next_url)
                             
-                            # We don't need to fetch the full content during discovery
-                            # Just add the URL to the pending queue for later processing
-                            # This will be processed in the main content extraction phase
-                            logger.info(f"Adding URL to discovery queue (level {current_level+1}): {next_url}")
-                            
-                            # When we're not fetching content during discovery phase, we still need to 
-                            # provide some structure for pages_to_process to maintain level tracking
-                            
-                            # Create a minimal BeautifulSoup object that won't cause errors if accessed
-                            # This avoids issues with None values in the _discover_urls_breadth_first method
-                            next_soup = BeautifulSoup("<html><body></body></html>", 'html.parser')
-                            
-                            # Skip the actual content fetching and parsing during discovery
-                            # This significantly reduces network traffic and processing time
+                            # When force_reprocess is True, we need to actually fetch content
+                            # This allows us to discover URLs at deeper levels from already processed pages
+                            if force_reprocess:
+                                logger.info(f"Force fetching content for URL at level {current_level+1}: {next_url}")
+                                success, html_content = self.web_fetcher.fetch_page(
+                                    next_url,
+                                    headers,
+                                    custom_timeout=60  # Increased timeout for deeper pages
+                                )
+                                
+                                if success and html_content:
+                                    # Parse the HTML to get actual content for discovering deeper URLs
+                                    next_soup = BeautifulSoup(html_content, 'html.parser')
+                                else:
+                                    # If fetch fails, use empty soup
+                                    logger.warning(f"Failed to fetch {next_url}, using empty page")
+                                    next_soup = BeautifulSoup("<html><body></body></html>", 'html.parser')
+                            else:
+                                # When not force_reprocessing, we don't need to fetch the full content during discovery
+                                # Just add the URL to the pending queue for later processing
+                                logger.info(f"Adding URL to discovery queue (level {current_level+1}): {next_url}")
+                                
+                                # Create minimal BeautifulSoup object for tracking
+                                next_soup = BeautifulSoup("<html><body></body></html>", 'html.parser')
                             
                             # Add to the next level's pages to process
                             pages_to_process[current_level + 1].append((next_soup, next_url))
@@ -411,7 +444,8 @@ class ContentFetcher:
         return self.web_fetcher.fetch_page(url, headers, timeout)
     
     def fetch_content(self, url: str, max_depth: int = 4, process_by_level: bool = True, 
-                     batch_size: int = 50, current_level: int = None) -> Tuple[bool, Dict[str, str]]:
+                     batch_size: int = 50, current_level: int = None, force_reprocess: bool = False,
+                     discovery_only: bool = False) -> Tuple[bool, Dict[str, str]]:
         """
         Safely retrieves website content with error handling.
         Fetches main page and all discovered related pages up to the specified depth.
@@ -422,39 +456,88 @@ class ContentFetcher:
             process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
             batch_size: Maximum number of URLs to process at each level to limit memory usage
             current_level: If specified, only discover URLs at this specific level (for level-based processing)
+            force_reprocess: If True, reprocess URLs even if they've already been processed
+            discovery_only: If True, focus on URL discovery without analyzing content
             
         Returns:
             Tuple of (success_flag, dict_of_pages)
             dict_of_pages format: {'main': main_html, 'url1': page1_html, ...}
         """
+        # Store the discovery_only mode for this operation
+        original_discovery_mode = self.discovery_only_mode
+        self.discovery_only_mode = discovery_only
+        
         try:
-            # Check if URL is already processed
-            if self.url_storage.url_is_processed(url):
+            # Check if URL is already processed (unless force_reprocess is True)
+            if self.url_storage.url_is_processed(url) and not force_reprocess:
                 logger.info(f"Skipping already processed URL: {url}")
                 return True, {"main": "", "error": "URL already processed"}
+            
+            # Log if force_reprocess is True for an already processed URL
+            if self.url_storage.url_is_processed(url) and force_reprocess:
+                logger.info(f"Force reprocessing already processed URL: {url}")
 
+            # Special handling for discovery_only mode
+            if self.discovery_only_mode:
+                logger.info(f"Running in discovery-only mode for URL: {url}")
+                
+                # Get the main page and discover all URLs up to max_depth
+                success, main_data = self.get_main_page_with_links(
+                    url, 
+                    max_depth=max_depth,
+                    breadth_first=True,
+                    discover_only_level=max_depth,
+                    force_reprocess=force_reprocess
+                )
+                
+                if not success or "error" in main_data:
+                    logger.warning(f"Failed URL discovery for {url}: {main_data.get('error', 'Unknown error')}")
+                    return False, {"error": main_data.get("error", "Unknown error fetching main page")}
+
+                # In discovery-only mode, don't process any URLs, just discover and save to pending queue
+                urls_by_level = main_data.get("urls_by_level", {})
+                total_discovered = 0
+                
+                # Save all discovered URLs to pending queue
+                for level in range(1, max_depth + 1):
+                    if level in urls_by_level and urls_by_level[level]:
+                        level_urls = urls_by_level[level]
+                        saved_count = 0
+                        
+                        for discovered_url in level_urls:
+                            if not self.url_storage.url_is_processed(discovered_url) or force_reprocess:
+                                self.url_storage.save_pending_url(discovered_url, depth=level, origin=url)
+                                saved_count += 1
+                                total_discovered += 1
+                                
+                        logger.info(f"Discovery-only mode: Saved {saved_count} URLs at level {level} to pending queue")
+                
+                # Add a minimal pages_dict with just the main page
+                pages_dict = {'main': main_data.get("main_html", "")}
+                
+                logger.info(f"Discovery-only mode: Completed for {url}, total {total_discovered} URLs discovered across all levels")
+                
+                # Don't mark the URL as fully processed if we're only doing discovery
+                # Instead, mark it as "discovery_completed" in the URL storage
+                self.url_storage.save_discovery_status(url, True)
+                
+                # Return with minimal content
+                return True, pages_dict
+            
+            # Normal content fetching (existing code)
             # Get the main page and extract links based on the current processing level
             # When current_level is specified, we're in level-based processing mode
             
-            # Determine what level to discover URLs for
-            if current_level is not None:
-                # Only discover URLs at the specific level requested
-                discover_only_level = current_level
-                # For level discovery, we need current_level depth
-                current_max_depth = current_level
-                logger.info(f"Level-based processing: Discovering ONLY level {discover_only_level} URLs")
-            else:
-                # Default to level 1 for initial processing
-                discover_only_level = 1
-                current_max_depth = 1
-                logger.info(f"Initial processing: Discovering ONLY level {discover_only_level} URLs")
+            # Discover URLs at all levels up to max_depth in one go
+            logger.info(f"Discovering URLs at all levels up to max_depth={max_depth}")
             
-            # Get the main page and discover only the exact level we want
+            # Get the main page and discover all URLs up to max_depth
             success, main_data = self.get_main_page_with_links(
                 url, 
-                max_depth=current_max_depth,  # Limited to exactly the current level
-                breadth_first=True,  # Always use breadth-first to ensure level discipline
-                discover_only_level=discover_only_level  # Only discover this exact level
+                max_depth=max_depth,
+                breadth_first=True,
+                discover_only_level=max_depth,
+                force_reprocess=force_reprocess
             )
 
             if not success or "error" in main_data:
@@ -473,62 +556,74 @@ class ContentFetcher:
             # This prevents URLs from being skipped if extraction fails
             
             if process_by_level:
-                # Modified to only process level 1 URLs and save higher levels to pending queue
-                # Process only the first level URLs immediately
+                # Save all discovered URLs at all levels to the pending queue with their proper level information
+                # Only process level 1 URLs immediately, all other levels will be processed later
+                
+                # Process only level 1 URLs in this pass
                 current_level = 1
                 
-                if current_level in urls_by_level and urls_by_level[current_level]:
-                    level_urls = urls_by_level[current_level]
-                    total_urls = len(level_urls)
-                    
-                    # Process only a batch to avoid memory issues, rest are stored in pending_urls.csv
-                    urls_to_process = level_urls[:batch_size]
-                    remaining = max(0, total_urls - batch_size)
-                    
-                    logger.info(f"Processing {len(urls_to_process)} URLs at level {current_level} (remaining {remaining} URLs saved to pending_urls.csv)")
-                    
-                    # Save remaining level 1 URLs to pending
-                    if remaining > 0:
-                        for remaining_url in level_urls[batch_size:]:
-                            if not self.url_storage.url_is_processed(remaining_url):
-                                self.url_storage.save_pending_url(remaining_url, depth=current_level, origin=url)
-                    
-                    # Process URLs in this batch
-                    for idx, additional_url in enumerate(urls_to_process):
-                        if self.url_storage.url_is_processed(additional_url):
-                            logger.info(f"Skipping already processed subpage URL at level {current_level}: {additional_url}")
-                            continue
-
-                        logger.info(f"Fetching level {current_level} page {idx+1}/{len(urls_to_process)}: {additional_url}")
-                        success, html_content = self.fetch_additional_page(additional_url, headers)
-
-                        if success and html_content:
-                            # Use page name as key (simplified URL)
-                            section_name = additional_url.rsplit('/', 1)[-1] or f'level{current_level}_page{idx+1}'
-                            # Store each page separately
-                            pages_dict[section_name] = html_content
-                            visited_urls.add(additional_url)
-                            
-                            # Don't mark URL as processed yet - we'll do this after successful analysis
-                            # We're only tracking it for vector generation counts
-                            self.urls_processed_since_last_build += 1
-                    
-                    logger.info(f"Completed fetching HTML content for level 1 URLs from {url} - ready for analysis")
-                
-                # Save all higher level URLs to pending for later cross-resource processing
-                for future_level in range(2, max_depth + 1):
-                    if future_level in urls_by_level and urls_by_level[future_level]:
-                        future_urls = urls_by_level[future_level]
-                        logger.info(f"Saving {len(future_urls)} URLs at level {future_level} to pending queue for later processing")
+                # Save all discovered URLs at all levels to pending
+                total_saved_urls = 0
+                for level in range(1, max_depth + 1):
+                    if level in urls_by_level and urls_by_level[level]:
+                        level_urls = urls_by_level[level]
                         
-                        # Save all these URLs to pending
-                        for future_url in future_urls:
-                            if not self.url_storage.url_is_processed(future_url):
-                                self.url_storage.save_pending_url(future_url, depth=future_level, origin=url)
+                        # Only for level 1, process a batch immediately
+                        if level == 1:
+                            total_urls = len(level_urls)
+                            # Process only a batch to avoid memory issues
+                            urls_to_process = level_urls[:batch_size]
+                            remaining = max(0, total_urls - batch_size)
+                            
+                            logger.info(f"Processing {len(urls_to_process)} URLs at level {level} (remaining {remaining} URLs saved to pending_urls.csv)")
+                            
+                            # Save remaining level 1 URLs to pending
+                            if remaining > 0:
+                                for remaining_url in level_urls[batch_size:]:
+                                    if not self.url_storage.url_is_processed(remaining_url) or force_reprocess:
+                                        self.url_storage.save_pending_url(remaining_url, depth=level, origin=url)
+                                        total_saved_urls += 1
+                            
+                            # Process URLs in this batch
+                            for idx, additional_url in enumerate(urls_to_process):
+                                if self.url_storage.url_is_processed(additional_url) and not force_reprocess:
+                                    logger.info(f"Skipping already processed subpage URL at level {level}: {additional_url}")
+                                    continue
+                                
+                                if self.url_storage.url_is_processed(additional_url) and force_reprocess:
+                                    logger.info(f"Force reprocessing already processed subpage URL at level {level}: {additional_url}")
+                                    
+                                logger.info(f"Fetching level {level} page {idx+1}/{len(urls_to_process)}: {additional_url}")
+                                success, html_content = self.fetch_additional_page(additional_url, headers)
+                                
+                                if success and html_content:
+                                    # Use page name as key (simplified URL)
+                                    section_name = additional_url.rsplit('/', 1)[-1] or f'level{level}_page{idx+1}'
+                                    # Store each page separately
+                                    pages_dict[section_name] = html_content
+                                    visited_urls.add(additional_url)
+                                    
+                                    # Don't mark URL as processed yet - we'll do this after successful analysis
+                                    # We're only tracking it for vector generation counts
+                                    self.urls_processed_since_last_build += 1
+                            
+                            logger.info(f"Completed fetching HTML content for level 1 URLs from {url} - ready for analysis")
+                        else:
+                            # For higher levels, just save to pending queue for later processing
+                            saved_count = 0
+                            for future_url in level_urls:
+                                if not self.url_storage.url_is_processed(future_url) or force_reprocess:
+                                    self.url_storage.save_pending_url(future_url, depth=level, origin=url)
+                                    saved_count += 1
+                                    total_saved_urls += 1
+                            
+                            logger.info(f"Saved {saved_count} URLs at level {level} to pending queue for later processing")
+                
+                logger.info(f"Total of {total_saved_urls} URLs saved to pending queue across all levels")
                 
                 # Check if we should build vector store after processing level 1
                 if self.should_build_vector_store():
-                    logger.info(f"URL threshold reached after processing level 1, time to build vector stores")
+                    logger.info(f"URL threshold reached after initial processing, time to build vector stores")
                     # This will be handled by the caller
             else:
                 # Original approach: process URLs in the order they were discovered
@@ -537,9 +632,12 @@ class ContentFetcher:
                 
                 # Fetch additional pages one by one
                 for idx, additional_url in enumerate(additional_urls):
-                    if self.url_storage.url_is_processed(additional_url):
+                    if self.url_storage.url_is_processed(additional_url) and not force_reprocess:
                         logger.info(f"Skipping already processed subpage URL: {additional_url}")
                         continue
+                        
+                    if self.url_storage.url_is_processed(additional_url) and force_reprocess:
+                        logger.info(f"Force reprocessing already processed subpage URL: {additional_url}")
 
                     logger.info(f"Fetching additional page {idx+1}/{len(additional_urls)}: {additional_url}")
                     success, html_content = self.fetch_additional_page(additional_url, headers)
@@ -565,11 +663,16 @@ class ContentFetcher:
                         # Just track it for vector generation counts
                         self.urls_processed_since_last_build += 1
 
+            # Restore original discovery mode
+            self.discovery_only_mode = original_discovery_mode
+            
             # Return all pages as a dictionary
             return True, pages_dict
 
         except requests.RequestException as e:
             logger.error(f"Error fetching {url}: {e}")
+            # Restore original discovery mode
+            self.discovery_only_mode = original_discovery_mode
             return False, {"error": str(e)}
     
     def mark_url_as_processed(self, url, depth=1, origin=""):
@@ -602,3 +705,134 @@ class ContentFetcher:
         """
         logger.info(f"Resetting URL counter from {self.urls_processed_since_last_build} to 0")
         self.urls_processed_since_last_build = 0
+
+    def discovery_phase(self, urls: List[str], max_depth: int = 4, force_reprocess: bool = False) -> Dict[str, Any]:
+        """
+        Run discovery-only phase on a list of URLs.
+        This will discover all URLs from the provided list without analyzing content.
+        
+        Args:
+            urls: List of URLs to process for discovery
+            max_depth: Maximum depth for discovery
+            force_reprocess: Whether to force reprocessing of already processed URLs
+            
+        Returns:
+            Dictionary with discovery statistics
+        """
+        logger.info(f"Starting URL discovery phase for {len(urls)} URLs with max_depth={max_depth}")
+        
+        results = {
+            "total_urls": len(urls),
+            "successful": 0,
+            "failed": 0,
+            "skipped": 0,
+            "discovered_by_level": {},
+            "total_discovered": 0
+        }
+        
+        # Process each URL for discovery only
+        for idx, url in enumerate(urls):
+            logger.info(f"[{idx+1}/{len(urls)}] Running URL discovery for: {url}")
+            
+            # Check if URL has already been processed for discovery
+            if self.url_storage.get_discovery_status(url) and not force_reprocess:
+                logger.info(f"URL {url} already completed discovery phase, skipping")
+                results["skipped"] += 1
+                continue
+            
+            # Run fetch_content in discovery-only mode
+            success, content = self.fetch_content(
+                url=url,
+                max_depth=max_depth,
+                discovery_only=True,
+                force_reprocess=force_reprocess
+            )
+            
+            if success:
+                results["successful"] += 1
+            else:
+                results["failed"] += 1
+        
+        # Collect statistics on discovered URLs by level
+        for level in range(1, max_depth + 1):
+            pending_urls = self.url_storage.get_pending_urls(depth=level)
+            results["discovered_by_level"][level] = len(pending_urls)
+            results["total_discovered"] += len(pending_urls)
+        
+        logger.info(f"URL discovery phase completed: {results['successful']} successful, "
+                   f"{results['failed']} failed, {results['skipped']} skipped")
+        logger.info(f"Total discovered URLs: {results['total_discovered']}")
+        
+        return results
+    
+    def analysis_phase(self, batch_size: int = 50, max_level: int = 4) -> Dict[str, Any]:
+        """
+        Process all pending URLs for analysis.
+        This should be called after the discovery phase has completed.
+        
+        Args:
+            batch_size: Number of URLs to process in each batch
+            max_level: Maximum level to process
+            
+        Returns:
+            Dictionary with analysis statistics
+        """
+        logger.info(f"Starting URL analysis phase with batch_size={batch_size}")
+        
+        results = {
+            "processed_by_level": {},
+            "total_processed": 0,
+            "successful": 0,
+            "failed": 0
+        }
+        
+        # Process each level sequentially
+        for level in range(1, max_level + 1):
+            pending_urls = self.url_storage.get_pending_urls(depth=level)
+            
+            if not pending_urls:
+                logger.info(f"No pending URLs at level {level}")
+                results["processed_by_level"][level] = 0
+                continue
+                
+            logger.info(f"Processing {len(pending_urls)} pending URLs at level {level}")
+            
+            # Process URLs in batches
+            processed_count = 0
+            success_count = 0
+            failed_count = 0
+            
+            # Process in batches to avoid memory issues
+            for batch_start in range(0, len(pending_urls), batch_size):
+                batch_end = min(batch_start + batch_size, len(pending_urls))
+                batch = pending_urls[batch_start:batch_end]
+                
+                logger.info(f"Processing batch {batch_start//batch_size + 1}/{(len(pending_urls)-1)//batch_size + 1} "
+                           f"({batch_end - batch_start} URLs)")
+                
+                for pending_url_data in batch:
+                    url_to_process = pending_url_data.get('url')
+                    origin_url = pending_url_data.get('origin', '')
+                    
+                    # Check if already processed
+                    if self.url_storage.url_is_processed(url_to_process):
+                        logger.info(f"URL already processed: {url_to_process}, skipping analysis")
+                        continue
+                        
+                    # Process this URL (analysis should be handled by caller)
+                    # Here we just mark that it's ready for processing
+                    logger.info(f"URL ready for analysis: {url_to_process}")
+                    processed_count += 1
+                    
+                    # This would be where actual content analysis happens,
+                    # but we're just preparing URLs for the calling code to analyze
+            
+            results["processed_by_level"][level] = processed_count
+            results["total_processed"] += processed_count
+            results["successful"] += success_count
+            results["failed"] += failed_count
+            
+            logger.info(f"Level {level} processing: {processed_count} URLs processed")
+        
+        logger.info(f"URL analysis phase completed: {results['total_processed']} URLs processed")
+        return results

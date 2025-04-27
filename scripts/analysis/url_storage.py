@@ -104,13 +104,14 @@ class URLStorageManager:
         logger.info(f"URL cache initialized with {len(self._processed_urls_cache)} URLs")
         return processed_urls
     
-    def save_processed_url(self, url: str, depth: int = 0, origin: str = "") -> bool:
+    def save_processed_url(self, url: str, depth: int = 0, origin: str = "", discovery_only: bool = False) -> bool:
         """Save a processed URL to the CSV file with depth and origin information.
         
         Args:
             url: The URL that was processed
             depth: The crawl depth level of this URL (0=main, 1=first level, etc.)
             origin: The URL that led to this URL (empty for main URLs)
+            discovery_only: Whether this URL is only for discovery (defaults to False)
             
         Returns:
             Success flag
@@ -434,3 +435,34 @@ class URLStorageManager:
         except Exception as e:
             logger.error(f"DEBUG URL STORAGE: Error removing pending URL {url}: {e}")
             return False
+        
+    def save_discovery_status(self, url, completed=True):
+        """
+        Mark a URL as having completed the discovery phase.
+        
+        Args:
+            url: The URL to mark
+            completed: Whether discovery is completed (True) or not (False)
+        """
+        # We'll use the processed_urls file but with a special flag
+        self.save_processed_url(url, depth=0, origin="", discovery_only=True)
+        logger.info(f"Marked URL as discovery completed: {url}")
+
+    def get_discovery_status(self, url):
+        """
+        Check if a URL has completed the discovery phase.
+        
+        Args:
+            url: The URL to check
+            
+        Returns:
+            True if discovery phase completed, False otherwise
+        """
+        # Check if URL exists in processed_urls with discovery_only flag
+        if os.path.exists(self.processed_urls_file):
+            with open(self.processed_urls_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['url'] == url and row.get('discovery_only', '') == 'True':
+                        return True
+        return False
