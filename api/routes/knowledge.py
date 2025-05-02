@@ -115,8 +115,10 @@ async def process_knowledge_base(
     skip_questions: bool = False,   # Skip question generation (useful when time is limited)
     skip_goals: bool = False,       # Skip goal extraction (useful when time is limited)
     max_depth: int = 4,             # Maximum depth for crawling (higher = deeper crawling)
-    force_url_fetch: bool = True,   # Force fetch URLs even if already processed
-    process_level: Optional[int] = None  # If specified, only process URLs at this level
+    force_url_fetch: bool = False,  # Only discover new URLs, don't reprocess already processed URLs (set to False to skip already processed URLs)
+    process_level: Optional[int] = None,  # If specified, only process URLs at this level
+    auto_advance_level: bool = False,     # If True, automatically advance to next level after completion
+    continue_until_end: bool = False      # If True, process all levels until completion or cancellation
 ):
     """
     Process all knowledge base files and generate embeddings.
@@ -189,7 +191,9 @@ async def process_knowledge_base(
             skip_goals=skip_goals,
             max_depth=max_depth,
             force_url_fetch=force_url_fetch,
-            process_level=process_level  # Pass through the level to process
+            process_level=process_level,  # Pass through the level to process
+            auto_advance_level=auto_advance_level,  # Whether to advance to next level automatically
+            continue_until_end=continue_until_end   # Whether to continue processing all levels
         )
         
         # Add group_id for frontend compatibility

@@ -59,7 +59,7 @@ class SingleResourceProcessor:
     
     def process_resource(self, resource: Dict, resource_id: str, idx: int = None, csv_path: str = None,
                       on_subpage_processed: Callable = None, process_by_level: bool = True, 
-                      max_depth: int = 4, current_level: int = None) -> Dict[str, Any]:
+                      max_depth: int = 4, current_level: int = None, discovery_only: bool = False) -> Dict[str, Any]:
         """
         Process a single resource through content fetching, analysis and storage.
         
@@ -72,6 +72,7 @@ class SingleResourceProcessor:
             process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
             max_depth: Maximum crawl depth (1=just main page links, 2=two levels, 3=three levels, etc.)
             current_level: If specified, only process URLs at this specific level (for level-based processing)
+            discovery_only: If True, only discover URLs without analyzing content
             
         Returns:
             Dictionary with processing results
@@ -102,7 +103,7 @@ class SingleResourceProcessor:
                 return result
             
             # STEP 1: Fetch main page content
-            logger.info(f"[{resource_id}] Fetching content from {resource_url}")
+            logger.info(f"[{resource_id}] {'Discovering URLs from' if discovery_only else 'Fetching content from'} {resource_url}")
             
             # Create temp file for storing content
             resource_slug = resource_title.replace(" ", "_").lower()[:30]
@@ -161,6 +162,15 @@ class SingleResourceProcessor:
             # Log discoveries by level
             for level, urls in urls_by_level.items():
                 logger.info(f"[{resource_id}] Discovered {len(urls)} URLs at level {level}")
+            
+            # If discovery_only mode, return early after logging URL counts
+            if discovery_only:
+                logger.info(f"[{resource_id}] URL discovery completed: found {sum(len(urls) for urls in urls_by_level.values())} URLs across all levels")
+                # Don't mark main URL as processed - we've only discovered URLs
+                result["success"] = True
+                result["discovered_urls_count"] = sum(len(urls) for urls in urls_by_level.values())
+                result["urls_by_level"] = {level: len(urls) for level, urls in urls_by_level.items()}
+                return result
             
             # Extract text content from main HTML
             main_page_text = extract_text(main_html)
@@ -275,9 +285,9 @@ class SingleResourceProcessor:
             if on_subpage_processed:
                 on_subpage_processed()
             
-            # Skip additional pages if only processing level 0
-            if current_level is not None and current_level == 0:
-                logger.info(f"[{resource_id}] Only processing level 0, skipping additional pages")
+            # Skip additional pages if only processing level 0 or if we're in discovery_only mode
+            if (current_level is not None and current_level == 0) or discovery_only:
+                logger.info(f"[{resource_id}] {'Discovery only mode, skipping content analysis' if discovery_only else 'Only processing level 0, skipping additional pages'}")
                 result["success"] = True
                 return result
             
@@ -440,6 +450,10 @@ class SingleResourceProcessor:
                             logger.error(f"[{resource_id}] Error processing page {page_key}: {e}")
                             continue
             
+            # Extract resource_id_str from resource for tracking
+            resource_id_str = resource.get('title', '') or resource_url.split('//')[-1].replace('/', '_')
+            resource_id_str = resource_id_str.strip()
+            
             # Mark URL as processed if we extracted any meaningful data 
             # (definitions, projects, or methods) or if we've tried too many times
             
@@ -461,12 +475,31 @@ class SingleResourceProcessor:
                 # We have data, mark as processed
                 logger.info(f"[{resource_id}] Marking main URL as processed after successful extraction: {resource_url}")
                 self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
+                
+                # Associate URL with resource_id if we have one
+                if resource_id_str:
+                    logger.info(f"[{resource_id}] Associating resource URL with resource ID {resource_id_str}: {resource_url}")
+                    self.url_storage.save_resource_url(resource_id_str, resource_url, depth=0)
             elif attempt_count >= 2:  # After 3 attempts (0, 1, 2), force mark as processed
                 # Failed 3 times, force mark as processed to stop trying
                 logger.warning(f"[{resource_id}] Main URL failed to yield data after {attempt_count+1} attempts, force marking as processed: {resource_url}")
                 self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
+                
+                # Still associate with resource_id even if no data was extracted
+                if resource_id_str:
+                    logger.info(f"[{resource_id}] Associating resource URL with resource ID {resource_id_str} (no data extracted): {resource_url}")
+                    self.url_storage.save_resource_url(resource_id_str, resource_url, depth=0)
             else:
                 # Still have attempts left, increment attempt count and keep in pending
+                # But still associate with resource_id for future tracking
+                if resource_id_str:
+                    self.content_fetcher.url_storage.save_pending_url(
+                        url=resource_url,
+                        depth=0,
+                        origin="",
+                        attempt_count=attempt_count + 1,
+                        resource_id=resource_id_str
+                    )
                 logger.info(f"[{resource_id}] No data extracted from main URL (attempt {attempt_count+1}), keeping in pending queue: {resource_url}")
                 self.content_fetcher.url_storage.save_pending_url(resource_url, depth=0, origin="", attempt_count=attempt_count+1)
             
@@ -493,20 +526,31 @@ class SingleResourceProcessor:
                         pending_for_resource = [u for u in pending_for_level if u.get('origin') == resource_url]
                         pending_urls.extend(pending_for_resource)
                         
-                    # If no pending URLs left, mark as fully completed
-                    if not pending_urls:
-                        logger.info(f"[{resource_id}] No pending URLs left for any level, marking resource as fully analyzed")
+                    # Check if all 4 levels have been processed before marking as completed
+                    # Count how many levels have been fully processed
+                    processed_levels = []
+                    missing_levels = []
+                    for level in range(1, 5):  # Check levels 1-4
+                        level_pending = [u for u in pending_urls if int(u.get('depth', 0)) == level]
+                        if not level_pending:
+                            processed_levels.append(level)
+                        else:
+                            missing_levels.append(level)
+                    
+                    # Only mark as completed if ALL 4 levels are processed
+                    if len(processed_levels) == 4:
+                        logger.info(f"[{resource_id}] All 4 levels fully processed, marking resource as fully analyzed")
                         resource_copy['analysis_completed'] = True
                         resource_copy['partial_processing'] = False
                     else:
-                        # Still have pending URLs, mark as partial processing
+                        # Not all levels processed yet, mark as partial processing
+                        logger.info(f"[{resource_id}] Not all levels processed yet. Processed: {processed_levels}, Missing: {missing_levels}")
                         logger.info(f"[{resource_id}] Still have {len(pending_urls)} pending URLs across all levels, marking as partial processing")
                         resource_copy['analysis_completed'] = False
                         resource_copy['partial_processing'] = True
+                        resource_copy['pending_levels'] = str(missing_levels)
                         resource_copy['pending_urls_count'] = len(pending_urls)
-                        # Store which levels are still pending
-                        pending_levels = sorted(set(u.get('depth') for u in pending_urls))
-                        resource_copy['pending_levels'] = str(pending_levels)
+                        # We've already set pending_levels from the missing_levels list
                         
                 except Exception as e:
                     logger.error(f"[{resource_id}] Error checking pending URLs: {e}")
@@ -557,6 +601,88 @@ class SingleResourceProcessor:
         # Create a resource ID for logging
         resource_title = resource.get('title', 'Unnamed')
         resource_id = f"{resource_title}::{url}"
+        
+        # Enhanced debug logging for URL processing 
+        logger.info(f"[{resource_id}] Processing URL at level {depth}: {url}")
+        logger.info(f"[{resource_id}] Force fetch enabled: {self.force_fetch}")
+        logger.info(f"[{resource_id}] URL in processed_urls.csv: {self.content_fetcher.url_storage.url_is_processed(url)}")
+        
+        # Check if URL is already in processed list - respect force_fetch flag
+        if self.content_fetcher.url_storage.url_is_processed(url) and not self.force_fetch:
+            # Log detailed status about this URL
+            logger.info(f"[{resource_id}] URL found in processed_urls.csv: {url}")
+            
+            # But let's check if it's ACTUALLY been analyzed by checking for method/definition files
+            import os
+            import pandas as pd
+            from pathlib import Path
+            data_path = Path(self.data_folder)
+            
+            # Check if we have any definitions, methods, or projects from this URL
+            definitions_analyzed = False
+            methods_analyzed = False
+            projects_analyzed = False
+            
+            # Check definitions
+            definitions_csv = data_path / "definitions.csv"
+            if definitions_csv.exists():
+                try:
+                    defs_df = pd.read_csv(definitions_csv)
+                    if 'source' in defs_df.columns:
+                        if any(defs_df['source'] == url):
+                            definitions_analyzed = True
+                            logger.info(f"[{resource_id}] Found definitions from this URL")
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error checking definitions.csv: {e}")
+            
+            # Check methods
+            methods_csv = data_path / "methods.csv"
+            if methods_csv.exists():
+                try:
+                    methods_df = pd.read_csv(methods_csv)
+                    if 'source' in methods_df.columns:
+                        if any(methods_df['source'] == url):
+                            methods_analyzed = True
+                            logger.info(f"[{resource_id}] Found methods from this URL")
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error checking methods.csv: {e}")
+                    
+            # Check projects
+            projects_csv = data_path / "projects.csv"
+            if projects_csv.exists():
+                try:
+                    projects_df = pd.read_csv(projects_csv)
+                    if 'source' in projects_df.columns:
+                        if any(projects_df['source'] == url):
+                            projects_analyzed = True
+                            logger.info(f"[{resource_id}] Found projects from this URL")
+                except Exception as e:
+                    logger.error(f"[{resource_id}] Error checking projects.csv: {e}")
+            
+            # Only skip if we actually have analyzed the URL (have definitions/methods/projects)
+            # or if force_fetch is disabled
+            if definitions_analyzed or methods_analyzed or projects_analyzed:
+                logger.info(f"[{resource_id}] URL actually has analysis data - skipping: {url}")
+                # Remove from pending_urls.csv to clean up
+                self.content_fetcher.url_storage.remove_pending_url(url)
+                return {
+                    "success": True, 
+                    "url": url,
+                    "origin_url": origin_url,
+                    "depth": depth,
+                    "status": "skipped_processed",
+                    "message": "URL already processed with analysis data"
+                }
+            else:
+                logger.warning(f"[{resource_id}] URL was in processed_urls.csv but has NO ANALYSIS DATA - reprocessing: {url}")
+                # Continue with processing since the URL doesn't have real analysis data
+                # Note: We don't remove it from pending_urls.csv so we can process it
+        
+        # If URL is already processed but force_fetch is enabled, log that we're reprocessing
+        if self.content_fetcher.url_storage.url_is_processed(url) and self.force_fetch:
+            logger.info(f"[{resource_id}] URL already processed but force_fetch=True, forcing reprocessing: {url}")
+            # Remove from pending_urls.csv to clean up, but we'll still process it
+            self.content_fetcher.url_storage.remove_pending_url(url)
         
         # Initialize result structure
         result = {
@@ -727,15 +853,29 @@ class SingleResourceProcessor:
                                 service_saver = ServiceDataSaver()
                                 resource_copy = resource.copy()
                                 
-                                if not pending_urls:
-                                    logger.info(f"[{resource_id}] No pending URLs left, marking resource as fully analyzed")
+                                # Check if all 4 levels have been processed before marking as completed
+                                # Count how many levels have been fully processed
+                                processed_levels = []
+                                missing_levels = []
+                                for level in range(1, 5):  # Check levels 1-4
+                                    level_pending = [u for u in pending_urls if int(u.get('depth', 0)) == level]
+                                    if not level_pending:
+                                        processed_levels.append(level)
+                                    else:
+                                        missing_levels.append(level)
+                                
+                                # Only mark as completed if ALL 4 levels are processed
+                                if len(processed_levels) == 4:
+                                    logger.info(f"[{resource_id}] All 4 levels fully processed, marking resource as fully analyzed")
                                     resource_copy['analysis_completed'] = True
                                     resource_copy['partial_processing'] = False
                                 else:
+                                    logger.info(f"[{resource_id}] Not all levels processed yet. Processed: {processed_levels}, Missing: {missing_levels}")
                                     logger.info(f"[{resource_id}] Still have {len(pending_urls)} pending URLs, keeping as partial processing")
                                     resource_copy['analysis_completed'] = False
                                     resource_copy['partial_processing'] = True
                                     resource_copy['pending_urls_count'] = len(pending_urls)
+                                    resource_copy['pending_levels'] = str(missing_levels)
                                 
                                 # Update the CSV
                                 service_saver.save_resource(resource_copy, str(csv_path), idx)

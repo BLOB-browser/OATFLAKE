@@ -47,6 +47,17 @@ def load_training_schedule():
                     logger.info(f"Loaded training schedule from config: "
                                f"{_training_start_hour:02d}:{_training_start_minute:02d} - "
                                f"{_training_stop_hour:02d}:{_training_stop_minute:02d}")
+                    
+                    # Also check for current processing level
+                    if 'current_process_level' in config:
+                        logger.info(f"Current processing level from config: {config['current_process_level']}")
+                    else:
+                        # Initialize current_process_level if it doesn't exist
+                        config['current_process_level'] = 0
+                        with open(config_path, 'w') as f:
+                            json.dump(config, f, indent=2)
+                        logger.info("Initialized current_process_level to 0 in config")
+                        
                     return True
     except Exception as e:
         logger.error(f"Error loading training schedule from config: {e}")
@@ -98,6 +109,51 @@ def set_training_time(start_hour, start_minute, stop_hour, stop_minute):
     except Exception as e:
         logger.error(f"Failed to save training schedule: {e}")
 
+def get_current_process_level():
+    """Get the current processing level from config"""
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Return the current level, defaulting to 0 if not found
+            return config.get('current_process_level', 0)
+    except Exception as e:
+        logger.error(f"Error getting current process level: {e}")
+        return 0
+
+def update_process_level(new_level):
+    """Update the current processing level in config"""
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Update the level
+            config['current_process_level'] = new_level
+            
+            # Save back to config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+                
+            logger.info(f"Updated current_process_level to {new_level} in config")
+            return True
+    except Exception as e:
+        logger.error(f"Error updating process level: {e}")
+        return False
+
+def increment_process_level():
+    """Increment the current processing level by 1, or reset to 0 if it's at max level"""
+    current_level = get_current_process_level()
+    max_level = 4  # Maximum URL depth level to process
+    
+    # If current level is at max, reset to 0, otherwise increment
+    new_level = 0 if current_level >= max_level else current_level + 1
+    
+    return update_process_level(new_level)
+
 def get_status():
     """Get the current status of the scheduler"""
     return {
@@ -107,6 +163,7 @@ def get_status():
             "start": f"{_training_start_hour:02d}:{_training_start_minute:02d}",
             "stop": f"{_training_stop_hour:02d}:{_training_stop_minute:02d}"
         },
+        "process_level": get_current_process_level(),
         "tasks_pending": 0,   # We don't track pending tasks
         "tasks_completed": 0  # We don't track completed tasks
     }
@@ -459,13 +516,25 @@ def _training_loop():
                         
                         # Set parameters for scheduled processing
                         params = {
+                            # Basic parameters
                             "skip_markdown_scraping": "false",   # Process markdown files
                             "analyze_resources": str(time_to_end_minutes >= 60).lower(),  # Only analyze resources if >60 min left
                             "analyze_all_resources": "false",    # Only analyze resources that need it
                             "batch_size": "1",                   # Process 1 resource at a time for stability
                             "force_update": "false",             # Let the API decide if processing is needed
-                            "skip_vector_generation": "false",   # This parameter tells the API to generate vectors
                             "check_unanalyzed": "true",          # Always check for unanalyzed resources
+                            "force_url_fetch": "true",           # Enable URL discovery to find new URLs
+                            
+                            # Set process_level to 0 to start with discovery and main pages
+                            "process_level": "0",
+                            
+                            # Enable auto-advancing through levels and continuous processing
+                            "auto_advance_level": "true",                                     # Auto-advance to next level
+                            "continue_until_end": str(time_to_end_minutes >= 30).lower(),     # Continue all levels if we have time
+                            
+                            # Only do vector generation, questions and goals in the final phase
+                            # These will be done automatically when auto_advance_level reaches level 0 again
+                            "skip_vector_generation": "false",   # This parameter tells the API to generate vectors
                             "skip_questions": str(time_to_end_minutes < 60).lower(),  # Skip questions if < 60 min left
                             "skip_goals": str(time_to_end_minutes < 60).lower()       # Skip goals if < 60 min left
                         }
