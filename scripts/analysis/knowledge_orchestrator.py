@@ -26,7 +26,7 @@ class KnowledgeOrchestrator:
         self.data_folder = data_folder
         self.processing_active = False
         self.cancel_requested = False
-        self.force_url_fetch = False  # Default to not forcing URL fetching
+        # Removed force_url_fetch flag  # Default to not forcing URL fetching
         
     def cancel_processing(self) -> Dict[str, Any]:
         """
@@ -913,11 +913,6 @@ class KnowledgeOrchestrator:
                             
                         logger.info(f"Triggering URL discovery for resource: {resource.get('title', 'Unnamed')} - {resource_url}")
                         
-                        # Store the original force_fetch value
-                        original_force_fetch = single_processor.force_fetch
-                        # Enable force_fetch for this operation
-                        single_processor.force_fetch = True
-                        
                         # Process the resource to discover URLs
                         result = single_processor.process_resource(
                             resource=resource,
@@ -928,8 +923,6 @@ class KnowledgeOrchestrator:
                             process_by_level=True  # Ensure we use level-based processing for proper URL discovery
                         )
                         
-                        # Restore original force_fetch setting
-                        single_processor.force_fetch = original_force_fetch
                         processed_resources += 1
                     
                     # After discovery, check again for pending URLs
@@ -1077,7 +1070,7 @@ class KnowledgeOrchestrator:
         # Set processing flags
         self.processing_active = True
         self.cancel_requested = False
-        self.force_url_fetch = force_url_fetch
+        # Removed: self.force_url_fetch = force_url_fetch
         
         try:
             # Initialize result object

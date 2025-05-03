@@ -40,9 +40,6 @@ class SingleResourceProcessor:
         # Initialize content fetcher for URL processing
         self.content_fetcher = ContentFetcher()
         
-        # Flag for forcing URL refetching
-        self.force_fetch = False
-        
         # Set up temporary storage for content
         from scripts.storage.temporary_storage_service import TemporaryStorageService
         from scripts.storage.content_storage_service import ContentStorageService
@@ -129,11 +126,12 @@ class SingleResourceProcessor:
                 return result
             
             # Fetch content with the specified depth level
+            # Always discover URLs, even from processed resources
             success, page_data = self.content_fetcher.fetch_content(
                 resource_url, 
                 max_depth=max_depth,
                 process_by_level=process_by_level,
-                force_reprocess=self.force_fetch  # Use our force_fetch flag
+                force_reprocess=False  # Never force reprocessing of already processed URLs
             )
             
             if not success:
@@ -475,6 +473,8 @@ class SingleResourceProcessor:
                 # We have data, mark as processed
                 logger.info(f"[{resource_id}] Marking main URL as processed after successful extraction: {resource_url}")
                 self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
+                # Also remove from pending list
+                self.content_fetcher.url_storage.remove_pending_url(resource_url)
                 
                 # Associate URL with resource_id if we have one
                 if resource_id_str:
@@ -484,6 +484,8 @@ class SingleResourceProcessor:
                 # Failed 3 times, force mark as processed to stop trying
                 logger.warning(f"[{resource_id}] Main URL failed to yield data after {attempt_count+1} attempts, force marking as processed: {resource_url}")
                 self.content_fetcher.mark_url_as_processed(resource_url, depth=0, origin="")
+                # Also remove from pending list
+                self.content_fetcher.url_storage.remove_pending_url(resource_url)
                 
                 # Still associate with resource_id even if no data was extracted
                 if resource_id_str:
@@ -604,11 +606,11 @@ class SingleResourceProcessor:
         
         # Enhanced debug logging for URL processing 
         logger.info(f"[{resource_id}] Processing URL at level {depth}: {url}")
-        logger.info(f"[{resource_id}] Force fetch enabled: {self.force_fetch}")
-        logger.info(f"[{resource_id}] URL in processed_urls.csv: {self.content_fetcher.url_storage.url_is_processed(url)}")
+        url_is_processed = self.content_fetcher.url_storage.url_is_processed(url)
+        logger.info(f"[{resource_id}] URL in processed_urls.csv: {url_is_processed}")
         
-        # Check if URL is already in processed list - respect force_fetch flag
-        if self.content_fetcher.url_storage.url_is_processed(url) and not self.force_fetch:
+        # Always check if URL is already in processed list and skip if it is
+        if url_is_processed:
             # Log detailed status about this URL
             logger.info(f"[{resource_id}] URL found in processed_urls.csv: {url}")
             
@@ -659,10 +661,9 @@ class SingleResourceProcessor:
                 except Exception as e:
                     logger.error(f"[{resource_id}] Error checking projects.csv: {e}")
             
-            # Only skip if we actually have analyzed the URL (have definitions/methods/projects)
-            # or if force_fetch is disabled
+            # If we have actual analysis data, skip processing
             if definitions_analyzed or methods_analyzed or projects_analyzed:
-                logger.info(f"[{resource_id}] URL actually has analysis data - skipping: {url}")
+                logger.info(f"[{resource_id}] URL has analysis data - skipping: {url}")
                 # Remove from pending_urls.csv to clean up
                 self.content_fetcher.url_storage.remove_pending_url(url)
                 return {
@@ -674,15 +675,9 @@ class SingleResourceProcessor:
                     "message": "URL already processed with analysis data"
                 }
             else:
+                # URL is in processed list but has no data - we'll reprocess it
                 logger.warning(f"[{resource_id}] URL was in processed_urls.csv but has NO ANALYSIS DATA - reprocessing: {url}")
                 # Continue with processing since the URL doesn't have real analysis data
-                # Note: We don't remove it from pending_urls.csv so we can process it
-        
-        # If URL is already processed but force_fetch is enabled, log that we're reprocessing
-        if self.content_fetcher.url_storage.url_is_processed(url) and self.force_fetch:
-            logger.info(f"[{resource_id}] URL already processed but force_fetch=True, forcing reprocessing: {url}")
-            # Remove from pending_urls.csv to clean up, but we'll still process it
-            self.content_fetcher.url_storage.remove_pending_url(url)
         
         # Initialize result structure
         result = {
@@ -806,11 +801,15 @@ class SingleResourceProcessor:
                     # We have data, mark as processed
                     logger.info(f"[{resource_id}] Marking URL as processed after successful extraction: {url}")
                     self.content_fetcher.mark_url_as_processed(url, depth=depth, origin=origin_url)
+                    # Also make sure to remove from pending list after successful processing
+                    self.content_fetcher.url_storage.remove_pending_url(url)
                     successful_extraction = True
                 elif attempt_count >= 2:  # After 3 attempts (0, 1, 2), force mark as processed
                     # Failed 3 times, force mark as processed to stop trying
                     logger.warning(f"[{resource_id}] URL failed to yield data after {attempt_count+1} attempts, force marking as processed: {url}")
                     self.content_fetcher.mark_url_as_processed(url, depth=depth, origin=origin_url)
+                    # Also remove from pending list 
+                    self.content_fetcher.url_storage.remove_pending_url(url)
                     successful_extraction = False
                 else:
                     # Still have attempts left, increment attempt count and keep in pending
