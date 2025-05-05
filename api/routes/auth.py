@@ -58,22 +58,50 @@ async def login(request: Request):
 
 @router.post("/connect")
 async def connect(request: ConnectionRequest, current_request: Request):
-    """Handle group connection"""
+    """Handle group connection - no authentication required"""
     try:
         logger.info(f"Connection request received for group: {request.group_id}")
         
-        if not current_request.app.state.supabase_client:
-            logger.error("No authenticated Supabase client")
-            raise HTTPException(status_code=401, detail="Please login first")
-
-        # Use the stored authenticated client from app state
-        supabase_client = current_request.app.state.supabase_client
-        group_info = await supabase_client.get_group_info(request.group_id)
+        # Check if we have group info included in the request
+        if hasattr(request, 'group_info') and request.group_info:
+            # Directly use provided group info (from frontend)
+            logger.info("Using group info provided by frontend")
+            group_info = request.group_info
+        else:
+            # Try to get group info from Supabase if client exists
+            supabase_client = None
+            if hasattr(current_request.app.state, 'supabase_client') and current_request.app.state.supabase_client:
+                supabase_client = current_request.app.state.supabase_client
+                
+                try:
+                    # If we have a client, try to get group info
+                    group_info = await supabase_client.get_group_info(request.group_id)
+                    if not group_info:
+                        logger.warning(f"Group not found in Supabase: {request.group_id}")
+                        # Use simplified group info with provided ID
+                        group_info = {
+                            "id": request.group_id,
+                            "name": f"Group {request.group_id[:6]}",
+                            "description": "Local group connection"
+                        }
+                except Exception as e:
+                    logger.warning(f"Error fetching group from Supabase: {e}")
+                    # Use simplified group info with provided ID
+                    group_info = {
+                        "id": request.group_id,
+                        "name": f"Group {request.group_id[:6]}",
+                        "description": "Local group connection"
+                    }
+            else:
+                # No Supabase client, just use basic info
+                logger.info("No Supabase client, using basic group info")
+                group_info = {
+                    "id": request.group_id,
+                    "name": f"Group {request.group_id[:6]}",
+                    "description": "Local group connection"
+                }
         
-        if not group_info:
-            logger.error(f"Group not found: {request.group_id}")
-            raise HTTPException(status_code=404, detail="Group not found")
-        
+        # Save the connection information regardless of auth
         result = await connection.save_connection(request.group_id, group_info)
         logger.info(f"Connection successful: {result}")
         return ConnectionResponse(**result)

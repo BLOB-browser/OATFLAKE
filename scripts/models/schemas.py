@@ -51,11 +51,15 @@ class JsonRequest(BaseModel):
 class ConnectionRequest(BaseModel):
     group_id: str
     client_version: str = "0.1.0"
-
+    group_info: Optional[Dict] = None  # Optional group info from frontend
+    
 class ConnectionResponse(BaseModel):
     status: str
     message: str
     server_version: str = "0.1.0"
+    group_name: Optional[str] = None
+    group_image: Optional[str] = None
+    group_backend_url: Optional[str] = None
 
 class Project(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

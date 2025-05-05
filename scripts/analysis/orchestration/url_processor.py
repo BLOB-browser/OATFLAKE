@@ -3,6 +3,7 @@
 
 import logging
 import os
+import csv
 import pandas as pd
 from typing import Dict, Any, List, Optional
 
@@ -775,7 +776,7 @@ class URLProcessor(BaseOrchestrator):
                         url_result = single_processor.process_specific_url(
                             url=url_to_process,
                             origin_url=origin_url,
-                            resource=fallback_resource,
+                            resource=resource_for_origin,  # Use resource_for_origin instead of undefined fallback_resource
                             depth=level
                         )
                         

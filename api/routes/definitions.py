@@ -62,12 +62,26 @@ async def list_definitions():
             }
             
         df = pd.read_csv(definitions_path)
-        df = df.replace({pd.NA: None})
+        
+        # Handle NaN values by replacing them with None
+        df = df.replace({float('nan'): None, pd.NA: None})
+        
+        # Convert to records and ensure all values are JSON serializable
+        records = []
+        for record in df.to_dict('records'):
+            # Ensure all values in the record are JSON serializable
+            clean_record = {}
+            for key, value in record.items():
+                if pd.isna(value):
+                    clean_record[key] = None
+                else:
+                    clean_record[key] = value
+            records.append(clean_record)
         
         return {
             "status": "success",
             "data": {
-                "rows": df.to_dict('records'),
+                "rows": records,
                 "columns": df.columns.tolist(),
                 "stats": {
                     "total_count": len(df),

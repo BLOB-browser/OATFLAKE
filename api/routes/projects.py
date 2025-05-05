@@ -15,10 +15,7 @@ logger = logging.getLogger(__name__)
 async def list_projects(request: Request):
     """List all projects from projects.csv"""
     try:
-        if not getattr(request.app.state, "supabase_client", None):
-            logger.warning("No authenticated client")
-            raise HTTPException(status_code=401, detail="Authentication required")
-
+        # Authentication check removed
         data_path = Path(BACKEND_CONFIG['data_path'])
         projects_path = data_path / "projects.csv"
         
@@ -36,7 +33,7 @@ async def list_projects(request: Request):
             df = pd.read_csv(projects_path)
             
             # Replace NaN with None in the entire DataFrame
-            df = df.replace({np.nan: None})
+            df = df.replace({np.nan: None, float('nan'): None, pd.NA: None})
             
             # Additionally handle object columns
             string_columns = df.select_dtypes(include=['object']).columns
@@ -52,10 +49,24 @@ async def list_projects(request: Request):
         if 'modified_at' in df.columns:
             df['modified_at'] = df['modified_at'].apply(lambda x: x if pd.isna(x) else pd.to_datetime(x).isoformat())
         
+        # Convert to records and ensure all values are JSON serializable
+        records = []
+        for record in df.to_dict('records'):
+            # Ensure all values in the record are JSON serializable
+            clean_record = {}
+            for key, value in record.items():
+                if pd.isna(value):
+                    clean_record[key] = None
+                elif isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                    clean_record[key] = None
+                else:
+                    clean_record[key] = value
+            records.append(clean_record)
+        
         return {
             "status": "success",
             "data": {
-                "rows": df.to_dict('records'),
+                "rows": records,
                 "columns": df.columns.tolist(),
                 "stats": {
                     "total_count": len(df),
@@ -128,13 +139,26 @@ async def update_project(project_id: int, project: Project):
         for key, value in project_data.items():
             df.at[project_id, key] = value
 
+        # Handle any potential NaN values that could cause JSON serialization issues
+        df = df.replace({np.nan: None, float('nan'): None, pd.NA: None})
+        
         # Save back to CSV
         df.to_csv(projects_path, index=False)
+
+        # Ensure project_data is JSON serializable
+        clean_data = {}
+        for key, value in project_data.items():
+            if pd.isna(value):
+                clean_data[key] = None
+            elif isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                clean_data[key] = None
+            else:
+                clean_data[key] = value
 
         return {
             "status": "success",
             "message": "Project updated successfully",
-            "data": project_data
+            "data": clean_data
         }
 
     except Exception as e:
