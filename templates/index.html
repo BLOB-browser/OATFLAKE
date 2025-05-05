@@ -11,6 +11,77 @@
     <script>
         // Add immediate console log to verify script loading
         console.log('HTML loaded, waiting for DOM...');
+        
+        // Define global switchToTab function that will be available immediately
+        window.switchToTab = function(tab) {
+            console.log('Global switchToTab called for', tab);
+            // This is a placeholder that will be replaced when settings.js loads
+            // For now, provide a minimal implementation
+            setTimeout(() => {
+                const localTab = document.getElementById('localSettingsTab');
+                const connectionTab = document.getElementById('connectionSettingsTab');
+                const localPanel = document.getElementById('localSettingsPanel');
+                const connectionPanel = document.getElementById('connectionSettingsPanel');
+                
+                if (!localTab || !connectionTab || !localPanel || !connectionPanel) {
+                    console.error('Tab elements not found yet');
+                    return;
+                }
+                
+                if (tab === 'local') {
+                    localPanel.classList.remove('hidden');
+                    connectionPanel.classList.add('hidden');
+                    
+                    localTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    localTab.classList.remove('text-neutral-400');
+                    connectionTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    connectionTab.classList.add('text-neutral-400');
+                } else {
+                    connectionPanel.classList.remove('hidden');
+                    localPanel.classList.add('hidden');
+                    
+                    connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    connectionTab.classList.remove('text-neutral-400');
+                    localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    localTab.classList.add('text-neutral-400');
+                }
+            }, 100); // Short delay to ensure DOM elements exist
+        };
+        
+        // Helper function to show connection settings - this will open the modal and switch to connections tab
+        window.showConnectionSettings = function() {
+            console.log('Showing connection settings');
+            // First show the modal
+            const settingsModal = document.getElementById('settingsModal');
+            if (settingsModal) {
+                settingsModal.classList.remove('hidden');
+                // Apply animation
+                settingsModal.style.opacity = '0';
+                setTimeout(() => {
+                    settingsModal.style.opacity = '1';
+                    settingsModal.style.transition = 'opacity 0.2s ease-in-out';
+                }, 10);
+            }
+            
+            // Then switch to the connection tab with a slight delay
+            setTimeout(() => {
+                // Try different approaches to ensure it works
+                try {
+                    if (window.switchToTab) {
+                        console.log('Using window.switchToTab');
+                        window.switchToTab('connection');
+                    } else {
+                        const connectionTab = document.getElementById('connectionSettingsTab');
+                        if (connectionTab) {
+                            console.log('Clicking connectionTab directly');
+                            connectionTab.click();
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error switching tabs:', e);
+                }
+            }, 100);
+        };
     </script>
     <style>
         /* Add styles to ensure login status is always visible */
@@ -57,11 +128,17 @@
         </div>
     </nav>
 
-    <!-- Add login status indicator - positioned further right -->
-    <div id="loginStatus" class="p-2 bg-black bg-opacity-80 rounded">
-        <button id="logoutButton" onclick="handleLogout()" 
-                class="px-3 py-1 text-sm bg-red-600 hover:bg-red-700 rounded">
-            Logout
+    <!-- Group Status & Connect Button - positioned on the right -->
+    <div id="groupStatus" class="p-2 bg-black bg-opacity-80 rounded flex items-center space-x-2">
+        <span id="statusText" class="text-sm text-gray-300">Local Mode</span>
+        <button id="connectButton" 
+                onclick="showConnectionSettings()"
+                class="px-3 py-1 text-sm bg-indigo-600 hover:bg-indigo-700 rounded text-white flex items-center">
+            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                      d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+            </svg>
+            Connect
         </button>
     </div>
     
@@ -72,18 +149,68 @@
         </div>
     </div>
 
-    <!-- Add login section before main content -->
-    <div id="loginSection" class="mx-auto px-4 pt-24 pb-8 text-center">
-        <h2 class="text-2xl font-semibold mb-6">Login</h2>
-        <div class="max-w-md mx-auto bg-neutral-800 p-6 rounded-lg">
-            <input type="email" id="emailInput" placeholder="Email" 
-                   class="w-full mb-4 bg-gray-700 px-4 py-2 rounded">
-            <input type="password" id="passwordInput" placeholder="Password" 
-                   class="w-full mb-4 bg-gray-700 px-4 py-2 rounded">
-            <button type="button" id="loginButton" onclick="console.log('Button clicked'); handleLoginClick();" 
-                    class="w-full bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded">
-                Login
-            </button>
+    <!-- Group Connect Modal - uses iframe to connect through the frontend website -->
+    <div id="loginSection" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 hidden">
+        <div class="bg-neutral-800 rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+            <!-- Modal Header -->
+            <div class="p-4 border-b border-neutral-700 flex justify-between items-center">
+                <h2 class="text-xl font-semibold">Connect to Group</h2>
+                <button onclick="document.getElementById('loginSection').classList.add('hidden')" 
+                        class="text-neutral-400 hover:text-white">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Modal Content -->
+            <div class="flex-1 overflow-auto">
+                <!-- Message when iframe is loading or fails -->
+                <div id="iframeMessage" class="p-8 text-center">
+                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+                    <p class="text-lg">Loading connection interface...</p>
+                    <p class="text-sm text-gray-500 mt-2">This will open the login page from the OATFLAKE website.</p>
+                </div>
+                
+                <!-- Iframe to load the frontend login/connection page -->
+                <iframe id="connectIframe" 
+                        class="w-full h-[600px] hidden"
+                        src="about:blank"
+                        allow="clipboard-read; clipboard-write">
+                </iframe>
+                
+                <!-- Direct connection form as fallback -->
+                <div id="directConnectForm" class="p-6 hidden">
+                    <p class="mb-4 text-yellow-500">Could not load the connection interface. You can connect directly:</p>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Group ID</label>
+                            <input id="directGroupId" type="text" placeholder="Enter the group ID" 
+                                   class="w-full bg-gray-700 px-4 py-2 rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Group Name (Optional)</label>
+                            <input id="directGroupName" type="text" placeholder="Enter a name for this group" 
+                                   class="w-full bg-gray-700 px-4 py-2 rounded">
+                        </div>
+                        <button onclick="handleDirectConnect()" 
+                                class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded w-full">
+                            Connect
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Modal Footer -->
+            <div class="p-4 border-t border-neutral-700">
+                <div class="flex justify-between">
+                    <p class="text-sm text-neutral-400">Your ngrok URL: <span id="modalNgrokUrl" class="font-mono"></span></p>
+                    <button onclick="document.getElementById('loginSection').classList.add('hidden')"
+                            class="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 rounded text-sm">
+                        Cancel
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -98,9 +225,8 @@
             <div id="dataContainer"></div>
         </div>
         
-        <div id="settingsViewContainer" class="view-container hidden">
-            <div id="settingsContainer"></div>
-        </div>
+        <!-- Settings is now a modal only, rendered in a separate div -->
+        <div id="settingsContainer"></div>
     </div>
         
         <!-- Widget scripts -->
@@ -122,6 +248,7 @@
         <script src="/static/js/components/action-bar.js"></script>
         <script src="/static/js/components/response-box.js"></script>
         <script src="/static/js/components/search-box.js"></script>
+        <script src="/static/js/components/system-settings.js"></script>
         
         <!-- Core application (load last) -->
         <script src="/static/js/app.js?v=1"></script>

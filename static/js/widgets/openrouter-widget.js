@@ -254,18 +254,18 @@ const OpenRouterWidget = (() => {
      */
     async function checkTokenStatus() {
         try {
-            const response = await fetch('/api/openrouter/token-status');
+            const response = await fetch('/api/openrouter/status');
             const data = await response.json();
             
             const tokenInput = elements.tokenInput();
             
             if (!tokenInput) return;
             
-            if (data.has_token) {
-                tokenInput.placeholder = data.masked_token || "API token is set";
+            if (data.status === 'connected') {
+                tokenInput.placeholder = "API token is set and working";
                 
                 // Update connection status
-                updateStatus(data.valid);
+                updateStatus(true);
             } else {
                 tokenInput.placeholder = "Enter your OpenRouter API Token";
                 updateStatus(false);
@@ -293,12 +293,12 @@ const OpenRouterWidget = (() => {
         try {
             console.log("Sending token to server...");
             // Save the token to the server
-            const response = await fetch('/api/openrouter/set-token', {
+            const response = await fetch('/api/openrouter/config', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ token: token })
+                body: JSON.stringify({ api_key: token })
             });
 
             console.log("Server response status:", response.status);

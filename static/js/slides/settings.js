@@ -1,272 +1,306 @@
 /**
- * SettingsSlide - Handles the generation of the settings interface containing all widgets
+ * SettingsSlide - Handles the generation of the settings modal overlay
  */
 const SettingsSlide = (() => {
-    // HTML template for the settings interface with widgets
+    // HTML template for the settings modal with tabs
     const template = `
-        <!-- Service Widgets Section -->
-        <div class="mb-10 p-2">
-            <h2 class="text-2xl font-semibold mb-6">Services</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <!-- Ollama Widget -->
-                <div id="ollamaWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center">
-                            <div class="w-12 h-12 mr-4">
-                                <img src="/static/icons/OLLAMALOGO.png" class="w-full h-full" alt="Ollama Logo" />
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-medium">Ollama</h3>
-                                <div class="flex items-center mt-1">
-                                    <div id="ollamaStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
-                                    <p id="ollamaStatus" class="text-sm text-neutral-400">Checking status...</p>
-                                </div>
-                            </div>
-                        </div>
-                        <!-- Fix refresh button position -->
-                        <button id="ollamaRefreshBtn" class="text-neutral-400 hover:text-white transition-colors">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+        <!-- Settings Modal Overlay -->
+        <div id="settingsModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 hidden">
+            <div class="bg-black rounded-3xl border border-neutral-700 shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+                <!-- Modal Header with Tabs -->
+                <div class="px-6 pt-6 pb-0">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="text-2xl font-semibold flex items-center">
+                            <svg class="w-6 h-6 mr-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            Settings
+                        </h2>
+                        <button id="closeSettingsModal" class="text-neutral-400 hover:text-white transition p-2">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                             </svg>
                         </button>
                     </div>
                     
-                    <!-- Fix model selector display -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Available Models</label>
-                        <select id="ollamaModelSelect" class="w-full bg-neutral-700 text-white p-2 rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                            <option value="loading">Loading models...</option>
-                        </select>
-                    </div>
-                    
-                    <div id="ollamaModelsContainer" class="mt-4">
-                        <div id="ollamaModelList" class="text-sm text-neutral-400">
-                            <p>No models found</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- OpenRouter Widget -->
-                <div id="openrouterWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center">
-                            <div class="w-12 h-12 mr-4">
-                                <img src="/static/icons/OPENROUTERLOGO.png" class="w-full h-full" alt="OpenRouter Logo" 
-                                     onerror="this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTEyIDJMMiA3bDEwIDVNMTIgMmwxMCA1LTEwIDVNMiAxN2wxMCA1IDEwLTUiLz48L3N2Zz4='" />
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-medium">OpenRouter</h3>
-                                <div class="flex items-center mt-1">
-                                    <div id="openrouterStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
-                                    <p id="openrouterStatus" class="text-sm text-neutral-400">Checking status...</p>
-                                </div>
-                            </div>
-                        </div>
-                        <button id="openrouterRefreshBtn" class="text-neutral-400 hover:text-white transition-colors">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                            </svg>
+                    <!-- Tabs -->
+                    <div class="flex border-b border-neutral-700">
+                        <button id="localSettingsTab" 
+                                class="px-6 py-3 text-indigo-400 border-b-2 border-indigo-500 font-medium"
+                                onclick="switchToTab('local')">
+                            AI Integration
+                        </button>
+                        <button id="connectionSettingsTab" 
+                                class="px-6 py-3 text-neutral-400 hover:text-neutral-200 font-medium"
+                                onclick="switchToTab('connection')">
+                            Connections
                         </button>
                     </div>
                     
-                    <!-- API Token input field -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">API Token</label>
-                        <div class="flex space-x-2">
-                            <input id="openrouterTokenInput" type="password" placeholder="Enter your OpenRouter API Token" 
-                                   class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                            <button onclick="OpenRouterWidget.saveToken()" 
-                                    class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                                </svg>
-                            </button>
-                        </div>
-                        <p class="text-xs text-neutral-400 mt-1"><a href="https://openrouter.ai/keys" target="_blank" class="text-indigo-400 hover:underline">Get your API key here</a></p>
-                    </div>
-                    
-                    <!-- Model selection -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Available Models</label>
-                        <select id="openrouterModelSelect" class="w-full bg-neutral-700 text-white p-2 rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                            <option value="loading">Loading models...</option>
-                        </select>
-                    </div>
-                    
-                    <div id="openrouterModelsContainer" class="mt-4">
-                        <div id="openrouterModelList" class="text-sm text-neutral-400">
-                            <p>No models found</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tunnel Widget -->
-                <div id="tunnelWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center">
-                            <div class="w-12 h-12 mr-4">
-                                <img src="/static/icons/NGROKLOGO.png" class="w-full h-full" alt="Ngrok Logo" />
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-medium">Tunnel</h3>
-                                <p id="tunnelStatusText" class="text-sm text-neutral-400">Checking status...</p>
-                            </div>
-                        </div>
-                        <div id="tunnelStatusIcon" class="w-4 h-4 rounded-full bg-yellow-500"></div>
-                    </div>
-                    
-                    <!-- Token input field -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Authentication Token</label>
-                        <div class="flex space-x-2">
-                            <input id="ngrokTokenInput" type="text" placeholder="Enter your Ngrok Auth Token" 
-                                   class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                            <button onclick="TunnelWidget.saveToken()" 
-                                    class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                                </svg>
-                            </button>
-                        </div>
-                        <p class="text-xs text-neutral-400 mt-1"><a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" class="text-indigo-400 hover:underline">Get your token here</a></p>
-                    </div>
-                    
-                    <!-- Domain display -->
-                    <div id="tunnelDomainDisplay" class="mt-3 hidden">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Domain</label>
-                        <div class="flex space-x-2">
-                            <input id="widgetTunnelUrl" readonly type="text" 
-                                   class="flex-1 bg-neutral-900 px-3 py-2 text-sm rounded border border-neutral-700 focus:outline-none">
-                            <button onclick="TunnelWidget.copyTunnelUrl()" 
-                                    class="bg-neutral-700 hover:bg-neutral-600 px-3 py-2 rounded flex items-center">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
-                                          d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2"></path>
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Group Widget -->
-                <div id="groupWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700">
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center">
-                            <div class="w-12 h-12 mr-4 relative overflow-hidden">
-                                <img src="/static/icons/GROUPLOGO.png" 
-                                    class="w-full h-full object-cover transition-opacity duration-300"
-                                    onerror="this.onerror=null; this.src='/static/icons/GROUPLOGO.png';"
-                                    style="opacity: 0.7;"
-                                    alt="Group" />
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-medium">Group</h3>
-                                <p id="groupStatusText" class="text-sm text-neutral-400">Not connected</p>
-                            </div>
-                        </div>
-                        <div id="groupStatusIcon" class="w-4 h-4 rounded-full bg-neutral-500"></div>
-                    </div>
-                    <!-- Group actions menu will be dynamically added here when needed -->
+                    <script>
+                        // Update the existing global switchToTab function with a better implementation
+                        (function() {
+                            // Store the original function as fallback
+                            const originalSwitchToTab = window.switchToTab;
+                            
+                            // Replace with our improved version
+                            window.switchToTab = function(tab) {
+                                console.log('Enhanced switchToTab from settings.js called for', tab);
+                                const localTab = document.getElementById('localSettingsTab');
+                                const connectionTab = document.getElementById('connectionSettingsTab');
+                                const localPanel = document.getElementById('localSettingsPanel');
+                                const connectionPanel = document.getElementById('connectionSettingsPanel');
+                                
+                                console.log('Tab elements found:', {
+                                    localTab: !!localTab, 
+                                    connectionTab: !!connectionTab, 
+                                    localPanel: !!localPanel,
+                                    connectionPanel: !!connectionPanel
+                                });
+                                
+                                if (!localTab || !connectionTab || !localPanel || !connectionPanel) {
+                                    console.error('Tab elements not found in settings.js implementation');
+                                    if (originalSwitchToTab) {
+                                        return originalSwitchToTab(tab);
+                                    }
+                                    return;
+                                }
+                                
+                                if (tab === 'local') {
+                                    // Update styles
+                                    localTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                                    localTab.classList.remove('text-neutral-400');
+                                    connectionTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                                    connectionTab.classList.add('text-neutral-400');
+                                    
+                                    // Show/hide panels
+                                    localPanel.classList.remove('hidden');
+                                    connectionPanel.classList.add('hidden');
+                                    console.log('Switched to local tab');
+                                } else {
+                                    // Update styles
+                                    connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                                    connectionTab.classList.remove('text-neutral-400');
+                                    localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                                    localTab.classList.add('text-neutral-400');
+                                    
+                                    // Show/hide panels
+                                    connectionPanel.classList.remove('hidden');
+                                    localPanel.classList.add('hidden');
+                                    console.log('Switched to connection tab');
+                                }
+                            };
+                        })();
+                    </script>
                 </div>
                 
-                <!-- Data Storage Widget moved to data.js slide -->
-
-                <!-- Task Management Widget -->
-                <div id="taskWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center">
-                            <div class="w-12 h-12 mr-4 flex items-center justify-center">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                                </svg>
+                <!-- Modal Content Area with Tab Panels -->
+                <div class="overflow-y-auto p-6 flex-1">
+                    <!-- Local Settings Tab Panel -->
+                    <div id="localSettingsPanel" class="tab-panel">
+                        <!-- System Settings Component (includes embedded model widgets) -->
+                        <system-settings id="globalSystemSettings"></system-settings>
+                        
+                        <!-- Hidden original widgets - for backward compatibility -->
+                        <div class="hidden">
+                            <div id="ollamaWidget">
+                                <div id="ollamaStatusIcon"></div>
+                                <div id="ollamaStatus"></div>
+                                <button id="ollamaRefreshBtn"></button>
+                                <select id="ollamaModelSelect">
+                                    <option value="loading">Loading models...</option>
+                                </select>
+                                <div id="ollamaModelsContainer">
+                                    <div id="ollamaModelList"></div>
+                                </div>
                             </div>
-                            <div>
-                                <h3 class="text-lg font-medium">Task Management</h3>
-                                <div class="flex items-center mt-1">
-                                    <div id="taskStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
-                                    <p id="taskStatusText" class="text-sm text-neutral-400">Loading tasks...</p>
+                            
+                            <div id="openrouterWidget">
+                                <div id="openrouterStatusIcon"></div>
+                                <div id="openrouterStatus"></div>
+                                <button id="openrouterRefreshBtn"></button>
+                                <input id="openrouterTokenInput" type="password">
+                                <select id="openrouterModelSelect">
+                                    <option value="loading">Loading models...</option>
+                                </select>
+                                <div id="openrouterModelsContainer">
+                                    <div id="openrouterModelList"></div>
                                 </div>
                             </div>
                         </div>
                     </div>
                     
-                    <!-- Task list container -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Available Tasks</label>
-                        <div id="tasksList" class="bg-neutral-900 rounded border border-neutral-700 max-h-40 overflow-y-auto">
-                            <div class="text-neutral-400 text-sm p-2">Loading tasks...</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Task actions -->
-                    <div class="flex space-x-2">
-                        <button id="createTaskButton" 
-                                class="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded text-sm flex items-center justify-center">
-                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-                            </svg>
-                            Create Task
-                        </button>
-                        <button id="editTaskButton" disabled
-                                class="flex-1 px-3 py-2 bg-neutral-700 hover:bg-neutral-600 disabled:opacity-50 rounded text-sm">
-                            Edit
-                        </button>
-                        <button id="runTaskButton" disabled
-                                class="flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded text-sm">
-                            Run
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Slack Widget -->
-                <div id="slackWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors">
-                    <div class="flex items-center justify-between mb-4">
-                        <div class="flex items-center">
-                            <div class="w-12 h-12 mr-4">
-                                <img src="/static/icons/SLACKLOGO.png" class="w-full h-full" alt="Slack Logo" />
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-medium">Slack</h3>
-                                <div class="flex items-center mt-1">
-                                    <div id="slackStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
-                                    <p id="slackStatusText" class="text-sm text-neutral-400">Not connected</p>
+                    <!-- Connection Settings Tab Panel -->
+                    <div id="connectionSettingsPanel" class="tab-panel hidden">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <!-- Tunnel Widget -->
+                            <div id="tunnelWidget" class="bg-black rounded-xl p-6 shadow-md border border-neutral-700 hover:border-indigo-500 transition-colors">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div class="flex items-center">
+                                        <div class="w-10 h-10 mr-3">
+                                            <img src="/static/icons/NGROKLOGO.png" class="w-full h-full" alt="Ngrok Logo" />
+                                        </div>
+                                        <div>
+                                            <h3 class="text-lg font-medium">Tunnel</h3>
+                                            <p id="tunnelStatusText" class="text-sm text-neutral-400">Checking status...</p>
+                                        </div>
+                                    </div>
+                                    <div id="tunnelStatusIcon" class="w-4 h-4 rounded-full bg-yellow-500"></div>
+                                </div>
+                                
+                                <!-- Token input field -->
+                                <div class="mb-4">
+                                    <label class="block text-sm font-medium text-neutral-400 mb-2">Authentication Token</label>
+                                    <div class="flex space-x-2">
+                                        <input id="ngrokTokenInput" type="text" placeholder="Enter your Ngrok Auth Token" 
+                                               class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                                        <button onclick="TunnelWidget.saveToken()" 
+                                                class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <p class="text-xs text-neutral-400 mt-1"><a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" class="text-indigo-400 hover:underline">Get your token here</a></p>
+                                </div>
+                                
+                                <!-- Domain display -->
+                                <div id="tunnelDomainDisplay" class="mt-3 hidden">
+                                    <label class="block text-sm font-medium text-neutral-400 mb-2">Domain</label>
+                                    <div class="flex space-x-2">
+                                        <input id="widgetTunnelUrl" readonly type="text" 
+                                               class="flex-1 bg-neutral-900 px-3 py-2 text-sm rounded border border-neutral-700 focus:outline-none">
+                                        <button onclick="TunnelWidget.copyTunnelUrl()" 
+                                                class="bg-neutral-700 hover:bg-neutral-600 px-3 py-2 rounded flex items-center">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                                      d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
+
+                            <!-- Group Widget -->
+                            <div id="groupWidget" class="bg-black rounded-xl p-6 shadow-md border border-neutral-700 hover:border-indigo-500 transition-colors">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center">
+                                        <div class="w-10 h-10 mr-3 relative overflow-hidden">
+                                            <img src="/static/icons/GROUPLOGO.png" 
+                                                class="w-full h-full object-cover transition-opacity duration-300"
+                                                onerror="this.onerror=null; this.src='/static/icons/GROUPLOGO.png';"
+                                                style="opacity: 0.7;"
+                                                alt="Group" />
+                                        </div>
+                                        <div>
+                                            <h3 class="text-lg font-medium">Connect to Blob Browser</h3>
+                                            <p id="groupStatusText" class="text-sm text-neutral-400">Not connected</p>
+                                        </div>
+                                    </div>
+                                    <div id="groupStatusIcon" class="w-4 h-4 rounded-full bg-neutral-500"></div>
+                                </div>
+                                
+                                <!-- Instructions for connecting -->
+                                <div class="my-4 p-3 bg-neutral-900 rounded text-sm">
+                                    <h4 class="font-medium text-indigo-400 mb-2">How to connect:</h4>
+                                    <ol class="list-decimal pl-5 space-y-2 text-neutral-300">
+                                        <li>Copy the Domain from your Tunnel 
+                                            <button id="copyTunnelForGroupBtn" 
+                                                    class="ml-1 text-xs bg-indigo-600 hover:bg-indigo-700 px-1.5 py-0.5 rounded inline-flex items-center">
+                                                <svg class="w-3 h-3 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                                                </svg>
+                                                Copy
+                                            </button>
+                                        </li>
+                                        <li>Open a group on Blob Browser</li>
+                                        <li>Enter the Domain in the group settings</li>
+                                    </ol>
+                                </div>
+                                
+                                <div class="mt-4 pt-4 border-t border-neutral-800">
+                                    <button id="groupConnectButton" 
+                                            class="w-full px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded text-sm flex items-center justify-center"
+                                            onclick="window.open('https://blob-browser.net/login', '_blank')">
+                                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                                        </svg>
+                                        Open Blob Browser
+                                    </button>
+                                </div>
+                                <!-- Group actions menu will be dynamically added here when needed -->
+                            </div>
+
+                            <!-- Slack Widget -->
+                            <div id="slackWidget" class="bg-black rounded-xl p-6 shadow-md border border-neutral-700 hover:border-indigo-500 transition-colors">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div class="flex items-center">
+                                        <div class="w-10 h-10 mr-3">
+                                            <img src="/static/icons/SLACKLOGO.png" class="w-full h-full" alt="Slack Logo" />
+                                        </div>
+                                        <div>
+                                            <h3 class="text-lg font-medium">Slack Integration</h3>
+                                            <div class="flex items-center mt-1">
+                                                <div id="slackStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
+                                                <p id="slackStatusText" class="text-sm text-neutral-400">Not connected</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Documentation link -->
+                                <div class="mb-4 p-3 bg-neutral-900 rounded text-sm">
+                                    <p class="text-neutral-300">
+                                        Connect OATFLAKE to your Slack workspace to share insights directly with your team.
+                                        <a href="https://blob-browser.net/documentation" 
+                                           target="_blank" 
+                                           class="text-indigo-400 hover:text-indigo-300 hover:underline flex items-center mt-2">
+                                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                            </svg>
+                                            View Slack Integration Documentation
+                                        </a>
+                                    </p>
+                                </div>
+                                
+                                <!-- Token input field -->
+                                <div class="mb-4">
+                                    <label class="block text-sm font-medium text-neutral-400 mb-2">API Token</label>
+                                    <input id="slackTokenInput" type="password" placeholder="Enter your Slack API Token" 
+                                           class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                                </div>
+
+                                <!-- Signing Secret input field -->
+                                <div class="mb-4">
+                                    <label class="block text-sm font-medium text-neutral-400 mb-2">Signing Secret</label>
+                                    <input id="slackSigningSecretInput" type="password" placeholder="Enter your Slack Signing Secret" 
+                                           class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                                </div>
+                                
+                                <!-- Bot User ID input field -->
+                                <div class="mb-4">
+                                    <label class="block text-sm font-medium text-neutral-400 mb-2">Bot User ID</label>
+                                    <input id="slackBotUserIdInput" type="text" placeholder="Enter your Slack Bot User ID (e.g. A089BE80EP6)" 
+                                           class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
+                                    <p class="text-xs text-neutral-400 mt-1">Your Bot User ID starts with 'U' or 'A' followed by alphanumeric characters (found in your Slack App settings)</p>
+                                </div>
+
+                                <button onclick="SlackWidget.saveSlackConfig()" 
+                                        class="w-full bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded text-white">
+                                    Save Configuration
+                                </button>
+                            </div>
                         </div>
                     </div>
-                    
-                    <!-- Token input field -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">API Token</label>
-                        <input id="slackTokenInput" type="password" placeholder="Enter your Slack API Token" 
-                               class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                    </div>
-
-                    <!-- Signing Secret input field -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Signing Secret</label>
-                        <input id="slackSigningSecretInput" type="password" placeholder="Enter your Slack Signing Secret" 
-                               class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                    </div>
-
-                    <!-- Bot User ID input field -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-neutral-400 mb-2">Bot User ID</label>
-                        <input id="slackBotUserIdInput" type="text" placeholder="Enter your Slack Bot User ID" 
-                               class="w-full bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:border-indigo-500 focus:outline-none">
-                    </div>
-
-                    <button onclick="SlackWidget.saveSlackConfig()" 
-                            class="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded text-white">
-                        Save Configuration
-                    </button>
                 </div>
             </div>
         </div>
     `;
 
     /**
-     * Render the settings interface in the container
+     * Render the settings button and modal in the container
      * @param {HTMLElement} container - The container element to render the settings interface in
      */
     function render(container) {
@@ -275,21 +309,231 @@ const SettingsSlide = (() => {
         // Insert template into container
         container.innerHTML = template;
         
-        // Initialize widgets after rendering
+        // Initialize UI
+        initializeUI();
+        
+        // Initialize widgets
         initializeWidgets();
+        
+        // Add a safety check for the global function
+        if (typeof window.switchToTab !== 'function') {
+            console.log('Making switchToTab globally available from render');
+            window.switchToTab = function(tab) {
+                console.log('Global fallback switchToTab called for', tab);
+                const localTab = document.getElementById('localSettingsTab');
+                const connectionTab = document.getElementById('connectionSettingsTab');
+                const localPanel = document.getElementById('localSettingsPanel');
+                const connectionPanel = document.getElementById('connectionSettingsPanel');
+                
+                if (!localTab || !connectionTab || !localPanel || !connectionPanel) {
+                    console.error('Missing required elements for tab switching');
+                    return;
+                }
+                
+                if (tab === 'local') {
+                    localPanel.classList.remove('hidden');
+                    connectionPanel.classList.add('hidden');
+                    
+                    localTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    localTab.classList.remove('text-neutral-400');
+                    connectionTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    connectionTab.classList.add('text-neutral-400');
+                } else {
+                    connectionPanel.classList.remove('hidden');
+                    localPanel.classList.add('hidden');
+                    
+                    connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    connectionTab.classList.remove('text-neutral-400');
+                    localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    localTab.classList.add('text-neutral-400');
+                }
+            };
+        }
+    }
+    
+    /**
+     * Initialize the UI elements (modal, tabs, buttons)
+     */
+    function initializeUI() {
+        // Get elements
+        const modal = document.getElementById('settingsModal');
+        const openButton = document.getElementById('settingsButton'); // Using the button from the action bar
+        const closeButton = document.getElementById('closeSettingsModal');
+        const doneButton = document.getElementById('settingsDoneButton');
+        
+        // Check if there are multiple elements with these IDs
+        const localTabs = document.querySelectorAll('#localSettingsTab');
+        const connectionTabs = document.querySelectorAll('#connectionSettingsTab');
+        const localPanels = document.querySelectorAll('#localSettingsPanel');
+        const connectionPanels = document.querySelectorAll('#connectionSettingsPanel');
+        
+        console.log('Multiple elements check:', {
+            localTabs: localTabs.length,
+            connectionTabs: connectionTabs.length,
+            localPanels: localPanels.length, 
+            connectionPanels: connectionPanels.length
+        });
+        
+        const localTab = document.getElementById('localSettingsTab');
+        const connectionTab = document.getElementById('connectionSettingsTab');
+        const localPanel = document.getElementById('localSettingsPanel');
+        const connectionPanel = document.getElementById('connectionSettingsPanel');
+        
+        // Open modal 
+        openButton.addEventListener('click', () => {
+            modal.classList.remove('hidden');
+            // Apply animation
+            modal.style.opacity = '0';
+            setTimeout(() => {
+                modal.style.opacity = '1';
+                modal.style.transition = 'opacity 0.2s ease-in-out';
+            }, 10);
+        });
+        
+        // Close modal functions
+        const closeModal = () => {
+            modal.style.opacity = '0';
+            setTimeout(() => {
+                modal.classList.add('hidden');
+                
+                // Dispatch event that modal has been closed
+                document.dispatchEvent(new CustomEvent('settingsModalClosed'));
+            }, 200);
+        };
+        
+        closeButton.addEventListener('click', closeModal);
+        doneButton.addEventListener('click', closeModal);
+        
+        // Close modal when clicking outside
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeModal();
+            }
+        });
+        
+        console.log('Setting up tab switching listeners');
+        console.log('Tabs found:', {
+            localTab: !!localTab, 
+            connectionTab: !!connectionTab, 
+            localPanel: !!localPanel,
+            connectionPanel: !!connectionPanel
+        });
+        
+        // Set up additional tab switching for direct clicks (as a backup to the inline handlers)
+        localTab.addEventListener('click', (e) => {
+            // Don't interfere with the inline onclick handler
+            if (e.handled) return;
+            e.handled = true;
+            
+            console.log('Local tab clicked through event listener');
+            // Use the global function for consistency
+            if (window.switchToTab) {
+                window.switchToTab('local');
+            } else {
+                // Fallback if global function is not available
+                localPanel.classList.remove('hidden');
+                connectionPanel.classList.add('hidden');
+                
+                // Update styles
+                localTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                localTab.classList.remove('text-neutral-400');
+                connectionTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                connectionTab.classList.add('text-neutral-400');
+            }
+        });
+        
+        connectionTab.addEventListener('click', (e) => {
+            // Don't interfere with the inline onclick handler
+            if (e.handled) return;
+            e.handled = true;
+            
+            console.log('Connection tab clicked through event listener');
+            // Use the global function for consistency
+            if (window.switchToTab) {
+                window.switchToTab('connection');
+            } else {
+                // Fallback if global function is not available
+                connectionPanel.classList.remove('hidden');
+                localPanel.classList.add('hidden');
+                
+                // Update styles
+                connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                connectionTab.classList.remove('text-neutral-400');
+                localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                localTab.classList.add('text-neutral-400');
+            }
+        });
     }
     
     /**
      * Initialize all the widgets
      */
     function initializeWidgets() {
-        // Each widget has its own initialize function that will be called from their respective files
-        // The logic is kept in the individual widget files
+        // We still initialize the original widget code for backward compatibility
+        // (though the UI elements are now hidden)
+        if (typeof OllamaWidget !== 'undefined' && OllamaWidget.initialize) {
+            OllamaWidget.initialize();
+        }
+        
+        if (typeof OpenRouterWidget !== 'undefined' && OpenRouterWidget.initialize) {
+            OpenRouterWidget.initialize();
+        }
+        
+        // Initialize the System Settings component which has embedded widgets
+        const systemSettings = document.getElementById('globalSystemSettings');
+        if (systemSettings) {
+            console.log('System Settings component found and initialized');
+            
+            // Set up our custom event listener to handle provider changes
+            document.addEventListener('embeddedModelChanged', (event) => {
+                if (!event.detail) return;
+                
+                const { provider, modelName } = event.detail;
+                
+                // Update the hidden original widgets for backwards compatibility
+                // This is needed in case any other code depends on these
+                if (provider === 'ollama') {
+                    const mainSelect = document.getElementById('ollamaModelSelect');
+                    if (mainSelect && modelName && mainSelect.value !== modelName) {
+                        // Find and select the option
+                        for (let i = 0; i < mainSelect.options.length; i++) {
+                            if (mainSelect.options[i].value === modelName) {
+                                mainSelect.selectedIndex = i;
+                                // Dispatch change event
+                                mainSelect.dispatchEvent(new Event('change'));
+                                break;
+                            }
+                        }
+                    }
+                } else if (provider === 'openrouter') {
+                    const mainSelect = document.getElementById('openrouterModelSelect');
+                    if (mainSelect && modelName && mainSelect.value !== modelName) {
+                        // Find and select the option
+                        for (let i = 0; i < mainSelect.options.length; i++) {
+                            if (mainSelect.options[i].value === modelName) {
+                                mainSelect.selectedIndex = i;
+                                // Dispatch change event
+                                mainSelect.dispatchEvent(new Event('change'));
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Make sure models are properly displayed after loading
+            setTimeout(() => {
+                if (typeof systemSettings.updateSelectedModelDisplay === 'function') {
+                    systemSettings.updateSelectedModelDisplay();
+                }
+            }, 1500);
+        }
     }
 
     // Return public API
     return {
-        render
+        render,
+        initializeWidgets
     };
 })();
 
@@ -298,5 +542,42 @@ document.addEventListener('DOMContentLoaded', function() {
     const settingsContainer = document.getElementById('settingsContainer');
     if (settingsContainer) {
         SettingsSlide.render(settingsContainer);
+        
+        // Initialize widgets after a short delay to ensure the DOM is ready
+        setTimeout(() => {
+            SettingsSlide.initializeWidgets();
+        }, 100);
+        
+        // Additional safety check for tab switching
+        setTimeout(() => {
+            console.log('Adding direct tab switching handler');
+            const connectionTab = document.getElementById('connectionSettingsTab');
+            const localTab = document.getElementById('localSettingsTab');
+            const connectionPanel = document.getElementById('connectionSettingsPanel');
+            const localPanel = document.getElementById('localSettingsPanel');
+            
+            if (connectionTab && localTab && connectionPanel && localPanel) {
+                console.log('Found all required tab elements');
+                
+                // Ensure proper tab switching with direct event handler
+                connectionTab.onclick = function() {
+                    console.log('Direct connection tab click handler fired');
+                    // Update styles
+                    connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    connectionTab.classList.remove('text-neutral-400');
+                    localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                    localTab.classList.add('text-neutral-400');
+                    
+                    // Show/hide panels
+                    connectionPanel.classList.remove('hidden');
+                    localPanel.classList.add('hidden');
+                    
+                    console.log('Connection tab panel hidden?', connectionPanel.classList.contains('hidden'));
+                    console.log('Local tab panel hidden?', localPanel.classList.contains('hidden'));
+                };
+            } else {
+                console.error('Could not find all required tab elements');
+            }
+        }, 500);
     }
 });

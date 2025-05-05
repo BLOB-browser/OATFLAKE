@@ -3,62 +3,206 @@ console.log('Loading app.js...');
 // Global variables
 let authToken = null;
 
-// Explicitly define the login function
-async function handleLoginClick() {
-    console.log('Login button clicked');
+// Function to open the connection iframe via the settings modal
+function showConnectionModal() {
+    console.log('Opening settings modal with connection tab');
     
-    const emailInput = document.getElementById('emailInput');
-    const passwordInput = document.getElementById('passwordInput');
+    // Get the settings modal and connection tab
+    const settingsModal = document.getElementById('settingsModal');
+    const connectionTab = document.getElementById('connectionSettingsTab');
     
-    if (!emailInput || !passwordInput) {
-        console.error('Login inputs not found');
+    // If we have both elements, show the modal and switch to connection tab
+    if (settingsModal && connectionTab) {
+        // Show the settings modal
+        settingsModal.classList.remove('hidden');
+        
+        // Apply animation
+        settingsModal.style.opacity = '0';
+        setTimeout(() => {
+            settingsModal.style.opacity = '1';
+            settingsModal.style.transition = 'opacity 0.2s ease-in-out';
+        }, 10);
+        
+        // Switch to connection tab using the global function
+        if (window.switchToTab) {
+            console.log('Using global switchToTab function');
+            window.switchToTab('connection');
+        } else {
+            console.log('Fallback to direct click');
+            // Click the connection tab to switch to it
+            connectionTab.click();
+        }
+        
         return;
     }
     
-    const email = emailInput.value;
-    const password = passwordInput.value;
+    // Fall back to original iframe method if settings modal isn't available
+    console.log('Settings modal not found, falling back to original connection modal');
     
-    console.log('Attempting login with email:', email);
+    const modal = document.getElementById('loginSection');
+    const iframe = document.getElementById('connectIframe');
+    const iframeMessage = document.getElementById('iframeMessage');
+    const directConnectForm = document.getElementById('directConnectForm');
+    const modalNgrokUrl = document.getElementById('modalNgrokUrl');
+    
+    // Show the modal
+    if (modal) modal.classList.remove('hidden');
+    
+    // Update the ngrok URL display
+    if (modalNgrokUrl) {
+        const ngrokUrl = document.getElementById('domainInput')?.value || 'Not available';
+        modalNgrokUrl.textContent = ngrokUrl;
+    }
+    
+    // Show loading message, hide iframe and direct form
+    if (iframeMessage) iframeMessage.classList.remove('hidden');
+    if (iframe) iframe.classList.add('hidden');
+    if (directConnectForm) directConnectForm.classList.add('hidden');
+    
+    // Set the iframe source to the connection page on the frontend
+    const FRONTEND_URL = 'https://blob.oatflake.ai'; // Update this to your actual frontend URL
+    const connectionPage = `${FRONTEND_URL}/connect`;
+    
+    // Try to load the iframe
+    if (iframe) {
+        iframe.src = connectionPage;
+        
+        // Set up iframe load event
+        iframe.onload = function() {
+            console.log('Iframe loaded successfully');
+            iframeMessage.classList.add('hidden');
+            iframe.classList.remove('hidden');
+            
+            // Try to pass the ngrok URL to the iframe
+            try {
+                const ngrokUrl = document.getElementById('domainInput')?.value;
+                if (ngrokUrl) {
+                    setTimeout(() => {
+                        iframe.contentWindow.postMessage({ 
+                            type: 'OATFLAKE_CONNECT',
+                            ngrokUrl: ngrokUrl
+                        }, FRONTEND_URL);
+                        console.log('Sent ngrok URL to iframe:', ngrokUrl);
+                    }, 1000); // Give the iframe a moment to initialize
+                }
+            } catch (e) {
+                console.error('Failed to communicate with iframe:', e);
+            }
+        };
+        
+        // Set up iframe error event
+        iframe.onerror = function() {
+            console.error('Failed to load the connection iframe');
+            showDirectConnectForm();
+        };
+        
+        // Fallback if iframe doesn't load within 5 seconds
+        setTimeout(() => {
+            if (iframeMessage.classList.contains('hidden') === false) {
+                console.warn('Iframe taking too long to load, showing direct form');
+                showDirectConnectForm();
+            }
+        }, 5000);
+    } else {
+        console.error('Iframe element not found');
+        showDirectConnectForm();
+    }
+    
+    // Listen for messages from the iframe
+    window.addEventListener('message', receiveConnectMessage);
+}
+
+// Function to show direct connect form if iframe fails
+function showDirectConnectForm() {
+    const iframeMessage = document.getElementById('iframeMessage');
+    const iframe = document.getElementById('connectIframe');
+    const directConnectForm = document.getElementById('directConnectForm');
+    
+    if (iframeMessage) iframeMessage.classList.add('hidden');
+    if (iframe) iframe.classList.add('hidden');
+    if (directConnectForm) directConnectForm.classList.remove('hidden');
+}
+
+// Function to handle direct connection
+async function handleDirectConnect() {
+    const groupId = document.getElementById('directGroupId')?.value;
+    const groupName = document.getElementById('directGroupName')?.value;
+    
+    if (!groupId) {
+        alert('Please enter a Group ID');
+        return;
+    }
     
     try {
-        const response = await fetch('/api/auth/login', {
+        await connectToGroup(groupId, {
+            name: groupName || `Group ${groupId.substring(0, 6)}`,
+            description: 'Direct connection'
+        });
+    } catch (error) {
+        console.error('Direct connection error:', error);
+        alert(`Connection failed: ${error.message}`);
+    }
+}
+
+// Function to receive messages from the iframe
+function receiveConnectMessage(event) {
+    // Verify origin for security
+    const FRONTEND_URL = 'https://blob.oatflake.ai'; // Must match the iframe source
+    if (event.origin !== FRONTEND_URL) {
+        console.warn('Received message from untrusted origin:', event.origin);
+        return;
+    }
+    
+    console.log('Received message from iframe:', event.data);
+    
+    // Process connection data
+    if (event.data.type === 'OATFLAKE_CONNECT_DATA') {
+        const { groupId, groupInfo } = event.data;
+        
+        if (groupId) {
+            connectToGroup(groupId, groupInfo);
+        }
+    }
+}
+
+// Function to connect to a group
+async function connectToGroup(groupId, groupInfo) {
+    console.log('Connecting to group:', groupId, groupInfo);
+    
+    try {
+        const response = await fetch('/api/auth/connect', {
             method: 'POST',
             headers: {
                 'Accept': 'application/json',
-                'Content-Type': 'application/json',
+                'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ email, password })
+            body: JSON.stringify({ 
+                group_id: groupId,
+                client_version: '0.1.0',
+                group_info: groupInfo || undefined
+            })
         });
         
-        console.log('Server response status:', response.status);
-        
         const data = await response.json();
-        console.log('Server response:', data);
         
         if (!response.ok) {
-            throw new Error(data.detail || 'Login failed');
+            throw new Error(data.detail || 'Connection failed');
         }
         
-        // Store auth token and email
-        localStorage.setItem('authToken', data.token);
-        localStorage.setItem('userEmail', email);
-        authToken = data.token;
+        console.log('Connection successful:', data);
         
-        // Update UI
+        // Close the modal
         document.getElementById('loginSection').classList.add('hidden');
-        document.getElementById('mainContent').classList.remove('hidden');
-        updateLoginStatus();
         
-        // Initialize slides
-        initializeSlides();
-        
-        // Start status updates
+        // Update status
         updateStatus();
-        setInterval(updateStatus, 2000);
+        
+        // Show success message
+        alert(`Successfully connected to ${data.group_name || 'group'}`);
         
     } catch (error) {
-        console.error('Login error:', error);
-        alert('Login failed: ' + error.message);
+        console.error('Connection error:', error);
+        alert(`Failed to connect: ${error.message}`);
     }
 }
 
@@ -84,13 +228,14 @@ function initializeSlides() {
         console.error('Could not initialize data slide');
     }
     
-    // Initialize the settings view
+    // The settings view is now initialized in settings.js
+    // No need to initialize it here to avoid duplicates
     const settingsContainer = document.getElementById('settingsContainer');
     if (settingsContainer && typeof SettingsSlide !== 'undefined') {
-        console.log('Initializing settings slide');
-        SettingsSlide.render(settingsContainer);
+        console.log('Settings slide is handled by settings.js');
+        // We don't call SettingsSlide.render() here to avoid duplication
     } else {
-        console.error('Could not initialize settings slide');
+        console.error('Settings container or script not found');
     }
     
     // Initialize view switch after slides are ready
@@ -102,28 +247,93 @@ function initializeSlides() {
     }, 200);
 }
 
-// Add updateLoginStatus function
-function updateLoginStatus() {
-    const loginStatus = document.getElementById('loginStatusText');
-    const logoutButton = document.getElementById('logoutButton');
-    const token = localStorage.getItem('authToken');
-    const email = localStorage.getItem('userEmail');
-    const loginSection = document.getElementById('loginSection');
+// Update group connection status in UI
+function updateGroupStatus() {
+    const statusText = document.getElementById('statusText');
+    const connectButton = document.getElementById('connectButton');
+    
+    // Get connection info from config
+    fetch('/api/status')
+        .then(response => response.json())
+        .then(data => {
+            console.log('Group status:', data);
+            
+            if (data.group_id && data.group_name) {
+                // Connected to a group
+                if (statusText) {
+                    statusText.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-green-500/10 text-green-500">Connected to ${data.group_name}</span>`;
+                }
+                
+                // Change connect button to disconnect
+                if (connectButton) {
+                    connectButton.innerHTML = `
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                        Disconnect
+                    `;
+                    // Change onclick to disconnect
+                    connectButton.onclick = disconnectFromGroup;
+                }
+            } else {
+                // Not connected to a group
+                if (statusText) {
+                    statusText.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-gray-500/10 text-gray-300">Local Mode</span>`;
+                }
+                
+                // Reset connect button
+                if (connectButton) {
+                    connectButton.innerHTML = `
+                        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                        Connect
+                    `;
+                    // Reset onclick
+                    connectButton.onclick = showConnectionModal;
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error updating group status:', error);
+            // Show disconnected status
+            if (statusText) {
+                statusText.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-red-500/10 text-red-500">Connection Error</span>`;
+            }
+        });
+    
+    // Always keep main content visible
     const mainContent = document.getElementById('mainContent');
+    if (mainContent) mainContent.classList.remove('hidden');
+}
 
-    console.log('Updating login status:', { token: !!token, email });
-
-    // Add null checks before trying to modify elements
-    if (token && email) {
-        if (loginStatus) loginStatus.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-green-500/10 text-green-500">Logged in as ${email}</span>`;
-        if (logoutButton) logoutButton.classList.remove('hidden');
-        if (loginSection) loginSection.classList.add('hidden');
-        if (mainContent) mainContent.classList.remove('hidden');
-    } else {
-        if (loginStatus) loginStatus.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-red-500/10 text-red-500">Not logged in</span>`;
-        if (logoutButton) logoutButton.classList.add('hidden');
-        if (loginSection) loginSection.classList.remove('hidden');
-        if (mainContent) mainContent.classList.add('hidden');
+// Function to disconnect from current group
+async function disconnectFromGroup() {
+    if (confirm('Disconnect from current group?')) {
+        try {
+            // Clear group connection info
+            const response = await fetch('/api/auth/logout', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to disconnect');
+            }
+            
+            // Update UI
+            updateGroupStatus();
+            updateStatus();
+            
+            // Show success message
+            alert('Successfully disconnected from group');
+        } catch (error) {
+            console.error('Disconnect error:', error);
+            alert(`Failed to disconnect: ${error.message}`);
+        }
     }
 }
 
@@ -162,54 +372,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Initialize data path
     const savedPath = localStorage.getItem('dataPath') || './data';
-    document.getElementById('dataPath').value = savedPath;
-    
-    // Setup login button
-    const loginButton = document.getElementById('loginButton');
-    if (loginButton) {
-        loginButton.addEventListener('click', handleLoginClick);
+    const dataPathElement = document.getElementById('dataPath');
+    if (dataPathElement) {
+        dataPathElement.value = savedPath;
     }
     
-    // Check existing auth and update UI immediately
-    const token = localStorage.getItem('authToken');
-    const email = localStorage.getItem('userEmail');
-    
-    if (!token || !email) {
-        document.getElementById('loginSection').classList.remove('hidden');
-        document.getElementById('mainContent').classList.add('hidden');
-    } else {
-        authToken = token;
-        document.getElementById('loginSection').classList.add('hidden');
-        document.getElementById('mainContent').classList.remove('hidden');
-        
-        // Initialize slides for returning users
-        initializeSlides();
+    // Always start with the main content visible - no login required
+    const mainContent = document.getElementById('mainContent');
+    if (mainContent) {
+        mainContent.classList.remove('hidden');
     }
     
-    // Update login status immediately
-    updateLoginStatus();
+    // Initialize slides right away
+    initializeSlides();
+    
+    // Update group status immediately
+    updateGroupStatus();
     
     // Start status updates
     updateStatus();
     setInterval(updateStatus, 2000);
+    
+    // Set up window message listener for iframe communication
+    window.addEventListener('message', receiveConnectMessage);
 });
 
 // Status update function
 async function updateStatus() {
     try {
-        const token = localStorage.getItem('authToken');
-        const email = localStorage.getItem('userEmail');
-        
-        // Always update login status first
-        updateLoginStatus();
-        
         // Add better error handling for fetch
         const response = await fetch('/api/status', {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
                 'Content-Type': 'application/json',
-                ...(token && { 'Authorization': `Bearer ${token}` })
             },
             credentials: 'same-origin'  // Include cookies if any
         });
@@ -221,14 +417,13 @@ async function updateStatus() {
         const data = await response.json();
         console.log('Status response:', data);  // Debug log
         
-        // Update UI elements
+        // Update group connection status
+        updateGroupStatus();
+        
+        // Update UI elements for services
         updateStatusElement('server', 'running');
         updateStatusElement('ollama', data.ollama);
         updateStatusElement('tunnel', data.tunnel);
-        updateStatusElement('group', data.group_id || 'Not Connected', {
-            group_image: data.group_image,
-            group_name: data.group_name
-        });
 
         if (data.ngrok_url) {
             const domainInput = document.getElementById('domainInput');
@@ -244,17 +439,23 @@ async function updateStatus() {
         }
     } catch (error) {
         console.error('Status update error:', error);
-        // Also update login status on error
-        updateLoginStatus();
+        
         // Handle specific error cases
         if (error.message.includes('Failed to fetch')) {
             console.log('Server might be starting up...');
             // Maybe show a "connecting..." message
         }
+        
+        // Update service statuses to disconnected
         updateStatusElement('server', 'disconnected');
         updateStatusElement('ollama', 'disconnected');
         updateStatusElement('tunnel', 'disconnected');
-        updateStatusElement('group', 'Not Connected');
+        
+        // Update group status with error
+        const statusText = document.getElementById('statusText');
+        if (statusText) {
+            statusText.innerHTML = `<span class="inline-block px-2 py-1 text-xs font-semibold rounded-full bg-red-500/10 text-red-500">Connection Error</span>`;
+        }
     }
 }
 

@@ -9,42 +9,102 @@ const DataSlide = (() => {
             <h2 class="text-2xl font-semibold mb-6">Data Management</h2>
             
             <!-- Data Storage Widget -->
-            <div id="storageWidget" class="bg-black rounded-3xl p-6 shadow-lg border border-neutral-700 hover:border-indigo-500 transition-colors mb-6">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center">
-                        <div class="w-12 h-12 mr-4 flex items-center justify-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                            </svg>
+            <div class="mb-8">
+                <div id="storageWidget" class="bg-black rounded-xl p-6 shadow-md border border-neutral-700 hover:border-indigo-500 transition-colors mb-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-10 h-10 mr-3 flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Data Storage</h3>
+                                <p id="storageStatusText" class="text-sm text-neutral-400">Select a folder</p>
+                            </div>
                         </div>
-                        <div>
-                            <h3 class="text-lg font-medium">Data Storage</h3>
-                            <p id="storageStatusText" class="text-sm text-neutral-400">Select a folder</p>
+                        <div id="storageStatusIcon" class="w-4 h-4 rounded-full bg-yellow-500"></div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Storage Location</label>
+                        <div class="flex space-x-2">
+                            <input id="dataPath" type="text" readonly 
+                                  class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:outline-none">
+                            <input type="file" id="folderPicker" webkitdirectory directory 
+                                  class="hidden">
+                            <button onclick="StorageWidget.selectFolder()" 
+                                   class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                                </svg>
+                            </button>
                         </div>
                     </div>
-                    <div id="storageStatusIcon" class="w-4 h-4 rounded-full bg-yellow-500"></div>
+                    
+                    <div class="text-xs text-neutral-400">
+                        <p>Select a folder where data will be stored locally</p>
+                        <p class="mt-1" id="storageSpaceInfo"></p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Task Management Section -->
+            <h2 class="text-2xl font-semibold my-6">Task Management</h2>
+            <div class="bg-neutral-900 rounded-3xl p-6 border border-neutral-800 shadow-lg">
+                <div class="flex items-center mb-4">
+                    <svg class="w-6 h-6 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                    <h3 class="text-xl font-medium">Task Scheduler</h3>
                 </div>
                 
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-neutral-400 mb-2">Storage Location</label>
+                <div id="taskWidget" class="bg-black rounded-xl p-6 shadow-md border border-neutral-700 hover:border-indigo-500 transition-colors">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center">
+                            <div class="w-10 h-10 mr-3 flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium">Knowledge Processing</h3>
+                                <div class="flex items-center mt-1">
+                                    <div id="taskStatusIcon" class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
+                                    <p id="taskStatusText" class="text-sm text-neutral-400">Loading tasks...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Task list container -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-neutral-400 mb-2">Scheduled Tasks</label>
+                        <div id="tasksList" class="bg-neutral-900 rounded border border-neutral-700 max-h-40 overflow-y-auto">
+                            <div class="text-neutral-400 text-sm p-2">Loading tasks...</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Task actions -->
                     <div class="flex space-x-2">
-                        <input id="dataPath" type="text" readonly 
-                              class="flex-1 bg-neutral-700 px-3 py-2 text-sm rounded border border-neutral-600 focus:outline-none">
-                        <input type="file" id="folderPicker" webkitdirectory directory 
-                              class="hidden">
-                        <button onclick="StorageWidget.selectFolder()" 
-                               class="bg-indigo-600 hover:bg-indigo-700 px-3 py-2 rounded flex items-center">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
-                                      d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+                        <button id="createTaskButton" 
+                                class="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded text-sm flex items-center justify-center">
+                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
                             </svg>
+                            Create Task
+                        </button>
+                        <button id="editTaskButton" disabled
+                                class="flex-1 px-3 py-2 bg-neutral-700 hover:bg-neutral-600 disabled:opacity-50 rounded text-sm">
+                            Edit
+                        </button>
+                        <button id="runTaskButton" disabled
+                                class="flex-1 px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded text-sm">
+                            Run
                         </button>
                     </div>
-                </div>
-                
-                <div class="text-xs text-neutral-400">
-                    <p>Select a folder where data will be stored locally</p>
-                    <p class="mt-1" id="storageSpaceInfo"></p>
                 </div>
             </div>
         </div>

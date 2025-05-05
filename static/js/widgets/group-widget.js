@@ -1,6 +1,6 @@
 /**
  * Group Widget Module
- * Handles all Group-related functionality
+ * Handles all Group-related functionality and integration with Blob Browser
  */
 
 const GroupWidget = (() => {
@@ -9,7 +9,10 @@ const GroupWidget = (() => {
         statusText: () => document.getElementById('groupStatusText'),
         statusIcon: () => document.getElementById('groupStatusIcon'),
         widgetContainer: () => document.getElementById('groupWidget'),
-        groupImage: () => document.querySelector('#groupWidget img')
+        groupImage: () => document.querySelector('#groupWidget img'),
+        connectButton: () => document.getElementById('groupConnectButton'),
+        copyTunnelButton: () => document.getElementById('copyTunnelForGroupBtn'),
+        tunnelUrlInput: () => document.getElementById('widgetTunnelUrl')
     };
 
     /**
@@ -19,10 +22,30 @@ const GroupWidget = (() => {
         // Set initial state
         updateStatus(false);
         
-        // Add event listeners if needed
+        // Add event listeners
         const widgetContainer = elements.widgetContainer();
         if (widgetContainer) {
             widgetContainer.addEventListener('click', handleWidgetClick);
+        }
+        
+        // Add connect button event listener
+        const connectButton = elements.connectButton();
+        if (connectButton) {
+            connectButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                console.log('Opening Blob Browser login page');
+                window.open('https://blob-browser.net/login', '_blank');
+            });
+        }
+        
+        // Add copy tunnel button event listener
+        const copyTunnelButton = elements.copyTunnelButton();
+        if (copyTunnelButton) {
+            copyTunnelButton.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation(); // Prevent widget click handler
+                copyTunnelUrl();
+            });
         }
     }
 
@@ -130,21 +153,68 @@ const GroupWidget = (() => {
      * @param {Event} e - Click event
      */
     function handleWidgetClick(e) {
-        // Only respond to clicks when connected to a group
+        // If clicking on the connect button or copy button, let their handlers deal with it
+        if (e.target.closest('#groupConnectButton') || e.target.closest('#copyTunnelForGroupBtn')) {
+            return;
+        }
+        
+        // Only show management options when connected to a group
         const statusIcon = elements.statusIcon();
         if (!statusIcon || !statusIcon.classList.contains('bg-green-500')) {
             console.log('No active group to manage');
+            // If not connected, open the Blob Browser login page
+            window.open('https://blob-browser.net/login', '_blank');
             return;
         }
         
         console.log('Group widget clicked, showing group management options');
-        // Future implementation: Show group management UI
+        // Show group management UI for connected groups
+        // Future implementation: Add more management options here
+    }
+    
+    /**
+     * Copy the tunnel URL to clipboard for easy pasting into Blob Browser
+     */
+    function copyTunnelUrl() {
+        const tunnelUrlInput = elements.tunnelUrlInput();
+        
+        if (tunnelUrlInput && tunnelUrlInput.value) {
+            // Select and copy the tunnel URL
+            tunnelUrlInput.select();
+            document.execCommand('copy');
+            
+            // Visual feedback
+            const copyButton = elements.copyTunnelButton();
+            if (copyButton) {
+                // Store original text
+                const originalText = copyButton.innerHTML;
+                
+                // Change to confirmation
+                copyButton.innerHTML = `
+                    <svg class="w-3 h-3 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                    Copied!
+                `;
+                
+                // Restore original text after a delay
+                setTimeout(() => {
+                    copyButton.innerHTML = originalText;
+                }, 2000);
+            }
+            
+            console.log('Tunnel URL copied to clipboard');
+        } else {
+            console.error('No tunnel URL available to copy');
+            alert('Please set up a tunnel first to get a domain to share');
+        }
     }
 
     // Public API
     return {
         initialize,
-        updateStatus
+        updateStatus,
+        copyTunnelUrl
     };
 })();
 

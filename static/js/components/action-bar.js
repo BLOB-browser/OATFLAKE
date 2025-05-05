@@ -12,6 +12,7 @@ class ActionBar extends HTMLElement {
         
         // View switching functionality
         this.activeView = 'search'; // Default view
+        this.previousView = 'search'; // Track previous view for returning from modal
         this.views = {
             'search': {
                 id: 'searchView',
@@ -27,19 +28,17 @@ class ActionBar extends HTMLElement {
             }
         };
         
-        // Settings is now moved to a separate button
+        // Settings button configuration (but not a real view anymore)
         this.settingsView = {
-            id: 'settingsView',
+            id: 'settingsButton',
             icon: 'settings',
-            label: 'Settings',
-            script: '/static/js/slides/settings.js'
+            label: 'Settings'
         };
         
         // All scripts are already loaded in index.html
         this.loadedScripts = {
             'search': true,
-            'manage_data': true,
-            'settings': true
+            'manage_data': true
         };
     }
 
@@ -79,11 +78,7 @@ class ActionBar extends HTMLElement {
                 <!-- Settings button (right) -->
                 <div>
                     <button id="settingsButton" 
-                        class="view-switch-btn flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                            this.activeView === 'settings' 
-                                ? 'bg-indigo-600 text-white' 
-                                : 'text-gray-400 hover:text-white hover:bg-neutral-800'
-                        }" 
+                        class="view-switch-btn flex items-center px-4 py-2 rounded-md text-sm font-medium transition-colors text-gray-400 hover:text-white hover:bg-neutral-800" 
                         data-view="settings">
                         <span class="icon mr-2">
                             ${this.getIconSvg('settings')}
@@ -117,8 +112,47 @@ class ActionBar extends HTMLElement {
         
         if (settingsButton) {
             settingsButton.addEventListener('click', () => {
-                // Switch to settings view when settings button is clicked
-                this.switchView('settings');
+                // Store the current view before opening settings
+                this.previousView = this.activeView;
+                
+                // Open settings modal directly
+                const settingsModal = document.getElementById('settingsModal');
+                if (settingsModal) {
+                    // Don't switch view, just open the modal over the current view
+                    settingsModal.classList.remove('hidden');
+                    // Apply animation
+                    settingsModal.style.opacity = '0';
+                    setTimeout(() => {
+                        settingsModal.style.opacity = '1';
+                        settingsModal.style.transition = 'opacity 0.2s ease-in-out';
+                    }, 10);
+                    
+                    // Set up listener for when settings modal closes
+                    const closeButtons = settingsModal.querySelectorAll('#closeSettingsModal, #settingsDoneButton');
+                    closeButtons.forEach(button => {
+                        // Use once: true to ensure this only happens once per click
+                        button.addEventListener('click', () => {
+                            console.log('Settings closed, returning to:', this.activeView);
+                            // Hide modal with animation
+                            settingsModal.style.opacity = '0';
+                            setTimeout(() => {
+                                settingsModal.classList.add('hidden');
+                                
+                                // Make sure the view container matches the active view in the action bar
+                                const allViewContainers = document.querySelectorAll('.view-container');
+                                allViewContainers.forEach(container => {
+                                    container.classList.add('hidden');
+                                });
+                                
+                                const currentViewContainer = document.getElementById(`${this.activeView}ViewContainer`);
+                                if (currentViewContainer) {
+                                    console.log(`Ensuring visibility of ${this.activeView}ViewContainer`);
+                                    currentViewContainer.classList.remove('hidden');
+                                }
+                            }, 200);
+                        }, { once: true });
+                    });
+                }
                 
                 // Dispatch a custom event for settings click
                 this.dispatchEvent(new CustomEvent('settingsClick', {
@@ -186,6 +220,7 @@ class ActionBar extends HTMLElement {
      * @param {string} view - The view to switch to
      */
     switchView(view) {
+        // Don't do anything if already on selected view
         if (view === this.activeView) return;
         
         console.log(`Switching to view: ${view}`);
@@ -211,16 +246,11 @@ class ActionBar extends HTMLElement {
         // Update active view state
         this.activeView = view;
         
-        // Update the active state of the settings button if the view is 'settings'
+        // Always ensure settings button appears as a regular button, not an active tab
         const settingsButton = this.querySelector('#settingsButton');
         if (settingsButton) {
-            if (view === 'settings') {
-                settingsButton.classList.remove('text-gray-400', 'hover:text-white', 'hover:bg-neutral-800');
-                settingsButton.classList.add('bg-indigo-600', 'text-white');
-            } else {
-                settingsButton.classList.remove('bg-indigo-600', 'text-white');
-                settingsButton.classList.add('text-gray-400', 'hover:text-white', 'hover:bg-neutral-800');
-            }
+            settingsButton.classList.remove('bg-indigo-600', 'text-white');
+            settingsButton.classList.add('text-gray-400', 'hover:text-white', 'hover:bg-neutral-800');
         }
         
         // Re-render the view switching buttons and reattach event listeners
@@ -239,11 +269,9 @@ class ActionBar extends HTMLElement {
     loadViewScript(view) {
         if (this.loadedScripts[view]) return;
         
-        // Get the script source from the appropriate view object
+        // Get the script source from the view object
         let scriptSrc;
-        if (view === 'settings') {
-            scriptSrc = this.settingsView.script;
-        } else if (this.views[view]) {
+        if (this.views[view]) {
             scriptSrc = this.views[view].script;
         } else {
             console.error(`Unknown view: ${view}`);
