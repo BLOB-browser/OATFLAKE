@@ -407,20 +407,32 @@ class KnowledgeProcessor(BaseOrchestrator):
                             continue
                             
                         # Process this URL
-                        url_result = single_processor.process_specific_url(
-                            url=url_to_process,
-                            origin_url=origin_url,
-                            resource=resource_for_origin,
-                            depth=process_level
-                        )
-                        
-                        processed_urls_count += 1
-                        
-                        if url_result.get('success', False):
-                            success_count += 1
-                        else:
+                        try:
+                            url_result = single_processor.process_specific_url(
+                                url=url_to_process,
+                                origin_url=origin_url,
+                                resource=resource_for_origin,
+                                depth=process_level
+                            )
+                            
+                            processed_urls_count += 1
+                            
+                            if url_result.get('success', False):
+                                success_count += 1
+                            else:
+                                error_count += 1
+                                logger.error(f"Error processing URL at level {process_level}: {url_to_process}")
+                        except Exception as url_error:
+                            processed_urls_count += 1
                             error_count += 1
-                            logger.error(f"Error processing URL at level {process_level}: {url_to_process}")
+                            logger.error(f"Exception processing URL at level {process_level}: {url_to_process} - Error: {url_error}")
+                            # Also remove this URL from the pending queue to avoid getting stuck
+                            try:
+                                url_storage.remove_pending_url(url_to_process)
+                                logger.info(f"Removed problematic URL from pending queue: {url_to_process}")
+                            except Exception as rm_error:
+                                logger.error(f"Error removing URL from pending queue: {rm_error}")
+                            # Continue to next URL even after an exception
                         
                         # Show progress
                         if processed_urls_count % 10 == 0:

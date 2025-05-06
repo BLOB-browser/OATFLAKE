@@ -256,15 +256,29 @@ class LevelBasedProcessor:
                     logger.info(f"LEVEL PROCESSOR: Processing URL {url} at depth {depth} from origin {origin}")
                     logger.info(f"LEVEL PROCESSOR: Using resource: {origin_resource.get('title', 'Untitled')}")
                     
-                    result = self.single_processor.process_specific_url(
-                        url=url,
-                        origin_url=origin,
-                        resource=origin_resource,
-                        depth=depth
-                    )
-                    
-                    # Log detailed results
-                    logger.info(f"LEVEL PROCESSOR: URL {url} processed with result: success={result.get('success', False)}")
+                    try:
+                        result = self.single_processor.process_specific_url(
+                            url=url,
+                            origin_url=origin,
+                            resource=origin_resource,
+                            depth=depth
+                        )
+                        
+                        # Log detailed results
+                        logger.info(f"LEVEL PROCESSOR: URL {url} processed with result: success={result.get('success', False)}")
+                    except Exception as url_error:
+                        logger.error(f"LEVEL PROCESSOR: Exception processing URL {url}: {url_error}")
+                        # Create a failure result so we can continue with the next URL
+                        result = {
+                            "success": False,
+                            "url": url,
+                            "origin_url": origin,
+                            "depth": depth,
+                            "definitions": [],
+                            "projects": [],
+                            "methods": [],
+                            "error": str(url_error)
+                        }
                     definitions_count = len(result.get('definitions', []))
                     projects_count = len(result.get('projects', []))
                     methods_count = len(result.get('methods', []))

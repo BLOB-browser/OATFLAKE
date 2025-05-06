@@ -693,20 +693,26 @@ class URLProcessor(BaseOrchestrator):
                         
                         # Process this URL
                         logger.info(f"Processing URL with force_fetch={force_fetch}: {url_to_process}")
-                        url_result = single_processor.process_specific_url(
-                            url=url_to_process,
-                            origin_url=origin_url,
-                            resource=resource_for_origin,
-                            depth=level
-                        )
-                        
-                        processed_urls_count += 1
-                        
-                        if url_result.get('success', False):
-                            success_count += 1
-                        else:
+                        try:
+                            url_result = single_processor.process_specific_url(
+                                url=url_to_process,
+                                origin_url=origin_url,
+                                resource=resource_for_origin,
+                                depth=level
+                            )
+                            
+                            processed_urls_count += 1
+                            
+                            if url_result.get('success', False):
+                                success_count += 1
+                            else:
+                                error_count += 1
+                                logger.error(f"Error processing URL at level {level}: {url_to_process}")
+                        except Exception as url_error:
+                            processed_urls_count += 1
                             error_count += 1
-                            logger.error(f"Error processing URL at level {level}: {url_to_process}")
+                            logger.error(f"Exception processing URL at level {level}: {url_to_process} - Error: {url_error}")
+                            # Continue to next URL even after an exception
                         
                         # Show progress every 10 URLs
                         if processed_urls_count % 10 == 0 or processed_urls_count == total_urls:
@@ -773,20 +779,32 @@ class URLProcessor(BaseOrchestrator):
                         
                         # Process this URL with the fallback resource
                         logger.info(f"Processing URL with fallback resource and force_fetch={force_fetch}: {url_to_process}")
-                        url_result = single_processor.process_specific_url(
-                            url=url_to_process,
-                            origin_url=origin_url,
-                            resource=resource_for_origin,  # Use resource_for_origin instead of undefined fallback_resource
-                            depth=level
-                        )
-                        
-                        processed_urls_count += 1
-                        
-                        if url_result.get('success', False):
-                            success_count += 1
-                        else:
+                        try:
+                            url_result = single_processor.process_specific_url(
+                                url=url_to_process,
+                                origin_url=origin_url,
+                                resource=resource_for_origin,  # Use resource_for_origin instead of undefined fallback_resource
+                                depth=level
+                            )
+                            
+                            processed_urls_count += 1
+                            
+                            if url_result.get('success', False):
+                                success_count += 1
+                            else:
+                                error_count += 1
+                                logger.error(f"Error processing URL at level {level}: {url_to_process}")
+                        except Exception as url_error:
+                            processed_urls_count += 1
                             error_count += 1
-                            logger.error(f"Error processing URL at level {level}: {url_to_process}")
+                            logger.error(f"Exception processing URL at level {level}: {url_to_process} - Error: {url_error}")
+                            # Make sure we remove this URL from the pending list to avoid processing it again
+                            try:
+                                url_storage.remove_pending_url(url_to_process)
+                                logger.info(f"Removed problematic URL from pending queue: {url_to_process}")
+                            except Exception as rm_error:
+                                logger.error(f"Error removing URL from pending queue: {rm_error}")
+                            # Continue to next URL even after an exception
                             
                         # Show progress every 10 URLs
                         if processed_urls_count % 10 == 0 or processed_urls_count == total_urls:

@@ -586,19 +586,26 @@ class KnowledgeOrchestrator:
                                     url_to_process = pending_url_data.get('url')
                                     
                                     # Process this URL
-                                    url_result = single_processor.process_specific_url(
-                                        url=url_to_process,
-                                        origin_url=origin_url,
-                                        resource=resource_for_origin,
-                                        depth=next_level
-                                    )
-                                    
-                                    processed_at_level += 1
-                                    
-                                    if url_result.get('success', False):
-                                        success_count += 1
-                                    else:
+                                    try:
+                                        url_result = single_processor.process_specific_url(
+                                            url=url_to_process,
+                                            origin_url=origin_url,
+                                            resource=resource_for_origin,
+                                            depth=next_level
+                                        )
+                                        
+                                        processed_at_level += 1
+                                        
+                                        if url_result.get('success', False):
+                                            success_count += 1
+                                        else:
+                                            error_count += 1
+                                            logger.error(f"Error processing URL at level {next_level}: {url_to_process}")
+                                    except Exception as url_error:
+                                        processed_at_level += 1
                                         error_count += 1
+                                        logger.error(f"Exception processing URL at level {next_level}: {url_to_process} - Error: {url_error}")
+                                        # Continue to next URL even after an exception
                                         logger.error(f"Error processing URL at level {next_level}: {url_to_process}")
                                                      # Show progress
                                     if processed_at_level % 10 == 0:
@@ -995,20 +1002,32 @@ class KnowledgeOrchestrator:
                         url_to_process = pending_url_data.get('url')
                         
                         # Process this URL
-                        url_result = single_processor.process_specific_url(
-                            url=url_to_process,
-                            origin_url=origin_url,
-                            resource=resource_for_origin,
-                            depth=level
-                        )
-                        
-                        processed_urls_count += 1
-                        
-                        if url_result.get('success', False):
-                            success_count += 1
-                        else:
+                        try:
+                            url_result = single_processor.process_specific_url(
+                                url=url_to_process,
+                                origin_url=origin_url,
+                                resource=resource_for_origin,
+                                depth=level
+                            )
+                            
+                            processed_urls_count += 1
+                            
+                            if url_result.get('success', False):
+                                success_count += 1
+                            else:
+                                error_count += 1
+                                logger.error(f"Error processing URL at level {level}: {url_to_process}")
+                        except Exception as url_error:
+                            processed_urls_count += 1
                             error_count += 1
-                            logger.error(f"Error processing URL at level {level}: {url_to_process}")
+                            logger.error(f"Exception processing URL at level {level}: {url_to_process} - Error: {url_error}")
+                            # Also remove from pending URLs to avoid getting stuck
+                            try:
+                                url_storage.remove_pending_url(url_to_process)
+                                logger.info(f"Removed problematic URL from pending queue: {url_to_process}")
+                            except Exception as rm_error:
+                                logger.error(f"Error removing URL from pending queue: {rm_error}")
+                            # Continue to next URL even after an exception
                         
                         # Show progress every 10 URLs
                         if processed_urls_count % 10 == 0 or processed_urls_count == total_urls:
