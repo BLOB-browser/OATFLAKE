@@ -170,7 +170,7 @@ class Method(BaseModel):
 class Resource(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
-    description: str
+    description: Optional[str] = ""  # Made optional with default empty string
     content_type: str = "resource"  # Type of content (method, definition, material, project, resource)
     origin_url: HttpUrl  # Primary source URL for the content
     tags: List[str] = []  # Array of keywords or tags
@@ -206,6 +206,12 @@ class Resource(BaseModel):
         if v not in valid_visibility:
             raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
         return v
+        
+    class Config:
+        # Allow URL to be provided as origin_url for backward compatibility
+        fields = {
+            'origin_url': {'alias': 'url'}
+        }
         
     class Config:
         # Allow URL to be provided as origin_url for backward compatibility

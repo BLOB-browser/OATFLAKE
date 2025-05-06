@@ -20,15 +20,14 @@ def get_questions_path():
 @router.get("", 
     responses={
         200: {"description": "List of all questions with their answers"},
-        401: {"description": "Authentication required"},
         500: {"description": "Internal server error"}
     }
 )
 async def list_questions(request: Request, group_id: str = None):
     """List all questions, optionally filtered by group_id"""
     try:
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(status_code=401, detail="Authentication required")
+        # Authentication check removed - allow access without authentication
+        logger.info("Questions API accessed without authentication check")
 
         questions_path, answers_path = get_questions_path()
         
@@ -98,7 +97,6 @@ async def list_questions(request: Request, group_id: str = None):
                 }
             }
         },
-        401: {"description": "Authentication required"},
         404: {"description": "Question not found"},
         500: {"description": "Internal server error"}
     }
@@ -106,19 +104,14 @@ async def list_questions(request: Request, group_id: str = None):
 async def create_answer(answer_req: AnswerRequest, request: Request):
     """Create a new answer"""
     try:
-        # Check authentication
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required"
-            )
-
-        user_id = request.state.user_id
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User ID not found"
-            )
+        # Authentication check removed - allow access without authentication
+        logger.info("Questions answers API accessed without authentication check")
+        
+        # Use a default user ID since we're not requiring authentication
+        user_id = "anonymous"
+        # Try to get user_id from request state if available, but don't require it
+        if hasattr(request.state, 'user_id'):
+            user_id = request.state.user_id
 
         questions_path, answers_path = get_questions_path()
         
@@ -136,9 +129,11 @@ async def create_answer(answer_req: AnswerRequest, request: Request):
                 detail="Question not found"
             )
 
-        # Get user info from request state
-        user_id = request.state.user_id
-        user_email = request.state.user_email if hasattr(request.state, 'user_email') else user_id
+        # Set default user info since we're not requiring authentication
+        user_email = f"{user_id}@anonymous.user"
+        # Try to get email from request state if available
+        if hasattr(request.state, 'user_email'):
+            user_email = request.state.user_email
 
         # Create new answer with complete user info
         answer_data = {
@@ -178,8 +173,8 @@ async def create_answer(answer_req: AnswerRequest, request: Request):
 async def get_generation_status_endpoint(request: Request):
     """Get the status of automatic question generation"""
     try:
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(status_code=401, detail="Authentication required")
+        # Authentication check removed - allow access without authentication
+        logger.info("Questions generation status API accessed without authentication check")
             
         return get_generation_status()  # Fixed import usage
     except Exception as e:
@@ -190,8 +185,8 @@ async def get_generation_status_endpoint(request: Request):
 async def trigger_generation(request: Request, num_questions: int = 10):
     """Manually trigger question generation with optional question count"""
     try:
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(status_code=401, detail="Authentication required")
+        # Authentication check removed - allow access without authentication
+        logger.info("Questions generation trigger API accessed without authentication check")
         
         logger.info(f"Manually triggering question generation for {num_questions} questions")
             

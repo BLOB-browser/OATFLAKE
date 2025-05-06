@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from utils.config import BACKEND_CONFIG
 
-router = APIRouter(prefix="/resources", tags=["resources"])
+router = APIRouter(prefix="/data/resources", tags=["resources"])
 logger = logging.getLogger(__name__)
 
 @router.post("")
@@ -16,6 +16,10 @@ async def create_resource(resource: Resource, request: Request):
     """Create a new resource"""
     try:
         # Authentication check removed
+        
+        # Log received data for debugging
+        logger.info(f"Received resource data: title='{resource.title}', url='{resource.origin_url}'")
+        logger.debug(f"Full resource data: {resource.model_dump()}")
 
         # Set timestamp if not provided
         if not resource.created_at:
@@ -128,3 +132,42 @@ async def list_resources(request: Request):
     except Exception as e:
         logger.error(f"Error listing resources: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/debug")
+async def debug_resource_request(request: Request):
+    """Debug endpoint to help diagnose resource upload issues"""
+    try:
+        # Get the raw request body
+        body = await request.body()
+        body_str = body.decode()
+        
+        # Try to parse as JSON
+        try:
+            body_json = json.loads(body_str)
+        except json.JSONDecodeError:
+            body_json = {"error": "Not valid JSON"}
+        
+        # Return all info about the request
+        return {
+            "status": "debug",
+            "headers": dict(request.headers),
+            "raw_body": body_str[:500] + "..." if len(body_str) > 500 else body_str,
+            "parsed_body": body_json,
+            "content_type": request.headers.get("content-type"),
+            "expected_fields": {
+                "required": ["title", "origin_url or url"],
+                "optional": ["description", "tags", "purpose", "related_url", "status", 
+                            "creator_id", "collaborators", "group_id", "visibility", "category"]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "expected_fields": {
+                "required": ["title", "origin_url or url"],
+                "optional": ["description", "tags", "purpose", "related_url", "status", 
+                            "creator_id", "collaborators", "group_id", "visibility", "category"]
+            }
+        }

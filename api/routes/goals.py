@@ -58,16 +58,14 @@ def get_goals_path():
 @router.get("/", 
     responses={
         200: {"description": "List of all goals with their votes"},
-        401: {"description": "Authentication required"},
         500: {"description": "Internal server error"}
     }
 )
 async def list_goals(request: Request, topic: Optional[str] = None, group_id: Optional[str] = None):
     """List all goals, optionally filtered by topic. Group ID is accepted but not used."""
     try:
-        # Verify authentication
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(status_code=401, detail="Authentication required")
+        # Authentication check removed - allow access without authentication
+        logger.info("Goals API accessed without authentication check")
 
         # Log group_id for debugging but don't use it (we're using a single goals file)
         if group_id:
@@ -138,7 +136,6 @@ async def list_goals(request: Request, topic: Optional[str] = None, group_id: Op
 @router.post("/vote",
     responses={
         200: {"description": "Vote recorded successfully"},
-        401: {"description": "Authentication required"},
         404: {"description": "Goal not found"},
         500: {"description": "Internal server error"}
     }
@@ -146,12 +143,8 @@ async def list_goals(request: Request, topic: Optional[str] = None, group_id: Op
 async def vote_on_goal(vote: GoalVote, request: Request):
     """Record a vote (upvote or downvote) for a goal"""
     try:
-        # Verify authentication
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required"
-            )
+        # Authentication check removed - allow voting without authentication
+        logger.info("Goals vote API accessed without authentication check")
 
         # Get user_id from request state or body, or use a default
         user_id = None
@@ -269,16 +262,14 @@ async def vote_on_goal(vote: GoalVote, request: Request):
 @router.get("/topics",
     responses={
         200: {"description": "List of all topics in the goals database"},
-        401: {"description": "Authentication required"},
         500: {"description": "Internal server error"}
     }
 )
 async def list_topics(request: Request):
     """Get a list of all topics from the goals database"""
     try:
-        # Verify authentication
-        if not getattr(request.app.state, "supabase_client", None):
-            raise HTTPException(status_code=401, detail="Authentication required")
+        # Authentication check removed - allow access without authentication
+        logger.info("Goals topics API accessed without authentication check")
 
         goals_path, _ = get_goals_path()
         
