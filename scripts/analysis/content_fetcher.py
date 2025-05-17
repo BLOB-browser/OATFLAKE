@@ -84,7 +84,63 @@ class ContentFetcher:
         # Add flag to control whether to analyze immediately or defer analysis
         self.defer_analysis = False
         self.discovery_only_mode = False  # When True, focus on URL discovery only
-
+        self.allow_processed_url_discovery = False  # When True, allow discovery from processed URLs when no pending URLs
+    
+    def _is_valid_url(self, url: str) -> bool:
+        """
+        Validate if a URL is potentially valid before adding it to the pending queue.
+        Filters out obviously malformed URLs and checks for problematic patterns.
+        
+        Args:
+            url: The URL to validate
+            
+        Returns:
+            Boolean indicating if the URL appears valid
+        """
+        # Skip empty URLs
+        if not url:
+            return False
+            
+        # Skip URLs with file:/// protocol
+        if "file:///" in url:
+            logger.warning(f"Skipping URL with file:/// protocol: {url}")
+            return False
+            
+        # Skip URLs that mix protocols (http://...file:///)
+        if url.count("://") > 1:
+            logger.warning(f"Skipping malformed URL with multiple protocols: {url}")
+            return False
+            
+        # Make sure URL starts with http:// or https://
+        if not url.startswith(("http://", "https://")):
+            logger.warning(f"Skipping URL with invalid protocol: {url}")
+            return False
+            
+        # Check URL length - too long URLs are often malformed
+        if len(url) > 500:
+            logger.warning(f"Skipping URL that is too long ({len(url)} characters): {url[:100]}...")
+            return False
+            
+        # Check for common problematic patterns
+        problematic_patterns = [
+            "localhost", 
+            "127.0.0.1",
+            ".git",
+            "undefined",
+            "javascript:",
+            "mailto:",
+            "tel:",
+            "data:",
+            "about:"
+        ]
+        
+        for pattern in problematic_patterns:
+            if pattern in url:
+                logger.warning(f"Skipping URL with problematic pattern '{pattern}': {url}")
+                return False
+                
+        return True
+    
     def get_main_page_with_links(self, url: str, max_depth: int = 4, go_deeper: bool = None, breadth_first: bool = True, 
                                discover_only_level: int = 4, force_reprocess: bool = False, resource_id: str = None) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -337,7 +393,22 @@ class ContentFetcher:
         
         # Store level 1 URLs and mark them as originated from the root resource
         for url in found_urls:
-            if (not self.url_storage.url_is_processed(url) or force_reprocess) and url not in visited_urls:
+            # Check if we should include this URL
+            should_include = True  # Always include URLs for discovery regardless of processed status
+            
+            # Skip URLs we've already visited in this session to avoid duplicates
+            if url in visited_urls:
+                should_include = False
+                
+            # Validate the URL to filter out problematic ones
+            if should_include and not self._is_valid_url(url):
+                should_include = False
+                
+            # Log inclusion of already processed URLs
+            if should_include and self.url_storage.url_is_processed(url):
+                logger.info(f"Including already processed URL in discovery: {url}")
+            
+            if should_include:
                 filtered_urls.append(url)
                 visited_urls.add(url)
                 
@@ -377,7 +448,22 @@ class ContentFetcher:
                         level_2_found_urls = process_links(level_2_links, base_domain, level_1_url, visited_urls)
                         
                         for url in level_2_found_urls:
-                            if (not self.url_storage.url_is_processed(url) or force_reprocess) and url not in visited_urls:
+                            # Check if we should include this URL
+                            should_include = True  # Always include URLs for discovery regardless of processed status
+                            
+                            # Skip URLs we've already visited in this session to avoid duplicates
+                            if url in visited_urls:
+                                should_include = False
+                            
+                            # Validate the URL to filter out problematic ones
+                            if should_include and not self._is_valid_url(url):
+                                should_include = False
+                                
+                            # Log inclusion of already processed URLs
+                            if should_include and self.url_storage.url_is_processed(url):
+                                logger.info(f"Including already processed URL at level 2: {url}")
+                            
+                            if should_include:
                                 level_2_urls.append(url)
                                 visited_urls.add(url)
                                 
@@ -420,7 +506,22 @@ class ContentFetcher:
                             level_3_found_urls = process_links(level_3_links, base_domain, level_2_url, visited_urls)
                             
                             for url in level_3_found_urls:
-                                if (not self.url_storage.url_is_processed(url) or force_reprocess) and url not in visited_urls:
+                                # Check if we should include this URL
+                                should_include = True  # Always include URLs for discovery regardless of processed status
+                                
+                                # Skip URLs we've already visited in this session to avoid duplicates
+                                if url in visited_urls:
+                                    should_include = False
+                                
+                                # Validate the URL to filter out problematic ones
+                                if should_include and not self._is_valid_url(url):
+                                    should_include = False
+                                
+                                # Log inclusion of already processed URLs
+                                if should_include and self.url_storage.url_is_processed(url):
+                                    logger.info(f"Including already processed URL at level 3: {url}")
+                                
+                                if should_include:
                                     level_3_urls.append(url)
                                     visited_urls.add(url)
                                     
@@ -463,7 +564,22 @@ class ContentFetcher:
                                 level_4_found_urls = process_links(level_4_links, base_domain, level_3_url, visited_urls)
                                 
                                 for url in level_4_found_urls:
-                                    if (not self.url_storage.url_is_processed(url) or force_reprocess) and url not in visited_urls:
+                                    # Check if we should include this URL
+                                    should_include = True  # Always include URLs for discovery regardless of processed status
+                                    
+                                    # Skip URLs we've already visited in this session to avoid duplicates
+                                    if url in visited_urls:
+                                        should_include = False
+                                    
+                                    # Validate the URL to filter out problematic ones
+                                    if should_include and not self._is_valid_url(url):
+                                        should_include = False
+                                    
+                                    # Log inclusion of already processed URLs
+                                    if should_include and self.url_storage.url_is_processed(url):
+                                        logger.info(f"Including already processed URL at level 4: {url}")
+                                    
+                                    if should_include:
                                         level_4_urls.append(url)
                                         visited_urls.add(url)
                                         
@@ -528,19 +644,20 @@ class ContentFetcher:
         self.discovery_only_mode = discovery_only
         
         try:
-            # Check if URL is already processed (unless force_reprocess is True)
-            if self.url_storage.url_is_processed(url) and not force_reprocess:
-                logger.info(f"Skipping already processed URL: {url}")
-                return True, {"main": "", "error": "URL already processed"}
-            
-            # Check if we've already completed discovery for this URL
-            if self.discovery_only_mode and self.url_storage.get_discovery_status(url) and not force_reprocess:
-                logger.info(f"URL {url} already completed discovery phase, skipping discovery")
-                return True, {"main": "", "message": "Discovery already completed"}
-            
-            # Log if force_reprocess is True for an already processed URL
-            if self.url_storage.url_is_processed(url) and force_reprocess:
-                logger.info(f"Force reprocessing already processed URL: {url}")
+            # Always allow discovery even for processed URLs
+            if self.discovery_only_mode:
+                # In discovery mode, always process URLs regardless of processed status
+                if self.url_storage.url_is_processed(url):
+                    logger.info(f"Allowing rediscovery for already processed URL: {url}")
+            else:
+                # In analysis mode, check if URL is already processed (unless force_reprocess is True)
+                if self.url_storage.url_is_processed(url) and not force_reprocess:
+                    logger.info(f"Skipping already processed URL for analysis: {url}")
+                    return True, {"main": "", "error": "URL already processed"}
+                
+                # Log if force_reprocess is True for an already processed URL
+                if self.url_storage.url_is_processed(url) and force_reprocess:
+                    logger.info(f"Force reprocessing already processed URL: {url}")
 
             # Special handling for discovery_only mode
             if self.discovery_only_mode:
@@ -558,6 +675,11 @@ class ContentFetcher:
                 
                 if not success or "error" in main_data:
                     logger.warning(f"Failed URL discovery for {url}: {main_data.get('error', 'Unknown error')}")
+                    # Mark URL as processed with error flag even on failure to avoid repeated attempts
+                    self.url_storage.save_processed_url(url, depth=0, origin="", discovery_only=True, error=True)
+                    # Remove from pending URLs to avoid getting stuck
+                    self.url_storage.remove_pending_url(url)
+                    logger.info(f"Marked failed URL {url} as processed with error flag and removed from pending queue")
                     return False, {"error": main_data.get("error", "Unknown error fetching main page")}
 
                 # In discovery-only mode, don't process any URLs, just discover and save to pending queue
@@ -571,14 +693,18 @@ class ContentFetcher:
                         saved_count = 0
                         
                         for discovered_url in level_urls:
-                            # NEVER save URLs that are already in processed_urls.csv
-                            if not self.url_storage.url_is_processed(discovered_url):
-                                self.url_storage.save_pending_url(discovered_url, depth=level, origin=url)
-                                saved_count += 1
-                                total_discovered += 1
-                                logger.info(f"Discovered NEW URL at level {level}: {discovered_url}")
-                            else:
-                                logger.info(f"Skipping already processed URL during discovery: {discovered_url}")
+                            # Always save URLs for discovery regardless of processed status
+                            should_save = True
+                            
+                            # Log if URL has already been processed
+                            if self.url_storage.url_is_processed(discovered_url):
+                                logger.info(f"Re-adding already processed URL to pending for complete discovery: {discovered_url}")
+                            
+                            # Save all URLs to ensure complete discovery
+                            self.url_storage.save_pending_url(discovered_url, depth=level, origin=url)
+                            saved_count += 1
+                            total_discovered += 1
+                            logger.info(f"Discovered URL at level {level}: {discovered_url}")
                                 
                         logger.info(f"Discovery-only mode: Saved {saved_count} URLs at level {level} to pending queue")
                 
@@ -630,10 +756,10 @@ class ContentFetcher:
                     
                     # Save all URLs at this level to the pending queue
                     for discovered_url in level_urls:
-                        if not self.url_storage.url_is_processed(discovered_url) or force_reprocess:
-                            self.url_storage.save_pending_url(discovered_url, depth=level, origin=url)
-                            saved_count += 1
-                            total_saved_urls += 1
+                        # Always save URLs regardless of processed status to ensure complete discovery
+                        self.url_storage.save_pending_url(discovered_url, depth=level, origin=url)
+                        saved_count += 1
+                        total_saved_urls += 1
                     
                     logger.info(f"Saved {saved_count} URLs at level {level} to pending queue for later processing")
             
@@ -747,6 +873,10 @@ class ContentFetcher:
             level_info = ", ".join([f"level {level}: {count}" for level, count in pending_by_level.items() if count > 0])
             logger.info(f"Discovery not needed: Found {total_pending} pending URLs ({level_info})")
         
+        # Always enable discovery from processed URLs to prevent getting stuck
+        self.allow_processed_url_discovery = True
+        logger.info(f"Always allowing discovery from processed URLs to ensure complete crawling")
+        
         return {
             "discovery_needed": discovery_needed,
             "total_pending": total_pending,
@@ -779,6 +909,15 @@ class ContentFetcher:
         original_discovery_mode = self.discovery_only_mode
         self.discovery_only_mode = True
         
+        # Check if we have pending URLs to potentially enable discovery from processed URLs
+        discovery_status = self.check_discovery_needed(max_depth)
+        
+        # If no pending URLs and we're at level 0 in config, force_reprocess
+        if discovery_status["total_pending"] == 0:
+            original_force_reprocess = force_reprocess
+            force_reprocess = True
+            logger.info(f"No pending URLs found - forcing discovery from processed URLs (force_reprocess=True)")
+        
         results = {
             "total_urls": len(urls),
             "successful": 0,
@@ -806,11 +945,10 @@ class ContentFetcher:
                 else:
                     logger.info(f"[{idx+1}/{len(urls)}] Running URL discovery for: {url}")
                 
-                # Check if URL has already been processed for discovery
-                if self.url_storage.get_discovery_status(url) and not force_reprocess:
-                    logger.info(f"URL {url} already completed discovery phase, skipping")
-                    results["skipped"] += 1
-                    continue
+                # Always perform discovery, even for URLs that have been processed before
+                if self.url_storage.get_discovery_status(url):
+                    logger.info(f"URL {url} previously completed discovery phase, but rediscovering to ensure completeness")
+                    # Continue with discovery instead of skipping
                 
                 # Track all URLs discovered from this resource
                 resource_discovered = 0

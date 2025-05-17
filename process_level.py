@@ -11,6 +11,7 @@ import sys
 import os
 import logging
 import argparse
+import json
 from datetime import datetime
 from typing import Dict, Any
 
@@ -25,6 +26,45 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def check_config_level():
+    """Check the current_process_level in config.json."""
+    try:
+        config_path = os.path.join(os.getcwd(), "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                level = config.get('current_process_level', 1)
+                logger.info(f"Current process level from config: {level}")
+                return level
+        else:
+            logger.warning("Config file not found")
+            return 1
+    except Exception as e:
+        logger.error(f"Error reading current_process_level from config: {e}")
+        return 1
+
+def update_config_level(level: int):
+    """Update current_process_level in config.json."""
+    try:
+        config_path = os.path.join(os.getcwd(), "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            config['current_process_level'] = level
+            
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+                
+            logger.info(f"Updated current_process_level to {level} in config.json")
+            return True
+        else:
+            logger.warning("Config file not found, couldn't update level")
+            return False
+    except Exception as e:
+        logger.error(f"Error updating current_process_level in config: {e}")
+        return False
+
 def main():
     """
     Main entry point for the level-based processor script.
@@ -38,6 +78,7 @@ def main():
     parser.add_argument('--csv-path', type=str, help='Path to the resources CSV file (default: resources.csv in data folder)')
     parser.add_argument('--max-urls', type=int, help='Maximum number of URLs to process')
     parser.add_argument('--skip-vectors', action='store_true', help='Skip vector generation after processing')
+    parser.add_argument('--reset', action='store_true', help='Reset to level 0 and enable rediscovery mode')
     
     args = parser.parse_args()
     
@@ -63,6 +104,33 @@ def main():
         
         # Initialize the processor
         processor = LevelBasedProcessor(args.data_folder)
+        
+        # Handle reset flag to enable rediscovery
+        if args.reset:
+            logger.info("Resetting to level 0 and enabling URL rediscovery mode")
+            # Update config to level 0
+            update_config_level(0)
+            
+            # Import URL storage and ContentFetcher to enable rediscovery mode
+            try:
+                from scripts.analysis.url_storage import URLStorageManager
+                from scripts.analysis.content_fetcher import ContentFetcher
+                from utils.config import get_data_path
+                
+                # Initialize components
+                processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                url_storage = URLStorageManager(processed_urls_file)
+                content_fetcher = ContentFetcher()
+                
+                # Enable rediscovery mode
+                url_storage.set_rediscovery_mode(True)
+                content_fetcher.allow_processed_url_discovery = True
+                
+                logger.info("URL rediscovery mode enabled. Run with level 1 to start discovery process.")
+                return
+            except Exception as e:
+                logger.error(f"Error setting up rediscovery mode: {e}")
+                sys.exit(1)
         
         # Determine which action to take
         if args.status:
@@ -95,10 +163,55 @@ def main():
                 skip_vector_generation=args.skip_vectors
             )
         else:
-            # No action specified
-            logger.error("You must specify either --level, --next, or --status")
-            parser.print_help()
-            sys.exit(1)
+            # Check current level from config
+            current_level = check_config_level()
+            
+            if current_level == 0:
+                # We're at level 0, check if we have pending URLs
+                # Get data from URL storage
+                try:
+                    from scripts.analysis.url_storage import URLStorageManager
+                    from scripts.analysis.content_fetcher import ContentFetcher
+                    from utils.config import get_data_path
+                    
+                    # Initialize components
+                    processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                    url_storage = URLStorageManager(processed_urls_file)
+                    content_fetcher = ContentFetcher()
+                    
+                    # Check if we need discovery
+                    discovery_status = content_fetcher.check_discovery_needed(max_depth=4)
+                    
+                    if discovery_status["discovery_needed"]:
+                        logger.info("No pending URLs found and system is at level 0 - enabling URL rediscovery")
+                        url_storage.set_rediscovery_mode(True)
+                        content_fetcher.allow_processed_url_discovery = True
+                        logger.info("URL rediscovery mode enabled.")
+                        
+                        # Suggest next step
+                        logger.info("Please run with level 1 to start discovery process.")
+                        return
+                    else:
+                        logger.info(f"Found {discovery_status['total_pending']} pending URLs. Processing level 1")
+                        # Process level 1
+                        result = processor.process_level(
+                            level=1,
+                            csv_path=args.csv_path,
+                            max_urls=args.max_urls,
+                            skip_vector_generation=args.skip_vectors
+                        )
+                except Exception as e:
+                    logger.error(f"Error checking pending URLs: {e}")
+                    sys.exit(1)
+            else:
+                # Process the current level from config
+                logger.info(f"Processing current level {current_level} from config")
+                result = processor.process_level(
+                    level=current_level,
+                    csv_path=args.csv_path,
+                    max_urls=args.max_urls,
+                    skip_vector_generation=args.skip_vectors
+                )
         
         # Log result summary
         if result.get("status") == "completed":

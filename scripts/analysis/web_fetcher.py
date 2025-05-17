@@ -57,18 +57,27 @@ class WebFetcher:
                 allow_redirects=True
             )
             
-            response.raise_for_status()
-            
+            # Handle different status codes explicitly
             if response.status_code == 200:
                 logger.info(f"Successfully fetched content from {url}")
                 return True, response.text
+            elif response.status_code == 404:
+                # Explicit handling for 404 errors
+                logger.warning(f"Error fetching page {url}: 404 Client Error: Not Found for url: {url}")
+                return False, f"HTTP 404 Not Found: {url}"
+            elif response.status_code in (403, 401):
+                # Access forbidden or unauthorized
+                logger.warning(f"Access denied for {url}: HTTP {response.status_code}")
+                return False, f"HTTP {response.status_code} Access Denied: {url}"
             else:
+                # Other HTTP errors
                 logger.warning(f"Failed to fetch {url}: HTTP {response.status_code}")
+                response.raise_for_status()  # Will trigger exception handler
                 return False, ""
                 
         except requests.RequestException as e:
             logger.warning(f"Error fetching page {url}: {e}")
-            return False, ""
+            return False, f"Error: {str(e)}"
         except Exception as e:
             logger.error(f"Unexpected error fetching {url}: {e}")
             return False, ""

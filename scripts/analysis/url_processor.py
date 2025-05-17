@@ -5,7 +5,7 @@ import logging
 import requests
 from typing import Tuple, Dict, Any, List, Set
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +19,113 @@ def clean_url(url: str) -> str:
     Returns:
         Cleaned URL
     """
+    if not url:
+        return url
+        
     url = url.strip()
+    
+    # Remove trailing slashes
+    while url.endswith('/') and len(url) > 1:
+        url = url[:-1]
+    
+    # Fix common URL issues
+    
+    # Remove embedded file:/// protocol if present
+    if "file:///" in url:
+        url = url.replace("file:///", "")
+    
+    # Handle URLs that mix protocols
+    if url.count("://") > 1:
+        parts = url.split("://", 1)
+        second_part = parts[1]
+        if "://" in second_part:
+            # Keep only the part after the second ://
+            url = parts[0] + "://" + second_part.split("://", 1)[1]
     
     # Add http:// if missing
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
+    
+    # Remove query parameters for certain file types
+    ext_to_clean = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.zip', '.rar']
+    for ext in ext_to_clean:
+        if ext in url and '?' in url:
+            url = url.split('?')[0]
+            break
+    
+    # Handle anchor tags
+    if '#' in url and any(ext in url for ext in ['.html', '.htm', '.php', '.aspx']):
+        url = url.split('#')[0]
+        
+    # Additional normalization to avoid duplicates
+    url = normalize_url(url)
         
     return url
+
+def normalize_url(url: str) -> str:
+    """
+    Normalize a URL by removing common tracking parameters, fragments, and
+    standardizing paths to avoid duplicate content.
+    
+    Args:
+        url: The URL to normalize
+        
+    Returns:
+        Normalized URL
+    """
+    if not url:
+        return url
+        
+    # Parse the URL
+    parsed_url = urlparse(url)
+    
+    # Strip fragments (anchors)
+    fragment = ''
+    
+    # Keep the path, but normalize trailing slashes
+    path = parsed_url.path
+    if path.endswith('/') and len(path) > 1:
+        path = path[:-1]
+        
+    # Remove common tracking and session parameters
+    if parsed_url.query:
+        # Parse the query parameters
+        from urllib.parse import parse_qs, urlencode
+        query_params = parse_qs(parsed_url.query)
+        
+        # List of parameters to remove
+        params_to_remove = [
+            'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 
+            'gclid', 'fbclid', '_ga', 'ref', 'source', 'WT.mc_id', 'sid',
+            'share', '_hsenc', '_hsmi', 'yclid', 'mkt_tok',
+            'redirect', 'return', 'return_to', 'auth', 'token'
+        ]
+        
+        # Remove parameters
+        filtered_params = {k: v for k, v in query_params.items() if k not in params_to_remove}
+        
+        # Reconstruct query
+        query = urlencode(filtered_params, doseq=True) if filtered_params else ''
+    else:
+        query = ''
+        
+    # Reconstruct the URL
+    normalized_url = urlunparse((
+        parsed_url.scheme,
+        parsed_url.netloc,
+        path,
+        parsed_url.params,
+        query,
+        fragment
+    ))
+    
+    # Remove standard ports (http:80, https:443)
+    if parsed_url.port == 80 and parsed_url.scheme == 'http':
+        normalized_url = normalized_url.replace(':80', '')
+    elif parsed_url.port == 443 and parsed_url.scheme == 'https':
+        normalized_url = normalized_url.replace(':443', '')
+        
+    return normalized_url
 
 def get_base_domain_and_url(url: str) -> Tuple[str, str, str]:
     """
@@ -62,6 +162,7 @@ def resolve_absolute_url(href: str, base_domain: str, current_url: str = None) -
     # Skip fragment-only links, email, phone, and social media
     if (href.startswith('#') or href.startswith('mailto:') or href.startswith('tel:') or 
         href.startswith('javascript:') or href.startswith('data:')):
+        logger.debug(f"Skipping special URL format: {href[:30]}...")
         return False, ""
     
     # Skip common social media platforms
@@ -71,7 +172,34 @@ def resolve_absolute_url(href: str, base_domain: str, current_url: str = None) -
     ]
     
     if any(domain in href for domain in social_media_domains):
+        logger.debug(f"Skipping social media URL: {href[:50]}...")
         return False, ""
+        
+    # Skip platform-specific pages that are typically not useful (login, auth, settings, etc.)
+    skip_patterns = [
+        # GitHub and Git platforms
+        '/login', '/signup', '/join', '/settings', '/notifications', 
+        '/issues/new', '/pull/new', '/marketplace', '/pricing', 
+        '/features', '/customer-stories', '/security', '/site/terms',
+        '/site/privacy', '/contact', '/about', '/careers',
+        'github.com/login', 'github.com/join', 'github.com/features',
+        # Common auth & utility paths
+        'sign-in', 'log-in', 'register', 'password-reset',
+        # Notion and documentation platforms
+        'notion.so/login', 'notion.so/signup', 'notion.so/pricing',
+        '/api-docs', '/graphql', '/api-reference', '/robots.txt',
+        # Analytics, tracking, and utility
+        '/favicon.ico', '/sitemap.xml', '/rss', '/feed',
+        '/xmlrpc.php', '/wp-login.php', '/wp-admin',
+        # Admin-specific paths
+        '/admin/', '/dashboard/', '/wp-admin/', '/cpanel/'
+    ]
+    
+    # Check for skip patterns
+    for pattern in skip_patterns:
+        if pattern.lower() in href.lower():
+            logger.debug(f"Skipping platform utility URL with pattern '{pattern}': {href[:50]}...")
+            return False, ""
         
     # Convert to absolute URL if needed
     if href.startswith('/'):
@@ -112,9 +240,219 @@ def resolve_absolute_url(href: str, base_domain: str, current_url: str = None) -
                       '.exe', '.dmg', '.apk', '.msi']  # Executables
     
     if any(absolute_url.lower().endswith(ext) for ext in skip_extensions):
+        skipped_ext = next((ext for ext in skip_extensions if absolute_url.lower().endswith(ext)), None)
+        logger.debug(f"Skipping file with extension {skipped_ext}: {absolute_url[:50]}...")
         return False, ""
     
+    # Additional GitHub-specific pattern filtering
+    # These are GitHub repository pages that often don't contain useful content
+    if 'github.com/' in absolute_url.lower():
+        # First, check if this is a content page we want to keep
+        github_keep_patterns = [
+            # README and documentation files
+            '/blob/main/README.md', '/blob/master/README.md',
+            '/blob/main/docs/', '/blob/master/docs/',
+            '/blob/main/documentation/', '/blob/master/documentation/',
+            '/wiki/Home', '/wiki/Documentation',
+            # Actual content files
+            '/blob/main/', '/blob/master/', 
+            '/tree/main/', '/tree/master/',
+            # Specific issues or PRs (these might have useful content)
+            '/issues/[0-9]+$', '/pull/[0-9]+$'
+        ]
+        
+        # Use regex to check keep patterns
+        import re
+        for pattern in github_keep_patterns:
+            if '[0-9]+' in pattern:
+                if re.search(pattern, absolute_url):
+                    # This is a content URL we want to keep
+                    logger.debug(f"Keeping GitHub content URL: {absolute_url[:50]}...")
+                    break
+            elif pattern in absolute_url:
+                # This is a content URL we want to keep
+                logger.debug(f"Keeping GitHub content URL: {absolute_url[:50]}...")
+                break
+        else:
+            # No keep pattern matched, now check skip patterns
+            github_skip_patterns = [
+                '/commit/', '/commits/', '/network/', '/stargazers',
+                '/blame/', '/watchers/', '/graphs/', '/settings/',
+                '/branches/', '/releases/', '/tags/', '/milestones/',
+                '/compare/', '/fork/', '/forks/', '/wiki/',
+                '/actions/', '/activity/', '/deployments/',
+                '/labels/', '/discussions/', '/pulse/',
+                '/community/', '/actions/runs/', '/projects/',
+                '/actions/workflows/', '/traffic/', '/security/',
+                '/subscription', '/install/', '/events/', '/members/',
+                '/people/', '/topics/', '/followers/', '/following/',
+                '/raw/'
+            ]
+            
+            for pattern in github_skip_patterns:
+                if pattern in absolute_url:
+                    logger.debug(f"Skipping GitHub utility URL with pattern '{pattern}': {absolute_url[:50]}...")
+                    return False, ""
+                    
+            # Additional regex-based filtering for GitHub
+            import re
+            
+            # Skip issue and pull request listings, but allow specific issues/PRs that might contain content
+            if re.search(r'github\.com/[^/]+/[^/]+/(issues|pulls)$', absolute_url):
+                logger.debug(f"Skipping GitHub issue/PR listing page: {absolute_url}")
+                return False, ""
+                
+            # Skip repository listing pages
+            if re.search(r'github\.com/[^/]+/[^/]+\?tab=repositories$', absolute_url):
+                logger.debug(f"Skipping GitHub repository listing page: {absolute_url}")
+                return False, ""
+                
+            # Skip stargazer pages with pagination
+            if re.search(r'github\.com/[^/]+\?tab=(stars|repositories|projects|packages|followers|following)', absolute_url):
+                logger.debug(f"Skipping GitHub profile tab: {absolute_url}")
+                return False, ""
+                
+            # Skip user profile pages that don't contain specific content
+            if re.search(r'github\.com/[^/]+$', absolute_url) and not re.search(r'github\.com/[^/]+/[^/]+', absolute_url):
+                logger.debug(f"Skipping GitHub user profile page: {absolute_url}")
+                return False, ""
+    
+    # Notion-specific filtering
+    if 'notion.so' in absolute_url.lower():
+        notion_skip_patterns = [
+            '/login', '/signup', '/onboarding', '/request-invite', 
+            '/changelog', '/pricing', '/enterprise', '/teams', '/personal',
+            '/product', '/customers', '/remote', '/guides', '/help',
+            '/security', '/terms', '/privacy',
+            # Notion system controls and features
+            '?openExternalBrowser=1', '?nav=', '?pvs=', '&pvs=', 
+            '&openExternalBrowser=', '?p=', '&p='
+        ]
+        
+        for pattern in notion_skip_patterns:
+            if pattern in absolute_url:
+                logger.debug(f"Skipping Notion utility page with pattern '{pattern}': {absolute_url[:50]}...")
+                return False, ""
+                
+    # Common documentation platform patterns to skip
+    doc_platform_skip_patterns = {
+        'readthedocs.io': ['/search/', '/builds/', '/downloads/', '/versions/', '/edit/'],
+        'docs.google.com': ['settings', 'u/0', 'document/create'],
+        'confluence': ['/plugins/', '/spaces/', '/admin/', '/setup/', '/display/'],
+        'gitbook.io': ['/settings/', '/account/', '/billing/'],
+        'docusaurus': ['/docs/next/', '/blog/tags/']
+    }
+    
+    for platform, patterns in doc_platform_skip_patterns.items():
+        if platform in absolute_url.lower():
+            for pattern in patterns:
+                if pattern in absolute_url:
+                    logger.debug(f"Skipping documentation platform ({platform}) utility page: {absolute_url[:50]}...")
+                    return False, ""
+    
+    # Skip URLs with common tracking or non-content parameters
+    parsed_url = urlparse(absolute_url)
+    if parsed_url.query:
+        skip_params = [
+            'utm_', 'ref=', 'source=', 'medium=', 'campaign=',
+            'content=', 'term=', 'gclid=', 'fbclid=', 'share=',
+            'token=', 'auth=', 'session=', 'login=', '_ga=',
+            'redirect=', 'return_to=', 'lang=', 'locale=',
+            'page=', 'sort=', 'order=', 'filter=', 'view=',
+            'theme=', 'v=', 'sid=', '_hsenc=', '_hsmi='
+        ]
+        
+        # Check for query parameters that suggest the URL is not content-rich
+        from urllib.parse import parse_qs
+        query_params = parse_qs(parsed_url.query)
+        
+        # If there are too many query parameters (suggesting filters, sorting, etc.) 
+        # or if they contain tracking/session parameters, skip the URL
+        if len(query_params) > 3 or any(param.startswith(prefix) for param in query_params for prefix in skip_params):
+            logger.debug(f"Skipping URL with tracking/utility query parameters: {absolute_url[:50]}...")
+            return False, ""
+            
+    # Apply URL quality scoring to filter out low-quality URLs
+    # This uses heuristics to determine if a URL likely contains valuable content
+    # Higher scores (closer to 1.0) indicate more valuable content
+    quality_score = score_url_quality(absolute_url)
+    if quality_score < 0.3:  # Threshold can be adjusted based on observations
+        logger.debug(f"Skipping low-quality URL (score={quality_score:.2f}): {absolute_url[:50]}...")
+        return False, ""
+        
+    # The quality score is already calculated above, no need to calculate it twice
+    # Skip URLs with low quality scores - this redundant check was removed
+    
     return True, absolute_url
+
+def score_url_quality(url: str) -> float:
+    """
+    Assigns a quality score to a URL based on heuristics,
+    higher scores suggest more valuable content.
+    
+    Args:
+        url: The URL to score
+        
+    Returns:
+        Score between 0.0 and 1.0 (higher is better)
+    """
+    if not url:
+        return 0.0
+        
+    score = 0.5  # Default mid-point score
+    
+    # Parse the URL
+    parsed_url = urlparse(url)
+    path = parsed_url.path.lower()
+    domain = parsed_url.netloc.lower()
+    
+    # Domain-based scoring
+    if any(edu_domain in domain for edu_domain in ['.edu', '.ac.uk', '.ac.']):
+        score += 0.2  # Educational domains likely have good content
+    
+    if 'github.com' in domain and '/blob/' in path:
+        # GitHub file content
+        if any(ext in path for ext in ['.md', '.rst', '.txt', '.ipynb']):
+            score += 0.25  # Markdown and documentation files
+        elif any(ext in path for ext in ['.py', '.js', '.java', '.cpp', '.h', '.c']):
+            score += 0.15  # Source code files
+        elif 'readme' in path.lower():
+            score += 0.25  # README files
+    
+    # Path-based scoring
+    if '/docs/' in path or '/documentation/' in path:
+        score += 0.2  # Documentation paths
+    elif '/blog/' in path:
+        score += 0.15  # Blog content
+    elif '/tutorials/' in path or '/guide/' in path:
+        score += 0.2  # Tutorials and guides
+    elif '/examples/' in path:
+        score += 0.15  # Example code
+        
+    # File extensions that suggest good content
+    if path.endswith(('.html', '.htm')):
+        score += 0.05
+    elif path.endswith(('.md', '.rst', '.txt', '.pdf')):
+        score += 0.15
+    elif path.endswith(('.ipynb')):
+        score += 0.2  # Jupyter notebooks are often content-rich
+        
+    # Penalize certain patterns
+    if 'login' in path or 'signin' in path or 'signup' in path:
+        score -= 0.3
+    if '/admin/' in path or '/settings/' in path:
+        score -= 0.3
+        
+    # Length of path can be an indicator of specific content
+    # (but not too long, as that might be a generated path)
+    path_segments = [p for p in path.split('/') if p]
+    if 2 <= len(path_segments) <= 5:
+        score += 0.05
+    elif len(path_segments) > 5:
+        score -= 0.1
+        
+    # Ensure score is in [0.0, 1.0] range
+    return max(0.0, min(1.0, score))
 
 def extract_navigation_links(soup: BeautifulSoup) -> List[Dict]:
     """

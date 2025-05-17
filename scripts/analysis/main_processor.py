@@ -444,8 +444,19 @@ class MainProcessor:
         logger.info(f"URL count check: Current count is {current_url_count}, last checked was {self.last_checked_url_count}")
         self.last_checked_url_count = current_url_count
         
-        # Check if we should generate vectors
+        # Check if there are any pending URLs at any level before generating vectors
+        # Only generate vectors if no pending URLs are left at any level
+        has_pending_urls = False
+        for level in range(1, 5):  # Check levels 1-4
+            pending_urls = url_storage.get_pending_urls(depth=level)
+            if pending_urls and len(pending_urls) > 0:
+                has_pending_urls = True
+                logger.info(f"Found {len(pending_urls)} pending URLs at level {level}, deferring vector generation")
+                break  # We found pending URLs at this level, no need to check further
+        
+        # Check if we should generate vectors - adding the condition that there are no pending URLs at any level
         if (self._should_generate_vectors(current_url_count) and 
+            not has_pending_urls and 
             self.vector_generation_needed and not skip_vector_generation):
             
             logger.info(f"Starting vector store generation at URL count milestone: {current_url_count} (batch size: {self.url_batch_size})")

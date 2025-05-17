@@ -41,6 +41,9 @@ class URLStorageManager:
         # Cache for resource URLs - maps resource ID to set of discovered URLs
         self._resource_urls_cache = {}
         
+        # Flag to indicate if we should allow already processed URLs to be rediscovered
+        self.allow_processed_url_rediscovery = False
+        
         # Ensure the file directory exists
         os.makedirs(os.path.dirname(self.processed_urls_file), exist_ok=True)
         
@@ -127,10 +130,15 @@ class URLStorageManager:
                                 depth = int(row[1]) if row[1].isdigit() else 0
                                 origin = row[2] if len(row) >= 3 else ""
                                 timestamp = row[3] if len(row) >= 4 else ""
+                                # Check for error flag (might be in column 5 for newer records)
+                                error = False
+                                if len(row) >= 5 and row[4] == "error":
+                                    error = True
                                 self.url_metadata[url] = {
                                     "depth": depth,
                                     "origin": origin,
-                                    "timestamp": timestamp
+                                    "timestamp": timestamp,
+                                    "error": error
                                 }
                 logger.info(f"Loaded {len(processed_urls)} processed URLs")
             except Exception as e:
@@ -141,7 +149,7 @@ class URLStorageManager:
         logger.info(f"URL cache initialized with {len(self._processed_urls_cache)} URLs")
         return processed_urls
     
-    def save_processed_url(self, url: str, depth: int = 0, origin: str = "", discovery_only: bool = False) -> bool:
+    def save_processed_url(self, url: str, depth: int = 0, origin: str = "", discovery_only: bool = False, error: bool = False) -> bool:
         """Save a processed URL to the CSV file with depth and origin information.
         
         Args:
@@ -149,6 +157,7 @@ class URLStorageManager:
             depth: The crawl depth level of this URL (0=main, 1=first level, etc.)
             origin: The URL that led to this URL (empty for main URLs)
             discovery_only: Whether this URL is only for discovery (defaults to False)
+            error: Whether this URL had an error during processing (defaults to False)
             
         Returns:
             Success flag
@@ -167,12 +176,13 @@ class URLStorageManager:
             # Make sure directory exists
             os.makedirs(os.path.dirname(self.processed_urls_file), exist_ok=True)
             
-            logger.info(f"Saving processed URL to {self.processed_urls_file}: {url} (depth={depth}, origin={origin or 'main'})")
+            error_status = "error" if error else ""
+            logger.info(f"Saving processed URL to {self.processed_urls_file}: {url} (depth={depth}, origin={origin or 'main'}, error={error})")
             
             # Open in append mode with explicit flush
             with open(self.processed_urls_file, mode='a', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
-                writer.writerow([url, depth, origin, timestamp])
+                writer.writerow([url, depth, origin, timestamp, error_status])
                 file.flush()
                 os.fsync(file.fileno())  # Force write to disk
             
@@ -386,9 +396,14 @@ class URLStorageManager:
         """
         try:
             # First check if the URL is already in the processed list
-            if self.url_is_processed(url):
-                logger.debug(f"URL {url} is already processed, not saving to pending")
+            if self.url_is_processed(url) and not self.allow_processed_url_rediscovery and self.get_discovery_status(url):
+                logger.debug(f"URL {url} is already processed and discovery completed, not saving to pending")
                 return True
+            elif self.url_is_processed(url) and not self.allow_processed_url_rediscovery:
+                logger.debug(f"URL {url} is already processed, but discovery may be incomplete. Not saving due to rediscovery being disabled.")
+                return True
+            elif self.url_is_processed(url) and self.allow_processed_url_rediscovery:
+                logger.info(f"URL {url} is already processed, but rediscovery is allowed. Adding to pending.")
                 
             # Next, check if the URL is already in the pending list
             # by reading the pending URLs file
@@ -456,11 +471,11 @@ class URLStorageManager:
             logger.error(f"Failed to save pending URL {url}: {e}")
             return False
             
-    def get_pending_urls(self, max_urls: int = 100, depth: int = None, resource_id: str = None) -> List[Dict[str, Any]]:
+    def get_pending_urls(self, max_urls: int = 0, depth: int = None, resource_id: str = None) -> List[Dict[str, Any]]:
         """Get pending URLs to process from the CSV file
         
         Args:
-            max_urls: Maximum number of URLs to return
+            max_urls: Maximum number of URLs to return (0 = no limit, return all URLs)
             depth: Optional depth level to filter by
             resource_id: Optional resource ID to filter by
             
@@ -516,8 +531,9 @@ class URLStorageManager:
                             "resource_id": row_resource_id
                         })
                         
-                        # Stop if we've reached the maximum
-                        if len(pending_urls) >= max_urls:
+                        # Stop if we've reached the maximum (only if max_urls > 0)
+                        if max_urls > 0 and len(pending_urls) >= max_urls:
+                            logger.info(f"Reached max_urls limit of {max_urls}, more URLs may be pending")
                             break
                 
             if resource_id:
@@ -533,11 +549,6 @@ class URLStorageManager:
             
     def remove_pending_url(self, url: str) -> bool:
         """Remove a URL from the pending URLs file after it's been processed
-        
-        Args:
-            url: The URL to remove
-            
-        Returns:
             Success flag
         """
         if not os.path.exists(self.pending_urls_file):
@@ -714,3 +725,80 @@ class URLStorageManager:
                 logger.error(f"Error checking discovery status in processed_urls: {e}")
                 
         return False
+
+    def set_rediscovery_mode(self, allow_rediscovery: bool):
+        """
+        Set whether processed URLs can be added to the pending list.
+        This is used when no pending URLs are available and we need to break
+        out of a "stuck" discovery state.
+        
+        Args:
+            allow_rediscovery: If True, processed URLs can be rediscovered
+        """
+        self.allow_processed_url_rediscovery = allow_rediscovery
+        logger.info(f"URL rediscovery mode set to: {allow_rediscovery}")
+    
+    def get_rediscovery_mode(self) -> bool:
+        """
+        Check if processed URLs can be rediscovered.
+        
+        Returns:
+            True if rediscovery is allowed, False otherwise
+        """
+        return self.allow_processed_url_rediscovery
+    
+    def increment_url_attempt(self, url: str) -> bool:
+        """
+        Increment the attempt count for a pending URL.
+        
+        Args:
+            url: The URL to update
+            
+        Returns:
+            Success flag
+        """
+        # Read all pending URLs
+        pending_urls = []
+        updated = False
+        
+        if not os.path.exists(self.pending_urls_file):
+            logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
+            return False
+        
+        try:
+            # Read the current state
+            with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                header = next(reader, None)  # Get header
+                
+                # Process each row
+                for row in reader:
+                    if len(row) >= 1:
+                        if row[0] == url:
+                            # Get current attempt count
+                            current_attempt = 0
+                            if len(row) >= 5 and row[4] and row[4].isdigit():
+                                current_attempt = int(row[4])
+                            
+                            # Update attempt count
+                            row[4] = str(current_attempt + 1)
+                            updated = True
+                            logger.info(f"Incremented attempt count for {url} to {current_attempt + 1}")
+                    
+                    pending_urls.append(row)
+            
+            # Only write back if updated
+            if updated:
+                with open(self.pending_urls_file, mode='w', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["url", "depth", "origin", "discovery_timestamp", "attempt_count", "resource_id"])  # Write header
+                    writer.writerows(pending_urls)
+                
+                return True
+            else:
+                logger.warning(f"URL {url} not found in pending URLs, could not increment attempt count")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error incrementing attempt count for URL {url}: {e}")
+            return False

@@ -639,11 +639,18 @@ class KnowledgeOrchestrator:
             if not skip_vector_generation and not self.cancel_requested:
                 from scripts.analysis.vector_store_generator import VectorStoreGenerator
                 vector_generator = VectorStoreGenerator(self.data_folder)
-                vector_result = await vector_generator.generate_vector_stores(force_update=force_update)
-                result["vector_generation"] = vector_result
                 
-                # Also clean up temporary files
-                vector_generator.cleanup_temporary_files()
+                # Check for any remaining pending URLs before generating vectors
+                remaining_pending_count = self._check_for_remaining_pending_urls(max_depth=max_depth)
+                if remaining_pending_count > 0:
+                    logger.warning(f"Skipping vector generation due to {remaining_pending_count} remaining pending URLs")
+                    result["vector_generation"] = {"status": "skipped", "reason": "remaining_pending_urls"}
+                else:
+                    vector_result = await vector_generator.generate_vector_stores(force_update=force_update)
+                    result["vector_generation"] = vector_result
+                    
+                    # Also clean up temporary files
+                    vector_generator.cleanup_temporary_files()
             elif self.cancel_requested:
                 logger.info("Vector generation skipped due to cancellation")
                 result["vector_generation"] = {"status": "cancelled"}
@@ -1429,6 +1436,22 @@ class KnowledgeOrchestrator:
                     else:
                         logger.warning("No pending URLs found in either filtered list or raw file. All URLs have been processed.")
             
+            # Check for any remaining pending URLs before vector generation
+            remaining_pending = self._check_for_remaining_pending_urls(max_depth)
+            
+            if remaining_pending > 0:
+                logger.warning(f"There are still {remaining_pending} pending URLs that need processing!")
+                logger.warning("Processing remaining URLs before generating vectors...")
+                
+                # Process these remaining URLs one level at a time
+                for level in range(1, max_depth + 1):
+                    retry_result = self.process_urls_at_level(
+                        level=level,
+                        batch_size=batch_size,
+                        force_fetch=True
+                    )
+                    logger.info(f"Additional processing of level {level}: {retry_result}")
+            
             # PHASE 4: VECTOR GENERATION PHASE
             # ===============================
             logger.info("==================================================")
@@ -1472,6 +1495,37 @@ class KnowledgeOrchestrator:
                 "message": str(e),
                 "data": {}
             }
+    
+    def _check_for_remaining_pending_urls(self, max_depth: int = 4) -> int:
+        """
+        Check for any remaining pending URLs across all levels.
+        
+        Args:
+            max_depth: Maximum depth level to check
+            
+        Returns:
+            Total count of pending URLs found
+        """
+        from scripts.analysis.url_storage import URLStorageManager
+        processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
+        url_storage = URLStorageManager(processed_urls_file)
+        
+        total_pending = 0
+        pending_by_level = {}
+        
+        # Check each level for pending URLs - use max_urls=0 to get ALL pending URLs
+        for level in range(1, max_depth + 1):
+            pending_urls = url_storage.get_pending_urls(max_urls=0, depth=level)
+            if pending_urls:
+                count = len(pending_urls)
+                pending_by_level[level] = count
+                total_pending += count
+        
+        if total_pending > 0:
+            level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items())])
+            logger.warning(f"Found {total_pending} pending URLs remaining: {level_info}")
+        
+        return total_pending
 
 # Standalone function for easy import
 async def process_knowledge_base(data_folder=None, request_app_state=None, **kwargs):
