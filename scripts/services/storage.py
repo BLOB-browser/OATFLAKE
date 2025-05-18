@@ -40,8 +40,8 @@ class DataSaver:
             csv_file = data_path / "definitions.csv"
             is_new_file = not csv_file.exists()
 
-            # Prepare CSV fields
-            fields = ['term', 'definition', 'tags', 'source', 'created_at']
+            # Prepare CSV fields - using new field names (title/description)
+            fields = ['title', 'description', 'tags', 'source', 'created_at']
 
             # Add all definitions
             for definition_item in definitions_to_save:
@@ -50,8 +50,12 @@ class DataSaver:
                     logger.warning(f"Skipping invalid definition (not a dict): {type(definition_item)}")
                     continue
 
-                if not definition_item.get('term') or not definition_item.get('definition'):
-                    logger.warning(f"Skipping incomplete definition: {definition_item.get('term', 'Unknown')}")
+                # Check for title/description first, then fall back to term/definition
+                title = definition_item.get('title', definition_item.get('term', ''))
+                description = definition_item.get('description', definition_item.get('definition', ''))
+                
+                if not title or not description:
+                    logger.warning(f"Skipping incomplete definition: {title or 'Unknown'}")
                     continue
 
                 # Prepare row data with proper tag handling
@@ -60,8 +64,8 @@ class DataSaver:
                 tags_str = tags if isinstance(tags, str) else ','.join(tags) if isinstance(tags, list) else ''
 
                 row = {
-                    'term': definition_item.get('term', ''),
-                    'definition': definition_item.get('definition', ''),
+                    'title': title,
+                    'description': description,
                     'tags': tags_str,
                     'source': definition_item.get('source', ''),
                     'created_at': definition_item.get('created_at') or datetime.now().isoformat()
@@ -79,7 +83,7 @@ class DataSaver:
                             is_new_file = False
 
                         writer.writerow(row)
-                        logger.info(f"Definition saved to CSV: {row['term']} (may be duplicate)")
+                        logger.info(f"Definition saved to CSV: {row['title']} (may be duplicate)")
                 except Exception as row_error:
                     logger.error(f"Error saving definition row: {row_error}")
 

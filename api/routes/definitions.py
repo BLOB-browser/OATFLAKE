@@ -56,7 +56,7 @@ async def list_definitions():
                 "status": "success",
                 "data": {
                     "rows": [],
-                    "columns": ["term", "definition", "tags", "source", "created_at"],
+                    "columns": ["title", "description", "tags", "source", "created_at"],
                     "stats": {"total_count": 0}
                 }
             }

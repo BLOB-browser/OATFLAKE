@@ -5,8 +5,8 @@ import uuid
 
 class Definition(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    term: str  # Title equivalent for definitions
-    definition: str  # Description equivalent for definitions
+    title: str  # Preferred field for definition titles (formerly "term")
+    description: str  # Preferred field for definition content (formerly "definition")
     content_type: str = "definition"  # Type of content
     origin_url: Optional[str] = None  # Primary source URL for the content
     tags: List[str] = []  # Array of keywords or tags
@@ -24,6 +24,8 @@ class Definition(BaseModel):
     # Fields for backward compatibility
     source: Optional[str] = None
     resource_url: Optional[str] = None
+    term: Optional[str] = None  # For backward compatibility with older definitions
+    definition: Optional[str] = None  # For backward compatibility with older definitions
     
     @validator('content_type')
     def validate_content_type(cls, v):

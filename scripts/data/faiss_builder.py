@@ -138,9 +138,13 @@ class FAISSBuilder:
         try:
             # Get default vector store path
             vector_path = self.vectors_path / "default"
+            
+            # Create directory if it doesn't exist
             if not vector_path.exists():
-                logger.warning(f"Vector store path not found: {vector_path}")
-                return {"status": "error", "message": "Vector store path not found"}
+                logger.warning(f"Vector store path not found: {vector_path}, creating it")
+                vector_path.mkdir(parents=True, exist_ok=True)
+                return {"status": "success", "message": "Vector store directory created but no stores to rebuild", 
+                        "stores_rebuilt": [], "document_counts": {}, "total_documents": 0}
             
             # Find all stores
             store_paths = [p for p in vector_path.iterdir() if p.is_dir()]
@@ -206,6 +210,7 @@ class FAISSBuilder:
                             stats_data["rebuilt_at"] = datetime.now().isoformat()
                             stats_data["updated_at"] = datetime.now().isoformat()
                             stats_data["embedding_count"] = len(embeddings_list)
+                            stats_data["chunk_count"] = len(texts)  # Ensure chunk_count is set correctly
                             
                             with open(store_path / "embedding_stats.json", 'w') as f:
                                 json.dump(stats_data, f, indent=2)

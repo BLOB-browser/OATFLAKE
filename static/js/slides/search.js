@@ -8,7 +8,7 @@ const SearchSlide = (() => {
         <div class="h-full flex flex-col p-0 overflow-hidden w-full">
             <!-- Search Container - similar to your previous frontend -->
             <div class="min-h-[60vh] mb-4 md:mb-6 w-full">
-                <div class="bg-black min-h-[60vh] md:min-h-[70vh] border-stone-800 border-2 rounded-3xl content-center h-full w-full" id="searchBoxContainer">
+                <div class="bg-black min-h-[60vh] md:min-h-[70vh] content-center h-full w-full" id="searchBoxContainer">
                     <!-- search-box will be added here directly -->
                 </div>
             </div>

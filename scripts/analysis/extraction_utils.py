@@ -311,8 +311,10 @@ class ExtractionUtils:
                                     # Create a Definition object with all the required fields
                                     definition_model = Definition(
                                         id=str(uuid.uuid4()),
-                                        term=term,
-                                        definition=definition,
+                                        title=term,  # Use title instead of term
+                                        description=definition,  # Use description instead of definition
+                                        term=term,  # Keep term for backward compatibility
+                                        definition=definition,  # Keep definition for backward compatibility
                                         content_type="definition",
                                         tags=tags_list,
                                         source=url,

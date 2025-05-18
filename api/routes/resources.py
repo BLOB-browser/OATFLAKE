@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from utils.config import BACKEND_CONFIG
 
-router = APIRouter(prefix="/data/resources", tags=["resources"])
+router = APIRouter(prefix="/resources", tags=["resources"])
 logger = logging.getLogger(__name__)
 
 @router.post("")
@@ -71,11 +71,17 @@ async def create_resource(resource: Resource, request: Request):
 async def list_resources(request: Request):
     """List all resources"""
     try:
+        # Add more debug logging
+        logger.info("Processing resources/list request")
+        
         # Authentication check removed
         data_path = Path(BACKEND_CONFIG['data_path'])
         resources_path = data_path / "resources.csv"
         
+        logger.info(f"Looking for resources file at {resources_path}")
+        
         if not resources_path.exists():
+            logger.warning(f"Resources file not found at {resources_path}")
             return {
                 "status": "success",
                 "data": {
@@ -85,35 +91,48 @@ async def list_resources(request: Request):
                     "stats": {"total_count": 0}
                 }
             }
+        
+        logger.info(f"Found resources file, loading data")
             
-        df = pd.read_csv(resources_path)
-        df = df.replace({pd.NA: None, float('nan'): None, np.nan: None})
+        # Use a much simpler approach - read everything as strings
+        df = pd.read_csv(resources_path, dtype=str)
         
-        # Create a copy of the tags column before processing to avoid modifying the original
+        # Convert NaN to None
+        df = df.replace({np.nan: None})
+        
+        # Very simple approach to process tags
         if 'tags' in df.columns:
-            # Process tags column - handle strings, lists, and empty values
-            df['tags'] = df['tags'].apply(lambda x: 
-                ([] if pd.isna(x) or x is None or x == '' else
-                 x.split(',') if isinstance(x, str) else
-                 x if isinstance(x, list) else [])
-            )
-        else:
-            # If no tags column, add an empty one
-            df['tags'] = [[]] * len(df)
-        
-        # Convert to records and ensure all values are JSON serializable
-        records = []
-        for record in df.to_dict('records'):
-            # Ensure all values in the record are JSON serializable
-            clean_record = {}
-            for key, value in record.items():
-                if pd.isna(value):
-                    clean_record[key] = None
-                elif isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-                    clean_record[key] = None
+            # Process the tags column manually with a list comprehension
+            tags_list = []
+            for tag in df['tags']:
+                if tag is None or str(tag).strip() == '':
+                    tags_list.append([])
                 else:
-                    clean_record[key] = value
-            records.append(clean_record)
+                    # Split by comma and strip whitespace
+                    tags_list.append([t.strip() for t in str(tag).split(',') if t.strip()])
+            
+            # Replace the column
+            df['tags'] = tags_list
+        else:
+            df['tags'] = [[] for _ in range(len(df))]
+        
+        # Convert to records - simple approach
+        records = []
+        for _, row in df.iterrows():
+            record = {}
+            for col in df.columns:
+                val = row[col]
+                # Handle special list columns that might be string representations of lists
+                if col not in ['tags'] and isinstance(val, str) and val.startswith('[') and val.endswith(']'):
+                    try:
+                        record[col] = eval(val)
+                    except:
+                        record[col] = val
+                else:
+                    record[col] = val
+            records.append(record)
+        
+        logger.info(f"Successfully processed {len(records)} resources")
         
         return {
             "status": "success",
@@ -131,6 +150,7 @@ async def list_resources(request: Request):
         
     except Exception as e:
         logger.error(f"Error listing resources: {e}")
+        logger.exception("Stack trace:")  # Log stack trace for debugging
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/debug")

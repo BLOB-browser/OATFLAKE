@@ -133,6 +133,11 @@ async def process_knowledge_base(
     7. Extract goals from vector stores
     8. Generate questions from the processed knowledge
     
+    Data Format Notes:
+    - Definitions CSV should have 'title' and 'description' columns (preferred) or 'term' and 'definition'
+    - Projects CSV should have 'title', 'description', and 'goals' columns
+    - Methods CSV should have 'name', 'description', and 'steps' columns
+    
     Processing Triggers:
     - Manual trigger from frontend UI (via direct API call)
     - Force update parameter (overrides change detection)
