@@ -705,6 +705,16 @@ class KnowledgeOrchestrator:
                     
                 result["next_level"] = next_level
                 logger.info(f"Auto-advancing level: Current level {process_level} -> Next level {next_level}")
+                
+                # Update the current_process_level in config.json
+                try:
+                    from scripts.services.training_scheduler import update_process_level
+                    if update_process_level(next_level):
+                        logger.info(f"Successfully updated current_process_level to {next_level} in config.json")
+                    else:
+                        logger.warning(f"Failed to update current_process_level in config.json")
+                except Exception as e:
+                    logger.error(f"Error updating current_process_level in config.json: {e}")
             
             # Reset processing flag temporarily
             self.processing_active = False
