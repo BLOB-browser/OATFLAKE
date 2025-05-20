@@ -120,13 +120,12 @@ def discover_urls_for_level(
                     # Save URLs to pending for the target level
                     added_count = 0
                     for found_url in found_urls:
-                        # Skip already processed URLs
-                        if not url_storage.url_is_processed(found_url):
-                            # Check if it's already in pending URLs
-                            pending_urls = url_storage.get_pending_urls(depth=target_level)
-                            if not any(p.get('url') == found_url for p in pending_urls):
-                                url_storage.save_pending_url(found_url, depth=target_level, origin=url)
-                                added_count += 1
+                        # MODIFIED: Remove check for already processed URLs
+                        # Only check if it's already in pending URLs to avoid duplicates
+                        pending_urls = url_storage.get_pending_urls(depth=target_level)
+                        if not any(p.get('url') == found_url for p in pending_urls):
+                            url_storage.save_pending_url(found_url, depth=target_level, origin=url)
+                            added_count += 1
                     
                     stats["urls_discovered"] += added_count
                     stats["successful_sources"] += 1

@@ -35,8 +35,17 @@ class URLStorageManager:
             "resource_urls.csv"
         )
         
+        # The main resources file (this is what we're adding/fixing)
+        self.resources_file = os.path.join(
+            os.path.dirname(self.processed_urls_file),
+            "resources.csv"
+        )
+        
         # Cache for URLs that have completed discovery 
         self._discovery_completed_cache = set()
+        
+        # Cache for pending URLs - mapping of URL to metadata for quick checks
+        self._pending_urls_cache = {}
         
         # Cache for resource URLs - maps resource ID to set of discovered URLs
         self._resource_urls_cache = {}
@@ -100,6 +109,9 @@ class URLStorageManager:
         
         # Load resource URL mappings
         self.load_resource_urls()
+        
+        # Load pending URLs cache for quick lookups
+        self.load_pending_urls_cache()
     
     def load_processed_urls(self) -> Set[str]:
         """Load processed URLs from the CSV file.
@@ -149,6 +161,48 @@ class URLStorageManager:
         logger.info(f"URL cache initialized with {len(self._processed_urls_cache)} URLs")
         return processed_urls
     
+    def load_pending_urls_cache(self) -> Dict[str, Dict[str, Any]]:
+        """Load pending URLs into memory cache for quick access.
+        
+        Returns:
+            Dictionary mapping URLs to their metadata
+        """
+        pending_urls = {}
+        
+        if os.path.exists(self.pending_urls_file):
+            try:
+                logger.info(f"Loading pending URLs into cache from: {self.pending_urls_file}")
+                with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                    reader = csv.reader(file)
+                    header = next(reader, None)  # Skip header
+                    
+                    for row in reader:
+                        if row and len(row) > 0:  # Make sure row has data
+                            url = row[0]
+                            depth = int(row[1]) if len(row) > 1 and row[1].isdigit() else 0
+                            origin = row[2] if len(row) > 2 else ""
+                            timestamp = row[3] if len(row) > 3 else ""
+                            attempt_count = int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
+                            resource_id = row[5] if len(row) > 5 else ""
+                            
+                            # Skip if already processed, no point keeping in pending cache
+                            if url in self._processed_urls_cache:
+                                continue
+                                
+                            pending_urls[url] = {
+                                "depth": depth,
+                                "origin": origin,
+                                "timestamp": timestamp,
+                                "attempt_count": attempt_count,
+                                "resource_id": resource_id
+                            }
+                logger.info(f"Loaded {len(pending_urls)} pending URLs into cache")
+            except Exception as e:
+                logger.error(f"Error loading pending URLs cache: {e}")
+        
+        self._pending_urls_cache = pending_urls
+        return pending_urls
+    
     def save_processed_url(self, url: str, depth: int = 0, origin: str = "", discovery_only: bool = False, error: bool = False) -> bool:
         """Save a processed URL to the CSV file with depth and origin information.
         
@@ -196,11 +250,19 @@ class URLStorageManager:
             # Store in memory cache as well
             if not hasattr(self, 'url_metadata'):
                 self.url_metadata = {}
-            self.url_metadata[url] = {"depth": depth, "origin": origin, "timestamp": timestamp}
+            self.url_metadata[url] = {"depth": depth, "origin": origin, "timestamp": timestamp, "error": error}
             
             # IMPORTANT: Also add to the in-memory processed_urls set
             self._processed_urls_cache.add(url)
             logger.info(f"Added URL to in-memory processed URLs cache (now has {len(self._processed_urls_cache)} URLs)")
+            
+            # IMPORTANT: Also remove from pending URLs cache if it exists there
+            if url in self._pending_urls_cache:
+                del self._pending_urls_cache[url]
+                logger.info(f"Removed URL from pending URLs cache: {url}")
+            
+            # Also remove from pending URLs file if it exists there
+            self.remove_pending_url(url)
             
             return True
             
@@ -237,6 +299,51 @@ class URLStorageManager:
             self.load_processed_urls()
             
         return url in self._processed_urls_cache
+    
+    def url_is_pending(self, url: str) -> bool:
+        """Check if a URL is in the pending queue
+        
+        Args:
+            url: URL to check
+            
+        Returns:
+            True if the URL is in the pending queue
+        """
+        # If not in memory cache, check if we need to reload the cache
+        if not self._pending_urls_cache and os.path.exists(self.pending_urls_file):
+            self.load_pending_urls_cache()
+            
+        # First check memory cache for efficiency
+        if url in self._pending_urls_cache:
+            return True
+            
+        # For safety, also check the file directly
+        if os.path.exists(self.pending_urls_file):
+            try:
+                with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                    reader = csv.reader(file)
+                    next(reader, None)  # Skip header
+                    for row in reader:
+                        if row and row[0] == url:
+                            # Add to cache for future lookups
+                            depth = int(row[1]) if len(row) > 1 and row[1].isdigit() else 0
+                            origin = row[2] if len(row) > 2 else ""
+                            timestamp = row[3] if len(row) > 3 else ""
+                            attempt_count = int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
+                            resource_id = row[5] if len(row) > 5 else ""
+                            
+                            self._pending_urls_cache[url] = {
+                                "depth": depth,
+                                "origin": origin,
+                                "timestamp": timestamp,
+                                "attempt_count": attempt_count,
+                                "resource_id": resource_id
+                            }
+                            return True
+            except Exception as e:
+                logger.error(f"Error checking if URL is pending: {e}")
+                
+        return False
     
     def get_processed_urls(self) -> Set[str]:
         """Get all processed URLs
@@ -294,6 +401,46 @@ class URLStorageManager:
         """
         resource_urls = {}
         
+        # FIRST CHECK THE MAIN RESOURCES FILE
+        # This is the fix - look for resources.csv first
+        if os.path.exists(self.resources_file):
+            try:
+                logger.info(f"Loading resources from main resources file: {self.resources_file}")
+                with open(self.resources_file, mode='r', encoding='utf-8') as file:
+                    reader = csv.reader(file)
+                    header = next(reader, None)  # Skip header
+                    
+                    # Find the URL column index
+                    url_index = 0
+                    title_index = 0
+                    if header:
+                        try:
+                            url_index = header.index("url")
+                            title_index = header.index("title") if "title" in header else 0
+                        except ValueError:
+                            url_index = 0  # Default to first column
+                            
+                    resource_count = 0
+                    for idx, row in enumerate(reader):
+                        if row and len(row) > url_index and row[url_index]:
+                            resource_id = str(idx)  # Use index as resource ID
+                            url = row[url_index]
+                            
+                            # Create a resource entry if URL is valid
+                            if url and "://" in url:
+                                if resource_id not in resource_urls:
+                                    resource_urls[resource_id] = set()
+                                    
+                                resource_urls[resource_id].add(url)
+                                resource_count += 1
+                    
+                    logger.info(f"Loaded {resource_count} resource URLs from {len(resource_urls)} resources in main resources file")
+                    
+            except Exception as e:
+                logger.error(f"Error loading resources from main file: {e}")
+        
+        # THEN ALSO CHECK THE RESOURCE_URLS FILE FOR BACKWARD COMPATIBILITY
+        # This ensures we don't lose any existing mappings
         if os.path.exists(self.resource_urls_file):
             try:
                 logger.info(f"Loading resource URL mappings from: {self.resource_urls_file}")
@@ -311,7 +458,7 @@ class URLStorageManager:
                                 
                             resource_urls[resource_id].add(url)
                             
-                logger.info(f"Loaded URL mappings for {len(resource_urls)} resources")
+                logger.info(f"Additionally loaded URL mappings for {len(resource_urls)} resources from resource_urls.csv")
             except Exception as e:
                 logger.error(f"Error loading resource URL mappings: {e}")
                 
@@ -405,13 +552,39 @@ class URLStorageManager:
             elif self.url_is_processed(url) and self.allow_processed_url_rediscovery:
                 logger.info(f"URL {url} is already processed, but rediscovery is allowed. Adding to pending.")
                 
-            # Next, check if the URL is already in the pending list
-            # by reading the pending URLs file
+            # Check if already in pending cache
             current_attempt_count = attempt_count
             already_pending = False
             current_resource_id = resource_id
             
-            if os.path.exists(self.pending_urls_file):
+            if url in self._pending_urls_cache:
+                # URL is already in pending cache
+                already_pending = True
+                cached_data = self._pending_urls_cache[url]
+                current_attempt_count = cached_data.get("attempt_count", 0)
+                current_resource_id = cached_data.get("resource_id", "")
+                
+                # If we're explicitly trying to increment the attempt count or update resource ID, do it
+                if attempt_count > current_attempt_count or (resource_id and resource_id != current_resource_id):
+                    # We need to update this URL, so we'll do that by removing and re-adding
+                    self._pending_urls_cache[url]["attempt_count"] = attempt_count if attempt_count > current_attempt_count else current_attempt_count
+                    if resource_id:
+                        self._pending_urls_cache[url]["resource_id"] = resource_id
+                    
+                    # Also update in file
+                    self.remove_pending_url(url)
+                    already_pending = False
+                    current_attempt_count = attempt_count if attempt_count > current_attempt_count else current_attempt_count
+                    if resource_id:  # Only update resource_id if a new one is provided
+                        current_resource_id = resource_id
+                    logger.info(f"Updating URL {url} attempt count to {attempt_count}, resource={current_resource_id}")
+                else:
+                    # No need to update, keep as is
+                    return True
+            
+            # Next, if not in cache, check if the URL is already in the pending list
+            # by reading the pending URLs file (backup check)
+            if not already_pending and os.path.exists(self.pending_urls_file):
                 try:
                     with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
                         reader = csv.reader(file)
@@ -461,6 +634,15 @@ class URLStorageManager:
                 file.flush()
                 os.fsync(file.fileno())  # Force write to disk
             
+            # Also update the cache
+            self._pending_urls_cache[url] = {
+                "depth": depth,
+                "origin": origin,
+                "timestamp": timestamp,
+                "attempt_count": current_attempt_count,
+                "resource_id": current_resource_id
+            }
+            
             # If we have a resource ID, save the association
             if current_resource_id:
                 self.save_resource_url(current_resource_id, url, depth)
@@ -488,6 +670,48 @@ class URLStorageManager:
             logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
             return pending_urls
         
+        # First check if we need to reload the cache
+        if not self._pending_urls_cache:
+            self.load_pending_urls_cache()
+            
+        # If we have a populated cache, use it for better performance
+        if self._pending_urls_cache:
+            for url, data in self._pending_urls_cache.items():
+                # Skip if this URL has already been processed
+                if self.url_is_processed(url):
+                    continue
+                
+                # Filter by depth if specified
+                url_depth = data.get("depth", 0)
+                if depth is not None and url_depth != depth:
+                    continue
+                    
+                # Filter by resource ID if specified
+                url_resource_id = data.get("resource_id", "")
+                if resource_id is not None and url_resource_id != resource_id:
+                    continue
+                
+                pending_urls.append({
+                    "url": url,
+                    "depth": url_depth,
+                    "origin": data.get("origin", ""),
+                    "attempt_count": data.get("attempt_count", 0),
+                    "resource_id": url_resource_id
+                })
+                
+                # Stop if we've reached the maximum (only if max_urls > 0)
+                if max_urls > 0 and len(pending_urls) >= max_urls:
+                    logger.info(f"Reached max_urls limit of {max_urls}, more URLs may be pending")
+                    break
+                    
+            if resource_id:
+                logger.info(f"Retrieved {len(pending_urls)} pending URLs for resource {resource_id} from cache")
+            else:
+                logger.info(f"Retrieved {len(pending_urls)} pending URLs from cache")
+                
+            return pending_urls
+
+        # If cache is empty or has issues, fall back to reading directly from file
         try:
             # Read the CSV file
             with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
@@ -549,15 +773,26 @@ class URLStorageManager:
             
     def remove_pending_url(self, url: str) -> bool:
         """Remove a URL from the pending URLs file after it's been processed
+        
+        Args:
+            url: The URL to remove from the pending list
+            
+        Returns:
             Success flag
         """
+        # First check if URL is in the pending cache
+        if url in self._pending_urls_cache:
+            # Remove from cache
+            del self._pending_urls_cache[url]
+            logger.info(f"Removed URL from pending cache: {url}")
+        
         if not os.path.exists(self.pending_urls_file):
             logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
             return False
         
         try:
             # Add detailed debug logging
-            logger.info(f"DEBUG URL STORAGE: Removing URL {url} from pending URLs file: {self.pending_urls_file}")
+            logger.info(f"REMOVING URL FROM PENDING FILE: {url}")
             
             # Read all URLs from the file
             pending_urls = []
@@ -571,20 +806,33 @@ class URLStorageManager:
                 for row in reader:
                     if len(row) >= 1 and row[0] == url:
                         url_found = True
-                        logger.info(f"DEBUG URL STORAGE: Found URL {url} to remove at row: {row}")
-                        continue
+                        logger.info(f"Found URL to remove: {url}")
+                        continue  # Skip this row (don't add to pending_urls)
                     pending_urls.append(row)
             
-            # If the URL wasn't found, there's nothing to do
+            # If the URL wasn't found, log it but continue with the function
             if not url_found:
-                logger.warning(f"DEBUG URL STORAGE: URL {url} not found in pending URLs file")
-                return False
+                logger.warning(f"URL not found in pending URLs file: {url}")
+                # Return True anyway since the URL is not in the pending list
+                return True
             
             # Write the remaining URLs back to the file
             with open(self.pending_urls_file, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
-                writer.writerow(["url", "depth", "origin", "discovery_timestamp"])  # Write header
+                
+                # Make sure to write the header
+                if header:
+                    writer.writerow(header)
+                else:
+                    # If header wasn't found, write a default one
+                    writer.writerow(["url", "depth", "origin", "discovery_timestamp", "attempt_count", "resource_id"])
+                
+                # Write all rows except the one we removed
                 writer.writerows(pending_urls)
+                
+                # Force write to disk
+                file.flush()
+                os.fsync(file.fileno())
             
             # Verify the file was updated
             pending_count_after = 0
@@ -595,15 +843,15 @@ class URLStorageManager:
                     for _ in reader:
                         pending_count_after += 1
                         
-                logger.info(f"DEBUG URL STORAGE: After removal, pending URLs file has {pending_count_after} URLs")
+                logger.info(f"After removal, pending URLs file has {pending_count_after} URLs")
             except Exception as check_err:
-                logger.error(f"DEBUG URL STORAGE: Error verifying pending URLs count: {check_err}")
+                logger.error(f"Error verifying pending URLs count: {check_err}")
             
-            logger.info(f"DEBUG URL STORAGE: Successfully removed URL {url} from pending URLs file")
+            logger.info(f"Successfully removed URL from pending URLs file: {url}")
             return True
             
         except Exception as e:
-            logger.error(f"DEBUG URL STORAGE: Error removing pending URL {url}: {e}")
+            logger.error(f"Error removing pending URL {url}: {e}")
             return False
         
     def save_discovery_status(self, url, completed=True):
@@ -663,8 +911,7 @@ class URLStorageManager:
                     return True
                 except Exception as e:
                     logger.error(f"Error removing URL from discovery status file: {e}")
-                    return False
-            
+                    return False            
             # Check if URL is already in discovery_status
             if url in self._discovery_completed_cache:
                 return True  # Already marked as discovered
@@ -757,15 +1004,32 @@ class URLStorageManager:
         Returns:
             Success flag
         """
-        # Read all pending URLs
-        pending_urls = []
-        updated = False
-        
+        # Check if URL is in memory cache first
+        if url in self._pending_urls_cache:
+            current_attempt = self._pending_urls_cache[url].get("attempt_count", 0)
+            self._pending_urls_cache[url]["attempt_count"] = current_attempt + 1
+            logger.info(f"Incremented attempt count in cache for {url} to {current_attempt + 1}")
+            
+            # Now update the file
+            self.save_pending_url(
+                url=url,
+                depth=self._pending_urls_cache[url].get("depth", 0),
+                origin=self._pending_urls_cache[url].get("origin", ""),
+                attempt_count=current_attempt + 1,
+                resource_id=self._pending_urls_cache[url].get("resource_id", "")
+            )
+            return True
+            
+        # Fall back to file-based update if not in cache
         if not os.path.exists(self.pending_urls_file):
             logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
             return False
         
         try:
+            # Read all pending URLs
+            pending_urls = []
+            updated = False
+            
             # Read the current state
             with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
                 reader = csv.reader(file)
@@ -783,6 +1047,19 @@ class URLStorageManager:
                             # Update attempt count
                             row[4] = str(current_attempt + 1)
                             updated = True
+                            
+                            # Also update cache
+                            if url not in self._pending_urls_cache:
+                                self._pending_urls_cache[url] = {
+                                    "depth": int(row[1]) if row[1].isdigit() else 0,
+                                    "origin": row[2] if len(row) > 2 else "",
+                                    "timestamp": row[3] if len(row) > 3 else "",
+                                    "attempt_count": current_attempt + 1,
+                                    "resource_id": row[5] if len(row) > 5 else ""
+                                }
+                            else:
+                                self._pending_urls_cache[url]["attempt_count"] = current_attempt + 1
+                                
                             logger.info(f"Incremented attempt count for {url} to {current_attempt + 1}")
                     
                     pending_urls.append(row)
@@ -802,3 +1079,163 @@ class URLStorageManager:
         except Exception as e:
             logger.error(f"Error incrementing attempt count for URL {url}: {e}")
             return False
+
+    def mark_level_as_processed(self, level: int) -> Dict[str, Any]:
+        """Mark all pending URLs at a specific level as processed when advancing to the next level.
+        
+        This ensures that when we move to a deeper level, we don't keep trying to process
+        URLs from previous levels that might be stuck in the pending queue.
+        
+        Args:
+            level: The level to mark as completely processed
+            
+        Returns:
+            Stats about how many URLs were marked as processed
+        """
+        # First get all pending URLs at this level
+        pending_urls = self.get_pending_urls(depth=level)
+        
+        if not pending_urls:
+            logger.info(f"No pending URLs found at level {level} to mark as processed")
+            return {
+                "level": level,
+                "urls_processed": 0,
+                "success": True
+            }
+        
+        logger.info(f"Marking {len(pending_urls)} pending URLs at level {level} as processed before advancing")
+        
+        # Count of URLs successfully processed
+        processed_count = 0
+        
+        # Process each URL
+        for url_data in pending_urls:
+            url = url_data.get("url")
+            depth = url_data.get("depth", level)
+            origin = url_data.get("origin", "")
+            
+            # Mark the URL as processed but with error=True since we're force-completing it
+            if self.save_processed_url(url, depth=depth, origin=origin, error=True):
+                # Remove from pending queue
+                self.remove_pending_url(url)
+                processed_count += 1
+        
+        logger.info(f"Successfully marked {processed_count}/{len(pending_urls)} URLs at level {level} as processed")
+        
+        return {
+            "level": level,
+            "urls_processed": processed_count,
+            "total_urls": len(pending_urls),
+            "success": processed_count > 0
+        }
+
+    def get_pending_urls_by_level(self) -> Dict[int, int]:
+        """Get counts of pending URLs grouped by level.
+        
+        Returns:
+            Dictionary with level numbers as keys and pending URL counts as values
+        """
+        # First check if we need to reload the cache
+        if not self._pending_urls_cache and os.path.exists(self.pending_urls_file):
+            self.load_pending_urls_cache()
+            
+        level_counts = {}
+        
+        # If we have a populated cache, use it for better performance
+        if self._pending_urls_cache:
+            for url, data in self._pending_urls_cache.items():
+                # Skip if this URL has already been processed
+                if self.url_is_processed(url):
+                    continue
+                    
+                depth = data.get("depth", 0)
+                if depth not in level_counts:
+                    level_counts[depth] = 0
+                    
+                level_counts[depth] += 1
+                
+            logger.info(f"Found pending URLs by level (from cache): {level_counts}")
+            return level_counts
+        
+        # Fall back to file-based counting if cache is empty
+        if not os.path.exists(self.pending_urls_file):
+            logger.warning(f"Pending URLs file doesn't exist: {self.pending_urls_file}")
+            return level_counts
+        
+        try:
+            # Read the CSV file
+            with open(self.pending_urls_file, mode='r', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                header = next(reader, None)  # Skip header
+                
+                # Process each row
+                for row in reader:
+                    if len(row) >= 2 and row[1].isdigit():
+                        depth = int(row[1])
+                        url = row[0]
+                        
+                        # Skip if this URL has already been processed
+                        if self.url_is_processed(url):
+                            continue
+                        
+                        # Increment count for this level
+                        if depth not in level_counts:
+                            level_counts[depth] = 0
+                            
+                        level_counts[depth] += 1
+                
+            logger.info(f"Found pending URLs by level (from file): {level_counts}")
+            return level_counts
+            
+        except Exception as e:
+            logger.error(f"Error getting pending URLs by level: {e}")
+            return level_counts
+
+    def get_processed_urls_by_level(self, level: int) -> List[Dict[str, Any]]:
+        """Retrieves all processed URLs at a specific crawling level.
+        
+        Args:
+            level (int): The crawling level to get processed URLs for.
+            
+        Returns:
+            List[Dict[str, Any]]: A list of URL data dictionaries that have been processed at the specified level.
+        """
+        processed_urls_at_level = []
+        
+        for url, metadata in self.url_metadata.items():
+            if metadata.get("depth") == level:
+                url_data = {
+                    "url": url,
+                    "depth": level,
+                    "origin": metadata.get("origin", ""),
+                    "timestamp": metadata.get("timestamp", ""),
+                    "error": metadata.get("error", False)
+                }
+                processed_urls_at_level.append(url_data)
+        
+        logger.info(f"Found {len(processed_urls_at_level)} processed URLs at level {level}")
+        return processed_urls_at_level
+
+    def clear_pending_cache(self):
+        """Clear the pending URLs cache to force a reload from file."""
+        self._pending_urls_cache = {}
+        logger.info("Cleared pending URLs cache")
+        
+        # Reload from file
+        self.load_pending_urls_cache()
+        logger.info(f"Reloaded pending URLs cache with {len(self._pending_urls_cache)} URLs")
+        
+    def sync_cache_with_file(self):
+        """Synchronize the in-memory cache with the file system."""
+        # Clear caches
+        self._processed_urls_cache = set()
+        self._pending_urls_cache = {}
+        self._discovery_completed_cache = set()
+        
+        # Reload all caches
+        self.load_processed_urls()
+        self.load_pending_urls_cache()
+        
+        logger.info("Synchronized all caches with files")
+        logger.info(f"Processed URLs cache: {len(self._processed_urls_cache)} URLs")
+        logger.info(f"Pending URLs cache: {len(self._pending_urls_cache)} URLs")

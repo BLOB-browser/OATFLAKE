@@ -130,8 +130,7 @@ class SingleResourceProcessor:
             success, page_data = self.content_fetcher.fetch_content(
                 resource_url, 
                 max_depth=max_depth,
-                process_by_level=process_by_level,
-                force_reprocess=False  # Never force reprocessing of already processed URLs
+                process_by_level=process_by_level
             )
             
             if not success:

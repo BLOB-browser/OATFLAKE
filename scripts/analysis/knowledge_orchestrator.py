@@ -3,10 +3,13 @@
 
 import logging
 import os
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
-import json
+import pandas as pd
+from scripts.analysis.url_discovery_manager import URLDiscoveryManager
+from scripts.analysis.vector_generator import VectorGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +29,6 @@ class KnowledgeOrchestrator:
         self.data_folder = data_folder
         self.processing_active = False
         self.cancel_requested = False
-        # Removed force_url_fetch flag  # Default to not forcing URL fetching
         
     def cancel_processing(self) -> Dict[str, Any]:
         """
@@ -97,16 +99,15 @@ class KnowledgeOrchestrator:
         # Set processing flags
         self.processing_active = True
         self.cancel_requested = False
-        self.force_url_fetch = force_url_fetch  # Store the parameter in the class
         
-        # Note: When no changes and no unanalyzed resources are detected, but also no pending URLs exist,
-        # we'll automatically enable force_url_fetch temporarily to ensure URLs are processed again.
-        # This ensures that even in the "no changes" scenario, URLs will still be refetched periodically.
+        # Ensure process_level is valid (must be >= 1)
+        if process_level is not None and process_level < 1:
+            logger.warning(f"Invalid process_level {process_level} specified. Level must be >= 1. Defaulting to level 1.")
+            process_level = 1
         
-        logger.info(f"Starting comprehensive knowledge base processing with force_update={force_update}, force_url_fetch={force_url_fetch}")
+        logger.info(f"Starting comprehensive knowledge base processing with force_update={force_update}")
         
         try:
-            # Initialize result object
             result = {
                 "vector_generation": {},
                 "content_processing": {"status": "skipped"}
@@ -134,7 +135,8 @@ class KnowledgeOrchestrator:
                     "data": result
                 }
             
-            # Always check all resources for URL discovery before beginning analysis
+            # STEP 1: GET PENDING URLS AND DETERMINE IF DISCOVERY IS NEEDED
+            # This is the single decision point for URL discovery
             from scripts.analysis.url_storage import URLStorageManager
             processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
             url_storage = URLStorageManager(processed_urls_file)
@@ -142,549 +144,182 @@ class KnowledgeOrchestrator:
             # Get counts of pending URLs by level
             pending_urls_count = 0
             pending_by_level = {}
-            for level in range(1, max_depth + 1):
+            for level in range(1, max_depth + 1):  # Start from level 1, not 0
                 pending_urls = url_storage.get_pending_urls(depth=level)
                 pending_by_level[level] = len(pending_urls) if pending_urls else 0
-                if pending_urls:
-                    pending_urls_count += len(pending_urls)
+                pending_urls_count += pending_by_level[level]
             
-            # Log the pending URL counts by level
             if pending_urls_count > 0:
                 level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items()) if c > 0])
                 logger.info(f"Found {pending_urls_count} total pending URLs: {level_info}")
             else:
-                logger.info("No pending URLs found in any level. Will trigger URL discovery on all resources.")
-                # Force enable URL discovery when no pending URLs exist
-                # This ensures we always have URLs to process even without explicit force_url_fetch
-                self.force_url_fetch = True
+                logger.info("No pending URLs found. Discovery phase needed.")
             
-            # Only process content if changes detected, force_update is True, or unanalyzed resources exist
-            if process_all_steps or unanalyzed_resources_exist:
-                # STEP 1: Process PDFs and Methods first (highest priority content)
-                if self.cancel_requested:
-                    return {"status": "cancelled", "message": "Processing cancelled", "data": result}
+            # STEP 2: DISCOVERY PHASE - Only if needed (no pending URLs)
+            # The simple check - if no pending URLs, run discovery; otherwise skip it
+            if pending_urls_count == 0:
+                logger.info("==================================================")
+                logger.info("STARTING DISCOVERY PHASE")
+                logger.info("==================================================")
                 
-                from scripts.analysis.critical_content_processor import CriticalContentProcessor
-                critical_processor = CriticalContentProcessor(self.data_folder)
-                critical_content_result = await critical_processor.process_critical_content()
-                result["critical_content"] = critical_content_result
-                
-                # STEP 2: Process markdown files to extract resources
-                if self.cancel_requested:
-                    return {"status": "cancelled", "message": "Processing cancelled", "data": result}
-                
-                from scripts.analysis.markdown_processor_step import MarkdownProcessingStep
-                markdown_processor = MarkdownProcessingStep(self.data_folder)
-                markdown_files = markdown_processor.get_markdown_files()
-                
-                if markdown_files:
-                    # Use "default" for group_id since we don't store in group-specific folders
-                    markdown_result = await markdown_processor.process_markdown_files(
-                        skip_scraping=skip_markdown_scraping,
-                        group_id="default"
-                    )
-                    result["markdown_processing"] = markdown_result
-                else:
-                    logger.info("No markdown files found to process")
-                    result["markdown_processing"] = {"status": "skipped", "data_extracted": {}}
-                
-                # STEP 3: Analyze resources
-                if self.cancel_requested:
-                    return {"status": "cancelled", "message": "Processing cancelled", "data": result}
-                
-                if analyze_resources:
-                    from scripts.analysis.resource_analyzer_step import ResourceAnalyzerStep
-                    resource_analyzer = ResourceAnalyzerStep(self.data_folder)
-                    resource_analysis_result = await resource_analyzer.analyze_resources(
-                        analyze_all=analyze_all_resources,
-                        batch_size=batch_size,
-                        limit=resource_limit,
-                        force_update=force_update
-                    )
-                    result["resource_analysis"] = resource_analysis_result
-                else:
-                    logger.info("Resource analysis disabled by parameter, skipping")
-                    result["resource_analysis"] = {"status": "skipped", "reason": "analyze_resources=False"}
-                
-                # Only continue with other steps if full processing is needed
-                if process_all_steps:
-                    # STEP 4: Process remaining knowledge base documents
-                    if self.cancel_requested:
-                        return {"status": "cancelled", "message": "Processing cancelled", "data": result}
-                    
-                    from scripts.analysis.knowledge_base_processor import KnowledgeBaseProcessor
-                    kb_processor = KnowledgeBaseProcessor(self.data_folder)
-                    knowledge_result = await kb_processor.process_remaining_knowledge(force_update=force_update)
-                    result.update(knowledge_result)
-                
-                # After processing all content, update result
-                result["content_processing"] = {"status": "success"}
-            
-            # STEP 4: Process resources with clear separation of discovery and analysis phases
-            if not self.cancel_requested:
-                # Import required components
-                from scripts.analysis.single_resource_processor import SingleResourceProcessor
-                from scripts.analysis.url_storage import URLStorageManager
-                from scripts.analysis.content_fetcher import ContentFetcher
-                import pandas as pd
-                
-                # Initialize components
-                single_processor = SingleResourceProcessor(self.data_folder)
-                content_fetcher = ContentFetcher()
+                # Check if resources.csv exists before trying discovery
                 resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
-                processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
-                url_storage = URLStorageManager(processed_urls_file)
-                
-                # If force_url_fetch is enabled, set it in the SingleResourceProcessor
-                if self.force_url_fetch:
-                    logger.info(f"Setting force_fetch=True in SingleResourceProcessor")
-                    single_processor.force_fetch = True
-                
-                # Initialize results
-                processed_resources = 0
-                processed_urls_count = 0
-                skipped_resources = 0
-                success_count = 0
-                error_count = 0
-                discovered_urls = 0
-                
-                try:
-                    # Load resources from CSV
-                    if os.path.exists(resources_csv_path):
-                        resources_df = pd.read_csv(resources_csv_path)
-                        
-                        # Only process resources that have a URL
-                        resources_with_url = resources_df[resources_df['url'].notna()]
-                        
-                        # PHASE 1: URL DISCOVERY (only if needed)
-                        # Check if we need to do discovery by checking pending URLs
-                        pending_urls_by_level = {}
-                        total_pending_urls = 0
-                        
-                        # Count pending URLs at each level
-                        for level in range(1, max_depth + 1):
-                            pending_urls = url_storage.get_pending_urls(depth=level)
-                            pending_urls_by_level[level] = len(pending_urls)
-                            total_pending_urls += len(pending_urls)
-                        
-                        # Count total pending URLs across all levels
-                        total_pending_count = 0
-                        pending_by_level = {}
-                        
-                        for level in range(1, max_depth + 1):
-                            pending_urls = url_storage.get_pending_urls(depth=level)
-                            count = len(pending_urls) if pending_urls else 0
-                            pending_by_level[level] = count
-                            total_pending_count += count
-                        
-                        # First check if any resources are not fully analyzed
-                        unanalyzed_resources_exists = False
-                        for _, row in resources_with_url.iterrows():
-                            resource = row.to_dict()
-                            if not resource.get('analysis_completed', False):
-                                unanalyzed_resources_exists = True
-                                break
-                                
-                        if not unanalyzed_resources_exists:
-                            # All resources are already fully analyzed - nothing more to do
-                            logger.info(f"STEP 4A: ALL DONE - All resources are fully analyzed at all 4 levels. Nothing more to process.")
-                            # Skip both discovery and analysis phases
-                            return {
-                                "status": "success",
-                                "message": "All resources are fully analyzed at all 4 levels",
-                                "data": {"analysis_status": "complete"}
-                            }
-                
-                        # Check if we have any pending URLs
-                        if total_pending_count > 0:
-                            # We have pending URLs, process them before doing any discovery
-                            level_counts = ", ".join([f"level {l}: {c}" for l, c in pending_by_level.items() if c > 0])
-                            logger.info(f"STEP 4A: SKIPPING DISCOVERY - Found {total_pending_count} pending URLs ({level_counts}), processing these first")
-                            
-                            # Skip discovery phase entirely and jump directly to URL processing
-                            logger.info(f"Proceeding directly to analysis phase to process {total_pending_count} pending URLs")
-                            # We'll skip the discovery section and go directly to processing
-                            discovered_urls = 0
-                        else:
-                            # No pending URLs, run discovery to find new ones at deeper levels
-                            logger.info(f"STEP 4A: DISCOVERY PHASE - No pending URLs found, running discovery for all resources up to level {max_depth}")
-                            
-                            # Process each resource for discovery only
-                            for idx, row in resources_with_url.iterrows():
-                                # Check for cancellation
-                                if self.cancel_requested:
-                                    logger.info("Discovery phase cancelled")
-                                    break
-                                    
-                                resource = row.to_dict()
-                                resource_url = resource.get('url', '')
-                                resource_id = f"{idx+1}/{len(resources_with_url)}"
-                                
-                                logger.info(f"[{resource_id}] Discovering URLs for resource: {resource.get('title', 'Unnamed')} - {resource_url}")
-                                
-                                # IMPORTANT: This is STRICTLY discovery only - no analysis should happen
-                                # We want to discover URLs at all levels but never analyze content
-                                logger.info(f"[{resource_id}] RUNNING STRICTLY DISCOVERY-ONLY MODE - Finding new URLs at deeper levels")
-                                
-                                # CRITICAL: We must set force_reprocess=True to ensure we explore deeper URLs
-                                # even when the main URL has been processed!
-                                # We won't reanalyze processed URLs, but we'll use them to find deeper URLs
-                                success, discovery_result = content_fetcher.fetch_content(
-                                    url=resource_url, 
-                                    max_depth=max_depth,
-                                    discovery_only=True,  # This flag ensures we only do discovery
-                                    force_reprocess=True  # We MUST force discovery to find deeper URLs
-                                )
-                                
-                                if success:
-                                    discovered_urls += 1
-                            
-                            # Recount pending URLs after discovery
-                            pending_urls_by_level = {}
-                            total_pending_urls = 0
-                            for level in range(1, max_depth + 1):
-                                pending_urls = url_storage.get_pending_urls(depth=level)
-                                pending_urls_by_level[level] = len(pending_urls)
-                                total_pending_urls += len(pending_urls)
-                            
-                            logger.info(f"Discovery phase complete: {discovered_urls} resources processed, found {total_pending_urls} pending URLs across all levels")
-                            
-                            # Log details about pending URLs by level after discovery
-                            for level, count in pending_urls_by_level.items():
-                                if count > 0:
-                                    logger.info(f"  Level {level}: {count} pending URLs")
-                        
-                        # PHASE 2: CONTENT ANALYSIS
-                        # Make sure discovery is fully complete before starting analysis
-                        logger.info(f"===================================================")
-                        logger.info(f"DISCOVERY PHASE COMPLETE - STARTING ANALYSIS PHASE")
-                        logger.info(f"===================================================")
-                        
-                        # Check if we should process a specific level
-                        if process_level is not None and process_level > 0:
-                            logger.info(f"STEP 4B: ANALYSIS PHASE - PROCESSING ONLY LEVEL {process_level} URLS")
-                            
-                            # Use the enhanced URL processor for level-specific processing
-                            from scripts.analysis.orchestration.url_processor import URLProcessor
-                            url_processor = URLProcessor(self.data_folder)
-                            
-                            # Set the cancellation flag in the URL processor if needed
-                            url_processor.cancel_requested = self.cancel_requested
-                            
-                            logger.info(f"Using URLProcessor to process URLs at level {process_level} with force_fetch={self.force_url_fetch}")
-                            
-                            # Process only the specified level
-                            level_result = url_processor.process_urls_at_level(
-                                level=process_level,
-                                batch_size=batch_size,
-                                force_fetch=self.force_url_fetch
-                            )
-                            
-                            # Log the results
-                            processed_urls_count = level_result.get('processed_urls', 0)
-                            success_count = level_result.get('success_count', 0)
-                            error_count = level_result.get('error_count', 0)
-                            
-                            logger.info(f"Level {process_level} processing complete: {processed_urls_count} URLs processed, {success_count} successful, {error_count} errors")
-                                
-                        else:
-                            # Process level 0 (main resource URLs)
-                            logger.info(f"STEP 4B: ANALYSIS PHASE - PROCESSING MAIN RESOURCE PAGES (LEVEL 0)")
-                            
-                            # Process each resource
-                            for idx, row in resources_with_url.iterrows():
-                                # Check for cancellation
-                                if self.cancel_requested:
-                                    logger.info("Resource processing cancelled")
-                                    break
-                                    
-                                resource = row.to_dict()
-                                resource_url = resource.get('url', '')
-                                resource_id = f"{idx+1}/{len(resources_with_url)}"
-                                
-                                # Check if the resource has already been fully processed
-                                if resource.get('analysis_completed', False):
-                                    logger.info(f"[{resource_id}] Skipping already processed resource: {resource.get('title', 'Unnamed')}")
-                                    skipped_resources += 1
-                                    continue
-                                
-                                # Check if the main URL has already been processed in processed_urls.csv
-                                if url_storage.url_is_processed(resource_url):
-                                    logger.info(f"[{resource_id}] Main URL already in processed_urls.csv, skipping analysis: {resource_url}")
-                                    skipped_resources += 1
-                                    continue
-                                    
-                                logger.info(f"[{resource_id}] Processing resource: {resource.get('title', 'Unnamed')} - {resource_url}")
-                                
-                                # Process only the main resource page (level 0)
-                                resource_result = single_processor.process_resource(
-                                    resource=resource,
-                                    resource_id=resource_id,
-                                    idx=idx,
-                                    csv_path=resources_csv_path,
-                                    max_depth=0,  # Only process level 0
-                                    process_by_level=True  # Enable level-based processing
-                                )
-                                
-                                # Update counts
-                                processed_resources += 1
-                                
-                                if resource_result.get('success', False):
-                                    success_count += 1
-                                else:
-                                    error_count += 1
-                                    logger.error(f"[{resource_id}] Error processing resource: {resource_result.get('error', 'Unknown error')}")
-                                
-                                # Check if vector generation is needed
-                                if single_processor.vector_generation_needed:
-                                    logger.info(f"[{resource_id}] Vector generation needed for this resource")
-                                    
-                            logger.info(f"Main resource processing complete: {processed_resources} processed, {skipped_resources} skipped, {success_count} successful, {error_count} errors")
-                            
-                            # Suggest to continue with level-based processing
-                            logger.info(f"To continue processing deeper levels, run with process_level=1, then process_level=2, etc.")
+                if not os.path.exists(resources_csv_path):
+                    logger.error(f"Resources file not found: {resources_csv_path}")
+                    return {
+                        "status": "error",
+                        "message": f"Resources file not found: {resources_csv_path}",
+                        "data": result
+                    }
+                else:
+                    # Initialize URL discovery manager
+                    url_discovery = URLDiscoveryManager(self.data_folder)
+                    
+                    # Get all resources with URLs
+                    resources_df = pd.read_csv(resources_csv_path)
+                    resources_with_url = resources_df[resources_df['url'].notna()]
+                    
+                    # Log discovery details
+                    logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
+                    
+                    # Trigger discovery using the direct method for better separation of concerns
+                    discovery_result = url_discovery.discover_urls_from_resources_direct(
+                        level=process_level or 1,
+                        max_depth=max_depth
+                    )
+                    
+                    # Log discovery results
+                    if discovery_result.get("status") == "success":
+                        logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
                     else:
-                        logger.warning(f"Resources file not found: {resources_csv_path}")
-                        
-                except Exception as e:
-                    logger.error(f"Error processing resources: {e}")
-                    error_count += 1
+                        logger.warning(f"Discovery status: {discovery_result.get('status')}, reason: {discovery_result.get('reason')}")
+                    
+                    # Add discovery results to the overall result
+                    result["discovery_phase"] = discovery_result
                 
-                # After processing all resources directly, check if there are pending URLs at different levels
-                from scripts.analysis.url_storage import URLStorageManager
-                processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
-                url_storage = URLStorageManager(processed_urls_file)
-                
-                # Get counts of pending URLs by level
+                # After discovery, refresh our pending URLs count
+                pending_urls_count = 0
                 pending_by_level = {}
                 for level in range(1, max_depth + 1):
                     pending_urls = url_storage.get_pending_urls(depth=level)
-                    if pending_urls:
-                        pending_by_level[level] = len(pending_urls)
+                    pending_by_level[level] = len(pending_urls) if pending_urls else 0
+                    pending_urls_count += pending_by_level[level]
                 
-                # Log the pending URL counts by level
-                if pending_by_level:
-                    level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items())])
-                    total_pending = sum(pending_by_level.values())
-                    logger.info(f"Found {total_pending} total pending URLs: {level_info}")
-                    
-                    # Process URLs level by level, starting from the lowest level with pending URLs
-                    next_level_to_process = None
-                    for level in range(1, max_depth + 1):
-                        if level in pending_by_level and pending_by_level[level] > 0:
-                            next_level_to_process = level
-                            break
-                            
-                    if next_level_to_process:
-                        logger.info(f"Processing pending URLs at level {next_level_to_process}")
-                        
-                        # Use the enhanced URL processor to handle pending URLs more efficiently
-                        from scripts.analysis.orchestration.url_processor import URLProcessor
-                        url_processor = URLProcessor(self.data_folder)
-                        
-                        # Set the cancellation flag in the URL processor if needed
-                        url_processor.cancel_requested = self.cancel_requested
-                        
-                        logger.info(f"Using URLProcessor to process URLs by level with force_fetch={self.force_url_fetch}")
-                        analysis_results = url_processor.process_urls_by_levels(
-                            max_depth=max_depth,
-                            batch_size=batch_size,
-                            force_fetch=self.force_url_fetch
-                        )
-                        
-                        # Log the results
-                        logger.info(f"URLProcessor results: {analysis_results}")
-                        logger.info(f"Total URLs processed: {analysis_results.get('total_processed', 0)}")
-                        logger.info(f"Successful: {analysis_results.get('successful', 0)}")
-                        logger.info(f"Failed: {analysis_results.get('failed', 0)}")
-                        
-                        # Process results by level for detailed logging
-                        for level, count in analysis_results.get("processed_by_level", {}).items():
-                            if count > 0:
-                                logger.info(f"Processed {count} URLs at level {level}")
-                    else:
-                        logger.info("No pending URLs found that need processing")
-                else:
-                    # No pending URLs found - check if we need to trigger URL discovery
-                    # Calculate how many resources still need analysis
-                    unanalyzed_resources_count = 0
-                    if os.path.exists(resources_csv_path):
-                        resources_df = pd.read_csv(resources_csv_path)
-                        resources_with_url = resources_df[resources_df['url'].notna()]
-                        unanalyzed_mask = ~resources_df['analysis_completed'].fillna(False).astype(bool)
-                        unanalyzed_resources_with_url = resources_with_url[unanalyzed_mask]
-                        unanalyzed_resources_count = len(unanalyzed_resources_with_url)
-                    
-                    logger.info(f"No pending URLs found at any level with {unanalyzed_resources_count} unanalyzed resources")
-                    
-                    if unanalyzed_resources_count > 0 or self.force_url_fetch:
-                        # Temporarily enable force_fetch to discover new URLs even for already processed resources
-                        original_force_fetch = self.force_url_fetch
-                        self.force_url_fetch = True
-                        logger.info("Temporarily enabling force_url_fetch to trigger URL discovery on all resources")
-                        
-                        # Process all resources to discover URLs at level 1
-                        level_result = self.process_urls_at_level(level=1, force_fetch=True)
-                        logger.info(f"URL discovery result: {level_result}")
-                        
-                        # Restore original force_fetch setting
-                        self.force_url_fetch = original_force_fetch
-                        
-                        # Check again for pending URLs after discovery
-                        for level in range(1, max_depth + 1):
-                            pending_urls = url_storage.get_pending_urls(depth=level)
-                            if pending_urls:
-                                pending_by_level[level] = len(pending_urls)
-                        
-                        if pending_by_level:
-                            level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items())])
-                            total_pending = sum(pending_by_level.values())
-                            logger.info(f"After discovery, found {total_pending} total pending URLs: {level_info}")
-                    else:
-                        logger.info("No unanalyzed resources and no pending URLs - all processing complete")
-                    
-                    # Find the lowest level with pending URLs
-                    next_level = min(pending_by_level.keys()) if pending_by_level else None
-                    
-                    if next_level and next_level > 1:
-                        logger.info(f"All level 1 URLs processed, now processing level {next_level} URLs")
-                        
-                        # Process pending URLs at this level
-                        processed_at_level = 0
-                        pending_at_level = pending_by_level[next_level]
-                        
-                        # Get all pending URLs for this level
-                        pending_urls = url_storage.get_pending_urls(depth=next_level)
-                        
-                        # Group URLs by their origin (the URL that led to them)
-                        urls_by_origin = {}
-                        for pending_url_data in pending_urls:
-                            url = pending_url_data.get('url')
-                            origin = pending_url_data.get('origin', '')
-                            
-                            if origin not in urls_by_origin:
-                                urls_by_origin[origin] = []
-                            
-                            urls_by_origin[origin].append(pending_url_data)
-                        
-                        logger.info(f"Processing {pending_at_level} URLs at level {next_level} (from {len(urls_by_origin)} different origin URLs)")
-                        
-                        # Process URLs for each origin
-                        for origin_url, urls_for_origin in urls_by_origin.items():
-                            # Find the resource that this origin URL belongs to
-                            resource_for_origin = None
-                            for _, row in resources_with_url.iterrows():
-                                if row['url'] == origin_url:
-                                    resource_for_origin = row.to_dict()
-                                    break
-                                    
-                            if resource_for_origin:
-                                logger.info(f"Processing {len(urls_for_origin)} URLs at level {next_level} from origin: {origin_url}")
-                                
-                                # Process each URL using the specific_url_processor in SingleResourceProcessor
-                                for pending_url_data in urls_for_origin:
-                                    url_to_process = pending_url_data.get('url')
-                                    
-                                    # Process this URL
-                                    try:
-                                        url_result = single_processor.process_specific_url(
-                                            url=url_to_process,
-                                            origin_url=origin_url,
-                                            resource=resource_for_origin,
-                                            depth=next_level
-                                        )
-                                        
-                                        processed_at_level += 1
-                                        
-                                        if url_result.get('success', False):
-                                            success_count += 1
-                                        else:
-                                            error_count += 1
-                                            logger.error(f"Error processing URL at level {next_level}: {url_to_process}")
-                                    except Exception as url_error:
-                                        processed_at_level += 1
-                                        error_count += 1
-                                        logger.error(f"Exception processing URL at level {next_level}: {url_to_process} - Error: {url_error}")
-                                        # Continue to next URL even after an exception
-                                        logger.error(f"Error processing URL at level {next_level}: {url_to_process}")
-                                                     # Show progress
-                                    if processed_at_level % 10 == 0:
-                                        logger.info(f"Processed {processed_at_level}/{pending_at_level} URLs at level {next_level}")
-                            else:
-                                logger.warning(f"Could not find resource for origin URL: {origin_url}")
-                        
-                        logger.info(f"Completed processing level {next_level} URLs: {processed_at_level} processed, {success_count} successful, {error_count} errors")
-                        
-                        # Update counters
-                        processed_resources += processed_at_level
-                    else:
-                        logger.info("No pending URLs found at any level - all levels have been processed")
-                
-                # Store processing results
-                result["url_processing"] = {
-                    "resources_processed": processed_resources,
-                    "resources_skipped": skipped_resources,
-                    "success_count": success_count,
-                    "error_count": error_count,
-                    "force_fetch_enabled": self.force_url_fetch,
-                    "pending_urls_by_level": pending_by_level
-                }
-                
-                # Reset force_url_fetch if it was temporarily enabled
-                if self.force_url_fetch != force_url_fetch:
-                    logger.info("Resetting force_url_fetch to original value")
-                    self.force_url_fetch = force_url_fetch
-            
-            # STEP 5: Generate vector stores if not cancelled
-            if not skip_vector_generation and not self.cancel_requested:
-                from scripts.analysis.vector_store_generator import VectorStoreGenerator
-                vector_generator = VectorStoreGenerator(self.data_folder)
-                
-                # Check for any remaining pending URLs before generating vectors
-                remaining_pending_count = self._check_for_remaining_pending_urls(max_depth=max_depth)
-                if remaining_pending_count > 0:
-                    logger.warning(f"Skipping vector generation due to {remaining_pending_count} remaining pending URLs")
-                    result["vector_generation"] = {"status": "skipped", "reason": "remaining_pending_urls"}
-                else:
-                    vector_result = await vector_generator.generate_vector_stores(force_update=force_update)
-                    result["vector_generation"] = vector_result
-                    
-                    # Also clean up temporary files
-                    vector_generator.cleanup_temporary_files()
-            elif self.cancel_requested:
-                logger.info("Vector generation skipped due to cancellation")
-                result["vector_generation"] = {"status": "cancelled"}
+                logger.info(f"After discovery: found {pending_urls_count} total pending URLs")
+
             else:
-                logger.info("Vector generation explicitly skipped")
-                result["vector_generation"] = {"status": "skipped", "reason": "explicitly skipped"}
-            
-            # STEP 6: Extract goals from vector stores (unless skipped)
-            if skip_goals:
-                logger.info("STEP 6: SKIPPING GOAL EXTRACTION (skip_goals=True)")
-                result["goals"] = {
-                    "status": "skipped",
-                    "message": "Goal extraction explicitly skipped"
-                }
-            else:
-                from scripts.analysis.goal_extractor_step import GoalExtractorStep
-                goal_extractor = GoalExtractorStep(self.data_folder)
-                goals_result = await goal_extractor.extract_goals(
-                    ollama_client=request_app_state.ollama_client if request_app_state else None
+                logger.info("Skipping discovery phase - found existing pending URLs")
+                result["discovery_phase"] = {"status": "skipped", "reason": "existing_pending_urls"}
+                
+            # STEP 3: PROCESS CONTENT (PDFs, markdown, etc.)
+            if process_all_steps or unanalyzed_resources_exist:
+                logger.info("==================================================")
+                logger.info("STARTING CONTENT PROCESSING PHASE")
+                logger.info("==================================================")
+                
+                from scripts.analysis.critical_content_processor import CriticalContentProcessor
+                content_processor = CriticalContentProcessor(self.data_folder)
+                
+                # Process content
+                content_result = await content_processor.process_content(
+                    request_app_state=request_app_state,
+                    skip_markdown_scraping=skip_markdown_scraping,
+                    analyze_resources=analyze_resources,
+                    analyze_all_resources=analyze_all_resources,
+                    batch_size=batch_size,
+                    resource_limit=resource_limit,
+                    check_unanalyzed=check_unanalyzed
                 )
-                result["goals"] = goals_result
+                
+                # Update result with content processing results
+                result["content_processing"] = content_result
             
-            # STEP 7: Generate questions from processed knowledge (unless skipped)
-            if skip_questions:
-                logger.info("STEP 7: SKIPPING QUESTION GENERATION (skip_questions=True)")
-                result["questions"] = {
-                    "status": "skipped",
-                    "message": "Question generation explicitly skipped"
-                }
+            # STEP 4: URL ANALYSIS PHASE 
+            # Now process URLs at the specified level or by priority
+            if not self.cancel_requested and pending_urls_count > 0:
+                # Determine which level to process
+                current_level = process_level
+
+                if current_level is None:
+                    # If no level specified, determine the level with the most pending URLs
+                    current_level = max(pending_by_level, key=pending_by_level.get) if pending_by_level else 1
+                    logger.info(f"No level specified. Using level {current_level} which has the most pending URLs")
+                
+                logger.info("==================================================")
+                logger.info(f"STARTING URL ANALYSIS PHASE AT LEVEL {current_level}")
+                logger.info("==================================================")
+                
+                # Process URLs at the selected level
+                url_analysis_result = self.process_urls_at_level(
+                    level=current_level,
+                    batch_size=batch_size
+                )
+                
+                # Update result with URL analysis results
+                result["url_analysis"] = url_analysis_result
+                
+            elif not self.cancel_requested:
+                logger.info("Skipping URL analysis phase - no pending URLs found")
+                result["url_analysis"] = {"status": "skipped", "reason": "no_pending_urls"}
+            
+            # STEP 5: VECTOR GENERATION
+            if not skip_vector_generation and not self.cancel_requested:
+                logger.info("==================================================")
+                logger.info("STARTING VECTOR GENERATION PHASE")
+                logger.info("==================================================")
+                
+                # Generate vectors
+                vector_generator = VectorGenerator(self.data_folder)
+                vector_result = await vector_generator.generate_vectors(
+                    request_app_state=request_app_state,
+                    generate_questions=not skip_questions
+                )
+                
+                # Update result with vector generation results
+                result["vector_generation"] = vector_result
+                
+            elif self.cancel_requested:
+                logger.info("Skipping vector generation phase - processing cancelled")
+                result["vector_generation"] = {"status": "skipped", "reason": "processing_cancelled"}
             else:
+                logger.info("Skipping vector generation phase - skip_vector_generation=True")
+                result["vector_generation"] = {"status": "skipped", "reason": "skip_vector_generation"}
+            
+            # STEP 6: GOAL EXTRACTION
+            if skip_goals or self.cancel_requested:
+                logger.info("Skipping goal extraction phase - skip_goals=True or cancelled")
+                result["goal_extraction"] = {"status": "skipped", "reason": "skip_goals_or_cancelled"}
+            else:
+                logger.info("==================================================")
+                logger.info("STARTING GOAL EXTRACTION PHASE")
+                logger.info("==================================================")
+                
+                from scripts.analysis.goal_extractor import GoalExtractor
+                goal_extractor = GoalExtractor(self.data_folder)
+                
+                # Extract goals
+                goal_extraction_result = await goal_extractor.extract_goals(request_app_state=request_app_state)
+                
+                # Update result with goal extraction results
+                result["goal_extraction"] = goal_extraction_result
+            
+            # STEP 7: QUESTION GENERATION
+            if skip_questions or self.cancel_requested:
+                logger.info("Skipping question generation phase - skip_questions=True or cancelled")
+                result["question_generation"] = {"status": "skipped", "reason": "skip_questions_or_cancelled"}
+            else:
+                logger.info("==================================================")
+                logger.info("STARTING QUESTION GENERATION PHASE")
+                logger.info("==================================================")
+                
                 from scripts.analysis.question_generator_step import QuestionGeneratorStep
                 question_generator = QuestionGeneratorStep(self.data_folder)
-                questions_result = await question_generator.generate_questions()
-                result["questions"] = questions_result
+                
+                # Generate questions
+                question_generation_result = await question_generator.generate_questions(request_app_state=request_app_state)
+                
+                # Update result with question generation results
+                result["question_generation"] = question_generation_result
             
             # Save the file state with updated timestamps
             change_detector.save_file_state()
@@ -696,69 +331,46 @@ class KnowledgeOrchestrator:
             result["current_level"] = process_level
             
             # If auto_advance_level is enabled, determine the next level to process
-            if auto_advance_level and process_level is not None:
-                next_level = process_level + 1
-                
-                # If we've reached max_depth, go back to discovery (level 0)
-                if next_level > max_depth:
-                    next_level = 0
-                    
-                result["next_level"] = next_level
-                logger.info(f"Auto-advancing level: Current level {process_level} -> Next level {next_level}")
-                
-                # Update the current_process_level in config.json
-                try:
-                    from scripts.services.training_scheduler import update_process_level
-                    if update_process_level(next_level):
-                        logger.info(f"Successfully updated current_process_level to {next_level} in config.json")
-                    else:
-                        logger.warning(f"Failed to update current_process_level in config.json")
-                except Exception as e:
-                    logger.error(f"Error updating current_process_level in config.json: {e}")
+            if auto_advance_level and process_level is not None and not self.cancel_requested:
+                # Advance to the next level
+                advancement_result = self.advance_to_next_level(process_level, max_depth)
+                result["level_advancement"] = advancement_result
+                result["next_level"] = advancement_result.get("next_level")
+                logger.info(f"Advanced to next level: {advancement_result.get('next_level')}")
             
             # Reset processing flag temporarily
             self.processing_active = False
             
             # Check if we should continue processing with the next level
             if continue_until_end and auto_advance_level and process_level is not None and not self.cancel_requested:
-                next_level = process_level + 1
+                # Get the next level from advancement result
+                next_level = result.get("next_level")
                 
-                # If we've reached max_depth, go back to discovery (level 0)
-                if next_level > max_depth:
-                    next_level = 0
-                
-                # Reset if we're doing vector generation, questions, and goals this time
-                # We want to do these steps only at the end of a full cycle
-                do_vectors_questions_goals = next_level == 0
-                
-                logger.info(f"Continuing to next level: {next_level} (vectors/questions/goals: {do_vectors_questions_goals})")
-                
-                # Recursively call the process_knowledge method with the next level
-                # We use the same parameters except for changing the level and possibly enabling vector generation
-                recursive_result = await self.process_knowledge(
-                    request_app_state=request_app_state,
-                    skip_markdown_scraping=skip_markdown_scraping,
-                    analyze_resources=analyze_resources,
-                    analyze_all_resources=analyze_all_resources,
-                    batch_size=batch_size,
-                    resource_limit=resource_limit,
-                    force_update=force_update,
-                    skip_vector_generation=not do_vectors_questions_goals,  # Only generate vectors on cycle completion
-                    check_unanalyzed=check_unanalyzed,
-                    skip_questions=not do_vectors_questions_goals,  # Only generate questions on cycle completion
-                    skip_goals=not do_vectors_questions_goals,  # Only extract goals on cycle completion
-                    max_depth=max_depth,
-                    force_url_fetch=force_url_fetch,
-                    process_level=next_level,
-                    auto_advance_level=auto_advance_level,
-                    continue_until_end=continue_until_end
-                )
-                
-                # Combine results from this level and subsequent levels
-                recursive_result["data"]["previous_levels"] = recursive_result["data"].get("previous_levels", [])
-                recursive_result["data"]["previous_levels"].append(result)
-                
-                return recursive_result
+                if next_level is not None:
+                    logger.info(f"Continuing with next level {next_level} (continue_until_end=True)")
+                    
+                    # Process the next level (recursive call)
+                    next_result = await self.process_knowledge(
+                        request_app_state=request_app_state,
+                        skip_markdown_scraping=skip_markdown_scraping,
+                        analyze_resources=analyze_resources,
+                        analyze_all_resources=analyze_all_resources,
+                        batch_size=batch_size,
+                        resource_limit=resource_limit,
+                        force_update=False,  # Only force update once
+                        skip_vector_generation=skip_vector_generation,
+                        check_unanalyzed=check_unanalyzed,
+                        skip_questions=skip_questions,
+                        skip_goals=skip_goals,
+                        max_depth=max_depth,
+                        force_url_fetch=force_url_fetch,  # Keep the force_url_fetch setting for URL processor
+                        process_level=next_level,
+                        auto_advance_level=auto_advance_level,
+                        continue_until_end=continue_until_end
+                    )
+                    
+                    # Add next level result to the overall result
+                    result["next_level_result"] = next_result
             
             logger.info(f"Knowledge base processing completed successfully")
             
@@ -870,24 +482,27 @@ class KnowledgeOrchestrator:
                 "error": str(e)
             }
     
-    def process_urls_at_level(self, level: int, batch_size: int = 50, force_fetch: bool = False) -> Dict[str, Any]:
+    def process_urls_at_level(self, level: int, batch_size: int = 50) -> Dict[str, Any]:
         """
         Process all pending URLs at a specific level.
         
         Args:
             level: The depth level to process (1=first level, 2=second level, etc.)
             batch_size: Maximum number of URLs to process in one batch
-            force_fetch: If True, force reprocessing of already processed URLs
             
         Returns:
             Dictionary with processing results
         """
+        if level < 1:
+            logger.warning(f"Invalid level {level} specified. Level must be >= 1. Defaulting to level 1.")
+            level = 1
+            
         logger.info(f"Processing all pending URLs at level {level}")
-        logger.info(f"Force fetch enabled: {force_fetch}")
         
         # Initialize components
         from scripts.analysis.single_resource_processor import SingleResourceProcessor
         from scripts.analysis.url_storage import URLStorageManager
+        from scripts.analysis.url_discovery_manager import URLDiscoveryManager
         import pandas as pd
         import os
         import csv
@@ -897,86 +512,81 @@ class KnowledgeOrchestrator:
         processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
         url_storage = URLStorageManager(processed_urls_file)
         
-        # Set force_fetch if enabled - ensure it's propagated to the SingleResourceProcessor
-        if force_fetch:
-            logger.info(f"Setting force_fetch=True in SingleResourceProcessor for level {level}")
-            single_processor.force_fetch = True
-            # Warn if we're going to reprocess already processed URLs
-            logger.warning("Force fetch enabled: Will process URLs even if already in processed_urls.csv")
-        else:
-            # Explicitly set to False to ensure consistent behavior
-            single_processor.force_fetch = False
-            logger.info("Force fetch disabled: Will skip URLs that are already in processed_urls.csv")
-        
         # Get all pending URLs at this level
         pending_urls = url_storage.get_pending_urls(depth=level)
         
+        # If no pending URLs at this level, trigger URL discovery
         if not pending_urls:
-            logger.info(f"No pending URLs found at level {level}")
+            logger.info(f"No pending URLs found at level {level}, checking if URL discovery is needed")
             
-            # When there are no pending URLs at this level, we should trigger URL discovery
-            # by processing all resources with force_fetch enabled to discover new URLs
-            if level == 1:  # Only do this for level 1, as deeper levels depend on level 1 discoveries
-                logger.info(f"No pending URLs at level {level}, triggering URL discovery on all resources")
-                # Load resources to trigger discovery
-                if os.path.exists(resources_csv_path):
-                    resources_df = pd.read_csv(resources_csv_path)
-                    
-                    # Only process resources that have a URL
-                    resources_with_url = resources_df[resources_df['url'].notna()]
-                    
-                    # Process every resource to trigger URL discovery
-                    # We'll do this by forcing URL fetching on each resource
-                    processed_resources = 0
-                    for idx, row in resources_with_url.iterrows():
-                        resource = row.to_dict()
-                        resource_url = resource.get('url', '')
-                        
-                        if not resource_url:
-                            continue
-                            
-                        logger.info(f"Triggering URL discovery for resource: {resource.get('title', 'Unnamed')} - {resource_url}")
-                        
-                        # Process the resource to discover URLs
-                        result = single_processor.process_resource(
-                            resource=resource,
-                            resource_id=f"{idx+1}/{len(resources_with_url)}",
-                            idx=idx,
-                            csv_path=resources_csv_path,
-                            max_depth=4,  # Use maximum depth for discovery
-                            process_by_level=True  # Ensure we use level-based processing for proper URL discovery
-                        )
-                        
-                        processed_resources += 1
-                    
-                    # After discovery, check again for pending URLs
-                    pending_urls = url_storage.get_pending_urls(depth=level)
-                    
-                    if not pending_urls:
-                        logger.info(f"Still no pending URLs found at level {level} after discovery")
-                        return {"status": "skipped", "reason": "no_pending_urls_after_discovery", "resources_processed": processed_resources}
-                    else:
-                        logger.info(f"Found {len(pending_urls)} pending URLs at level {level} after discovery")
+            # Check if resources.csv exists for discovery
+            if not os.path.exists(resources_csv_path):
+                logger.error(f"Resources file not found: {resources_csv_path}")
+                return {
+                    "status": "error", 
+                    "reason": "no_resources_file",
+                    "message": f"Resources file not found: {resources_csv_path}"
+                }
+            
+            # Load resources with URLs for discovery
+            resources_df = pd.read_csv(resources_csv_path)
+            resources_with_url = resources_df[resources_df['url'].notna()]
+            
+            if len(resources_with_url) > 0:
+                logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
+                
+                # Initialize URL discovery manager
+                url_discovery = URLDiscoveryManager(self.data_folder)
+                
+                # Trigger discovery starting at the current level
+                logger.info(f"Starting URL discovery at level {level}")
+                discovery_result = url_discovery.discover_urls_from_resources(level=level, max_depth=level+1)
+                
+                # Log discovery results
+                if discovery_result.get("status") == "success":
+                    logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
                 else:
-                    logger.warning(f"Resources file not found: {resources_csv_path}")
-                    return {"status": "error", "error": "resources_file_not_found"}
+                    logger.warning(f"Discovery status: {discovery_result.get('status')}, reason: {discovery_result.get('reason')}")
+                
+                # Check again for pending URLs after discovery
+                pending_urls = url_storage.get_pending_urls(depth=level)
+                
+                if not pending_urls:
+                    logger.warning(f"Still no pending URLs after discovery at level {level}")
+                    return {
+                        "status": "warning",
+                        "level": level,
+                        "reason": "no_pending_urls_after_discovery",
+                        "discovery_result": discovery_result
+                    }
+                
+                logger.info(f"After discovery: found {len(pending_urls)} pending URLs at level {level}")
             else:
-                return {"status": "skipped", "reason": "no_pending_urls"}
+                logger.warning(f"No resources with URLs found for discovery at level {level}")
+                return {
+                    "status": "warning", 
+                    "reason": "no_resources_with_url",
+                    "message": "No resources with URLs found for discovery"
+                }
         
         # Initialize counters
         total_urls = len(pending_urls)
         processed_urls_count = 0
         success_count = 0
         error_count = 0
+        skipped_count = 0
+        failed_urls = []  # Track URLs that failed processing
         
         try:
-            # Load resources
+            # Load resources CSV if it exists
             if not os.path.exists(resources_csv_path):
-                logger.error(f"Resources file not found: {resources_csv_path}")
-                return {"status": "error", "error": "resources_file_not_found"}
-                
-            resources_df = pd.read_csv(resources_csv_path)
-            resources_with_url = resources_df[resources_df['url'].notna()]
+                logger.warning(f"Resources file not found: {resources_csv_path}")
+                logger.info("Will still process URLs without resource context")
+                resources_df = pd.DataFrame(columns=['url', 'title'])
+                resources_with_url = resources_df
+            else:
+                resources_df = pd.read_csv(resources_csv_path)
+                resources_with_url = resources_df[resources_df['url'].notna()]
             
             # Group URLs by origin
             urls_by_origin = {}
@@ -1005,67 +615,84 @@ class KnowledgeOrchestrator:
                         resource_for_origin = row.to_dict()
                         break
                 
-                if resource_for_origin:
-                    logger.info(f"Processing {len(urls_for_origin)} URLs at level {level} from origin: {origin_url}")
-                    origin_resource_title = resource_for_origin.get('title', 'Unnamed')
+                # If we don't have resource context, create a minimal one
+                if resource_for_origin is None:
+                    resource_for_origin = {
+                        'url': origin_url,
+                        'title': f"Origin URL: {origin_url}"
+                    }
+                    logger.info(f"No resource found for origin URL: {origin_url}, using minimal context")
                     
-                    # Process each URL using the specific_url_processor
-                    for idx, pending_url_data in enumerate(urls_for_origin):
-                        # Check for cancellation
-                        if self.cancel_requested:
-                            logger.info(f"URL processing at level {level} cancelled")
-                            break
+                logger.info(f"Processing {len(urls_for_origin)} URLs at level {level} from origin: {origin_url}")
+                origin_resource_title = resource_for_origin.get('title', 'Unnamed')
+                
+                # Process each URL using the specific_url_processor
+                for idx, pending_url_data in enumerate(urls_for_origin):
+                    # Check for cancellation
+                    if self.cancel_requested:
+                        logger.info(f"URL processing at level {level} cancelled")
+                        break
+                    
+                    url_to_process = pending_url_data.get('url')
+                    url_depth = pending_url_data.get('depth', level)
+                    origin = pending_url_data.get('origin', '')
+                    attempt_count = pending_url_data.get('attempt_count', 0)
+                    
+                    # Check if max attempts reached, but DON'T mark as processed if not analyzed
+                    max_attempts = 3
+                    if attempt_count >= max_attempts:
+                        logger.warning(f"URL {url_to_process} has reached max attempts ({max_attempts}), skipping")
+                        # Just remove from pending list but don't mark as processed
+                        url_storage.remove_pending_url(url_to_process)
+                        # Keep track of failed URLs
+                        failed_urls.append(url_to_process)
+                        error_count += 1
+                        processed_urls_count += 1
+                        continue
+                    
+                    # Process this URL
+                    logger.info(f"Processing URL {idx + 1}/{len(urls_for_origin)}: {url_to_process}")
+                    
+                    try:
+                        # Increment the attempt count
+                        url_storage.increment_url_attempt(url_to_process)
                         
-                        url_to_process = pending_url_data.get('url')
+                        # Process the URL using SingleResourceProcessor's process_specific_url method
+                        # This is the ANALYSIS phase - we're not discovering URLs anymore
+                        logger.info(f"ANALYSIS PHASE: Processing URL {url_to_process} at level {url_depth} using SingleResourceProcessor")
+                        success_result = single_processor.process_specific_url(
+                            url=url_to_process,
+                            origin_url=origin,
+                            resource=resource_for_origin,
+                            depth=url_depth
+                        )
                         
-                        # Process this URL
-                        try:
-                            url_result = single_processor.process_specific_url(
-                                url=url_to_process,
-                                origin_url=origin_url,
-                                resource=resource_for_origin,
-                                depth=level
-                            )
-                            
-                            processed_urls_count += 1
-                            
-                            if url_result.get('success', False):
-                                success_count += 1
-                            else:
-                                error_count += 1
-                                logger.error(f"Error processing URL at level {level}: {url_to_process}")
-                        except Exception as url_error:
-                            processed_urls_count += 1
+                        success = success_result.get('success', False)
+                        
+                        if success:
+                            logger.info(f"Successfully processed URL: {url_to_process}")
+                            success_count += 1
+                            # URL is already marked as processed by process_specific_url if successful
+                            # It also removes the URL from pending queue
+                        else:
+                            logger.warning(f"Failed to process URL: {url_to_process}")
                             error_count += 1
-                            logger.error(f"Exception processing URL at level {level}: {url_to_process} - Error: {url_error}")
-                            # Also remove from pending URLs to avoid getting stuck
-                            try:
+                            # Keep in pending queue for retry unless max attempts reached
+                            if attempt_count + 1 >= max_attempts:
+                                logger.warning(f"URL {url_to_process} reached max attempts, removing from pending")
+                                # Just remove from pending but don't mark as processed
                                 url_storage.remove_pending_url(url_to_process)
-                                logger.info(f"Removed problematic URL from pending queue: {url_to_process}")
-                            except Exception as rm_error:
-                                logger.error(f"Error removing URL from pending queue: {rm_error}")
-                            # Continue to next URL even after an exception
+                                failed_urls.append(url_to_process)
+                            
+                        processed_urls_count += 1
                         
-                        # Show progress every 10 URLs
-                        if processed_urls_count % 10 == 0 or processed_urls_count == total_urls:
-                            logger.info(f"Progress: {processed_urls_count}/{total_urls} URLs ({int(processed_urls_count/total_urls*100)}%)")
-                else:
-                    logger.warning(f"Could not find resource for origin URL: {origin_url}")
-                    # Skip these URLs since we can't find their origin resource
-                    processed_urls_count += len(urls_for_origin)
-                    error_count += len(urls_for_origin)
-                    
-            logger.info(f"Level {level} processing complete: {processed_urls_count} URLs processed, {success_count} successful, {error_count} errors")
-            
-            return {
-                "status": "success",
-                "level": level,
-                "total_urls": total_urls,
-                "processed_urls": processed_urls_count,
-                "success_count": success_count,
-                "error_count": error_count
-            }
-            
+                    except Exception as url_error:
+                        logger.error(f"Error processing URL {url_to_process}: {url_error}")
+                        error_count += 1
+                        processed_urls_count += 1
+                        # Add to failed URLs list
+                        failed_urls.append(url_to_process)
+                
         except Exception as e:
             logger.error(f"Error processing URLs at level {level}: {e}", exc_info=True)
             return {
@@ -1074,9 +701,36 @@ class KnowledgeOrchestrator:
                 "error": str(e),
                 "processed_urls": processed_urls_count,
                 "success_count": success_count,
-                "error_count": error_count
+                "error_count": error_count,
+                "failed_urls": failed_urls
             }
-    
+                
+        logger.info(f"Level {level} processing complete: {processed_urls_count} URLs processed, {success_count} successful, {error_count} errors")
+        
+        # Save failed URLs to a separate file for future reference
+        if failed_urls:
+            try:
+                failed_urls_file = os.path.join(self.data_folder, f"failed_urls_level_{level}.csv")
+                with open(failed_urls_file, 'w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(["url", "level", "timestamp"])
+                    for url in failed_urls:
+                        writer.writerow([url, level, datetime.now().isoformat()])
+                logger.info(f"Saved {len(failed_urls)} failed URLs to {failed_urls_file}")
+            except Exception as e:
+                logger.error(f"Error saving failed URLs: {e}")
+        
+        return {
+            "status": "success" if processed_urls_count > 0 else "warning",
+            "level": level,
+            "total_urls": total_urls,
+            "processed_urls": processed_urls_count,
+            "success_count": success_count,
+            "error_count": error_count,
+            "failed_urls_count": len(failed_urls),
+            "message": "No URLs were processed" if processed_urls_count == 0 else None
+        }
+
     async def process_knowledge_in_phases(self, 
                                     request_app_state=None,
                                     max_depth: int = 4,
@@ -1086,27 +740,17 @@ class KnowledgeOrchestrator:
         Process knowledge base in strictly separated phases:
         1. Discovery phase - Find all URLs from all resources at all levels
         2. Analysis phase - Process content from discovered URLs
-        
-        Args:
-            request_app_state: The FastAPI request.app.state
-            max_depth: Maximum depth for crawling
-            force_url_fetch: If True, forces refetching of URLs even if already processed
-            batch_size: Number of URLs to process in each batch
-        
-        Returns:
-            Dictionary with processing results
         """
         logger.info("==================================================")
         logger.info("STARTING KNOWLEDGE PROCESSING IN STRICT PHASES:")
         logger.info("1. DISCOVERY PHASE - Find all URLs at all levels")
         logger.info("2. ANALYSIS PHASE - Process URLs level by level")
         logger.info("==================================================")
-        logger.info(f"Max depth: {max_depth}, Force URL fetch: {force_url_fetch}")
+        logger.info(f"Max depth: {max_depth}")
         
         # Set processing flags
         self.processing_active = True
         self.cancel_requested = False
-        # Removed: self.force_url_fetch = force_url_fetch
         
         try:
             # Initialize result object
@@ -1116,395 +760,249 @@ class KnowledgeOrchestrator:
                 "vector_generation": {}
             }
             
-            # PHASE 1: Get all resources with URLs
-            import pandas as pd
-            import os
-            
-            resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
-            
-            if not os.path.exists(resources_csv_path):
-                logger.error(f"Resources file not found: {resources_csv_path}")
-                return {
-                    "status": "error",
-                    "message": "Resources file not found",
-                    "data": {}
-                }
-                
-            # Load resources
-            resources_df = pd.read_csv(resources_csv_path)
-            resources_with_url = resources_df[resources_df['url'].notna()]
-            
-            if len(resources_with_url) == 0:
-                logger.warning("No resources with URLs found")
-                return {
-                    "status": "warning",
-                    "message": "No resources with URLs found",
-                    "data": {}
-                }
-                
-            # Create ContentFetcher for discovery phase
-            from scripts.analysis.content_fetcher import ContentFetcher
-            content_fetcher = ContentFetcher(timeout=120)  # Increased timeout for discovery
-            
-            # PHASE 1.5: Check for existing unprocessed URLs
+            # Get URL storage manager
             from scripts.analysis.url_storage import URLStorageManager
             processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
             url_storage = URLStorageManager(processed_urls_file)
             
-            # Log summary of state before starting
-            state_result = self.check_url_processing_state()
-            
-            # Add debugging to check processed vs pending URLs
-            logger.warning("================================")
-            logger.warning("CHECKING PROCESSED VS PENDING URLS")
-            logger.warning("================================")
-            
-            # Check how many URLs are already in processed_urls.csv
-            processed_count = len(url_storage.get_processed_urls())
-            logger.warning(f"Found {processed_count} URLs in processed_urls.csv")
-            
-            # Check pending URLs directly from the file (not filtered)
-            pending_csv_path = os.path.join(os.path.dirname(processed_urls_file), "pending_urls.csv") 
-            if os.path.exists(pending_csv_path):
-                try:
-                    with open(pending_csv_path, 'r', encoding='utf-8') as f:
-                        import csv
-                        reader = csv.reader(f)
-                        next(reader, None)  # Skip header
-                        
-                        # Count total lines and URLs already in processed
-                        total_lines = 0
-                        already_processed = 0
-                        by_level = {}
-                        for row in reader:
-                            if len(row) >= 2:
-                                url = row[0]
-                                depth = int(row[1]) if row[1].isdigit() else 0
-                                total_lines += 1
-                                
-                                # Track by level
-                                if depth not in by_level:
-                                    by_level[depth] = {"total": 0, "processed": 0}
-                                by_level[depth]["total"] += 1
-                                
-                                # Check if in processed list
-                                if url_storage.url_is_processed(url):
-                                    already_processed += 1
-                                    by_level[depth]["processed"] += 1
-                        
-                        logger.warning(f"Raw pending_urls.csv file has {total_lines} total URLs")
-                        logger.warning(f"Of which {already_processed} are already in processed_urls.csv")
-                        logger.warning(f"This means {total_lines - already_processed} should actually be processed")
-                        
-                        # Log by level
-                        for level, stats in sorted(by_level.items()):
-                            if stats["total"] > 0:
-                                logger.warning(f"Level {level}: {stats['total']} total URLs, {stats['processed']} already processed")
-                except Exception as e:
-                    logger.error(f"Error checking pending_urls.csv: {e}")
-            
-            logger.warning("================================")
-            
-            # PHASE 2: URL DISCOVERY PHASE
-            # ==========================
-            logger.info("==================================================")
-            logger.info("STARTING DISCOVERY PHASE")
-            logger.info("==================================================")
-            logger.info(f"Finding all URLs from {len(resources_with_url)} resources at all levels (1-{max_depth})")
-            logger.info(f"This phase will ONLY discover URLs, NO content analysis will be performed")
-            
-            # Get all URLs from resources
-            all_urls = resources_with_url['url'].tolist()
-            
-            # IMPORTANT: Set discovery_only_mode to True for this phase
-            # This ensures we only discover URLs without analyzing them
-            content_fetcher.discovery_only_mode = True
-            
-            # Run discovery phase (STRICTLY URL discovery only, no content analysis)
-            discovery_result = content_fetcher.discovery_phase(
-                urls=all_urls,
-                max_depth=max_depth,
-                force_reprocess=force_url_fetch
-            )
-            
-            result["discovery_phase"] = discovery_result
-            logger.info(f"Discovery phase completed: {discovery_result['total_discovered']} total URLs discovered across all levels")
-            
-            # Log number of URLs discovered at each level
-            if "discovered_by_level" in discovery_result:
-                logger.info("URLs discovered by level:")
-                for level, count in sorted(discovery_result["discovered_by_level"].items()):
-                    logger.info(f"  Level {level}: {count} URLs discovered")
+            # Phase loop - we may need to repeat the process if discovery adds new URLs
+            max_iterations = 3  # Limit the number of iterations to prevent infinite loops
+            iteration = 0
+            while iteration < max_iterations:
+                iteration += 1
+                logger.info(f"Starting iteration {iteration}/{max_iterations}")
                 
-            # DEBUGGING: Check for any URLs that might be stuck in processed_urls.csv without analysis
-            logger.warning("================================")
-            logger.warning("DEBUGGING: CHECKING FOR 'ZOMBIE' URLS")
-            logger.warning("URLs that are in processed_urls.csv but might not have been analyzed")
-            logger.warning("================================")
-            
-            # If force_fetch is set, we'll attempt to analyze ALL URLs even if they're in processed_urls.csv
-            if force_url_fetch:
-                logger.warning(f"Force fetch is enabled - will attempt to reprocess ALL URLs in pending_urls.csv regardless of processed status")
-            
-            # Check for cancellation
-            if self.cancel_requested:
-                logger.info("Knowledge processing cancelled after discovery phase")
-                self.processing_active = False
-                return {
-                    "status": "cancelled",
-                    "message": "Knowledge processing cancelled after discovery phase",
-                    "data": result
-                }
+                # ----------------------------------------------------------------
+                # STEP 1: Check if there are already pending URLs we need to process
+                # ----------------------------------------------------------------
+                pending_by_level = {}
+                total_pending_urls = 0
                 
-            # PHASE 3: ANALYSIS PHASE
-            # ======================
-            logger.info("==================================================")
-            logger.info("STARTING ANALYSIS PHASE")
-            logger.info("==================================================")
-            logger.info("All URL discovery is now complete - starting content analysis")
-            
-            # Recheck pending URLs after discovery
-            pending_by_level = {}
-            total_pending_urls = 0
-            for level in range(1, max_depth + 1):
-                pending_urls = url_storage.get_pending_urls(depth=level)
-                pending_by_level[level] = len(pending_urls) if pending_urls else 0
-                total_pending_urls += pending_by_level[level]
-                
-            logger.info(f"Found {total_pending_urls} total pending URLs to analyze across all levels:")
-            for level, count in sorted(pending_by_level.items()):
-                if count > 0:
-                    logger.info(f"  Level {level}: {count} pending URLs")
-            
-            # Process each level sequentially
-            analysis_results = {
-                "processed_by_level": {},
-                "total_processed": 0,
-                "successful": 0,
-                "failed": 0
-            }
-            
-            # Reset discovery_only_mode to False for analysis phase
-            content_fetcher.discovery_only_mode = False
-            
-            # Use the URLProcessor to process URLs by level
-            from scripts.analysis.orchestration.url_processor import URLProcessor
-            url_processor = URLProcessor(self.data_folder)
-            
-            # Set the cancellation flag in the URL processor if needed
-            url_processor.cancel_requested = self.cancel_requested
-            
-            # Process all URLs by level using the specialized processor
-            analysis_results = url_processor.process_urls_by_levels(
-                max_depth=max_depth,
-                batch_size=batch_size,
-                force_fetch=force_url_fetch
-            )
-            
-            # Check if the processing was successful
-            if analysis_results["total_processed"] == 0:
-                logger.warning("URLProcessor didn't process any URLs. This might indicate an issue.")
-            else:
-                logger.info(f"URLProcessor successfully processed {analysis_results['total_processed']} URLs")
-                logger.info(f"Successful: {analysis_results['successful']}, Failed: {analysis_results['failed']}")
-                
-                # Log detailed results by level
-                for level, count in sorted(analysis_results.get("processed_by_level", {}).items()):
-                    logger.info(f"  Level {level}: {count} URLs processed")
-            
-            # Store the analysis results in the overall result
-            result["analysis_phase"] = analysis_results
-            
-            # Verify that analysis phase actually processed URLs before proceeding to vector generation
-            # If no URLs were processed (zero total_processed), log a warning but continue
-            if analysis_results["total_processed"] == 0:
-                logger.warning("==================================================")
-                logger.warning("WARNING: Analysis phase did not process any URLs!")
-                logger.warning("This indicates one of two issues:")
-                logger.warning("1. All pending URLs were already in processed_urls.csv")
-                logger.warning("2. There were no valid pending URLs to process")
-                logger.warning("==================================================")
-                
-                # Double-check for pending URLs that weren't processed
-                remaining_pending_urls = 0
                 for level in range(1, max_depth + 1):
-                    level_pending = url_storage.get_pending_urls(depth=level)
-                    if level_pending:
-                        remaining_pending_urls += len(level_pending)
+                    pending_urls = url_storage.get_pending_urls(depth=level)
+                    count = len(pending_urls)
+                    pending_by_level[level] = count
+                    total_pending_urls += count
+                    logger.info(f"Found {count} pending URLs at level {level}")
                 
-                if remaining_pending_urls > 0:
-                    logger.warning(f"There are still {remaining_pending_urls} pending URLs that weren't processed!")
-                    logger.warning("These URLs should be processed before vector generation.")
-                    logger.warning("Attempting to force process these remaining URLs...")
+                # ----------------------------------------------------------------
+                # STEP 2: If no pending URLs, run discovery phase
+                # ----------------------------------------------------------------
+                if total_pending_urls == 0:
+                    logger.info("==================================================")
+                    logger.info("STARTING DISCOVERY PHASE")
+                    logger.info("==================================================")
                     
-                    # Attempt to force process the remaining URLs
+                    # Check if resources.csv exists before trying discovery
+                    resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
+                    if not os.path.exists(resources_csv_path):
+                        logger.error(f"Resources file not found: {resources_csv_path}")
+                        logger.error("Cannot discover URLs without resources. Please add resources first.")
+                        result["discovery_phase"] = {
+                            "status": "error",
+                            "message": "No resources.csv file found. Please add resources first."
+                        }
+                    else:
+                        # Run discovery phase using URL Discovery Manager with direct method
+                        discovery = URLDiscoveryManager(self.data_folder)
+                        
+                        # Call discover_urls_from_resources_direct with the correct parameters
+                        # This uses our new direct method that doesn't rely on SingleResourceProcessor
+                        logger.info(f"Starting direct URL discovery from resources with max_depth={max_depth}")
+                        discovery_result = discovery.discover_urls_from_resources_direct(
+                            level=1,  # Start with level 1
+                            max_depth=max_depth
+                        )
+                        
+                        result["discovery_phase"] = discovery_result
+                        logger.info(f"URL discovery completed: {discovery_result}")
+                    
+                    # Re-check pending URLs after discovery
+                    pending_by_level = {}
+                    total_pending_urls = 0
                     for level in range(1, max_depth + 1):
                         pending_urls = url_storage.get_pending_urls(depth=level)
-                        if pending_urls:
-                            logger.warning(f"Force processing {len(pending_urls)} remaining URLs at level {level}")
-                            # Set force_fetch to True to ensure processing
-                            level_result = self.process_urls_at_level(
-                                level=level,
-                                batch_size=batch_size,
-                                force_fetch=True  # Force processing
-                            )
-                            
-                            # Log results of forced processing
-                            logger.warning(f"Forced processing at level {level} results: {level_result}")
-                            
-                            # Update our analysis results
-                            processed = level_result.get('processed_urls', 0) 
-                            analysis_results["processed_by_level"][level] = processed
-                            analysis_results["total_processed"] += processed
-                            analysis_results["successful"] += level_result.get('success_count', 0)
-                            analysis_results["failed"] += level_result.get('error_count', 0)
-                else:
-                    # Check pending_urls.csv directly for entries that might be already processed
-                    pending_csv_path = os.path.join(os.path.dirname(processed_urls_file), "pending_urls.csv")
-                    total_entries = 0
-                    already_processed = 0
-                    
-                    if os.path.exists(pending_csv_path):
-                        try:
-                            logger.warning("Checking raw pending_urls.csv entries against processed_urls.csv")
-                            with open(pending_csv_path, 'r', encoding='utf-8') as f:
-                                reader = csv.reader(f)
-                                next(reader, None)  # Skip header
-                                for row in reader:
-                                    if len(row) >= 1:
-                                        url = row[0]
-                                        total_entries += 1
-                                        if url_storage.url_is_processed(url):
-                                            already_processed += 1
-                            
-                            logger.warning(f"Found {total_entries} entries in pending_urls.csv, with {already_processed} already in processed_urls.csv")
-                            logger.warning(f"This means all URLs in pending_urls.csv have been processed already")
-                        except Exception as e:
-                            logger.error(f"Error checking pending_urls.csv: {e}")
-                    
-                    # If all pending URLs have already been processed, let's proceed with discovery again
-                    if already_processed == total_entries and total_entries > 0:
-                        logger.warning("Since all pending URLs have already been processed, attempting to discover NEW URLs...")
-                        
-                        # Run discovery with force_reprocess=True to find new URLs
-                        try:
-                            # This should be a fresh discovery to identify new URLs
-                            all_urls = resources_with_url['url'].tolist()
-                            content_fetcher.discovery_only_mode = True
-                            
-                            # Force discover from a subset of main URLs
-                            if len(all_urls) > 3:
-                                urls_to_rediscover = all_urls[:3]  # Only check first 3 URLs
-                                logger.warning(f"Running forced discovery on {len(urls_to_rediscover)} main URLs to find new URLs")
-                            else:
-                                urls_to_rediscover = all_urls
-                            
-                            discovery_result = content_fetcher.discovery_phase(
-                                urls=urls_to_rediscover,
-                                max_depth=max_depth,
-                                force_reprocess=True  # Force rediscovery
-                            )
-                            
-                            logger.warning(f"Forced discovery results: {discovery_result}")
-                            
-                            # Reset discovery mode
-                            content_fetcher.discovery_only_mode = False
-                            
-                            # Check again for new pending URLs
-                            new_pending_count = 0
-                            for level in range(1, max_depth + 1):
-                                level_pending = url_storage.get_pending_urls(depth=level)
-                                if level_pending:
-                                    new_pending_count += len(level_pending)
-                            
-                            if new_pending_count > 0:
-                                logger.warning(f"Found {new_pending_count} new pending URLs after forced discovery!")
-                                logger.warning("Attempting to process these new URLs...")
-                                
-                                # Process these new URLs
-                                for level in range(1, max_depth + 1):
-                                    pending_urls = url_storage.get_pending_urls(depth=level)
-                                    if pending_urls:
-                                        logger.warning(f"Processing {len(pending_urls)} new URLs at level {level}")
-                                        level_result = self.process_urls_at_level(
-                                            level=level,
-                                            batch_size=batch_size,
-                                            force_fetch=False  # Don't force processing
-                                        )
-                                        
-                                        # Update analysis results
-                                        processed = level_result.get('processed_urls', 0)
-                                        analysis_results["processed_by_level"][level] = processed
-                                        analysis_results["total_processed"] += processed
-                                        analysis_results["successful"] += level_result.get('success_count', 0)
-                                        analysis_results["failed"] += level_result.get('error_count', 0)
-                            else:
-                                logger.warning("No new pending URLs found after forced discovery. All URLs have been processed.")
-                                
-                        except Exception as e:
-                            logger.error(f"Error during forced discovery: {e}")
-                    else:
-                        logger.warning("No pending URLs found in either filtered list or raw file. All URLs have been processed.")
-            
-            # Check for any remaining pending URLs before vector generation
-            remaining_pending = self._check_for_remaining_pending_urls(max_depth)
-            
-            if remaining_pending > 0:
-                logger.warning(f"There are still {remaining_pending} pending URLs that need processing!")
-                logger.warning("Processing remaining URLs before generating vectors...")
+                        count = len(pending_urls)
+                        pending_by_level[level] = count
+                        total_pending_urls += count
+                        logger.info(f"After discovery: Found {count} pending URLs at level {level}")
                 
-                # Process these remaining URLs one level at a time
+                # If there are still no pending URLs after discovery, we're done
+                if total_pending_urls == 0:
+                    logger.warning("No pending URLs found after discovery phase. Nothing to analyze.")
+                    result["analysis_phase"] = {
+                        "status": "skipped",
+                        "reason": "No pending URLs found"
+                    }
+                    return {
+                        "status": "success",
+                        "message": "Process completed, but no URLs to analyze were found",
+                        "data": result
+                    }
+                    
+                # ----------------------------------------------------------------
+                # STEP 3: Run analysis phase to process all pending URLs
+                # ----------------------------------------------------------------
+                logger.info("==================================================")
+                logger.info("STARTING ANALYSIS PHASE")
+                logger.info("==================================================")
+                logger.info("Processing discovered URLs for content analysis")
+                
+                # Process each level sequentially
+                analysis_results = {
+                    "processed_by_level": {},
+                    "total_processed": 0,
+                    "successful": 0,
+                    "failed": 0
+                }
+                
+                # Process URLs at each level, starting from level 1
                 for level in range(1, max_depth + 1):
-                    retry_result = self.process_urls_at_level(
+                    # Check if we should continue to this level
+                    if level > 1 and self.cancel_requested:
+                        logger.info(f"Cancellation requested, stopping at level {level-1}")
+                        break
+                        
+                    # Skip if no URLs at this level
+                    if pending_by_level.get(level, 0) == 0:
+                        logger.info(f"No pending URLs at level {level}, skipping")
+                        analysis_results["processed_by_level"][level] = {
+                            "total_urls": 0,
+                            "processed": 0,
+                            "success": 0,
+                            "error": 0,
+                            "skipped": 0
+                        }
+                        continue
+                    
+                    # Process URLs at this level using process_urls_at_level
+                    level_result = self.process_urls_at_level(
                         level=level,
-                        batch_size=batch_size,
-                        force_fetch=True
+                        batch_size=batch_size
                     )
-                    logger.info(f"Additional processing of level {level}: {retry_result}")
+                    
+                    # Update analysis results
+                    analysis_results["processed_by_level"][level] = {
+                        "total_urls": level_result.get("total_urls", 0),
+                        "processed": level_result.get("processed_urls", 0),
+                        "success": level_result.get("success_count", 0),
+                        "error": level_result.get("error_count", 0),
+                        "skipped": 0
+                    }
+                    
+                    analysis_results["total_processed"] += level_result.get("processed_urls", 0)
+                    analysis_results["successful"] += level_result.get("success_count", 0)
+                    analysis_results["failed"] += level_result.get("error_count", 0)
+                
+                # Update result with analysis results for this iteration
+                result["analysis_phase"] = analysis_results
+                
+                # ----------------------------------------------------------------
+                # STEP 4: Check if there are still pending URLs
+                # ----------------------------------------------------------------
+                remaining_pending = self._check_for_remaining_pending_urls(max_depth)
+                
+                if remaining_pending == 0:
+                    logger.info("No pending URLs remaining - all discovered URLs were successfully processed.")
+                    logger.info(f"Breaking out of iteration loop after {iteration}/{max_iterations} iterations - all done!")
+                    # Break out of the iteration loop - we're done!
+                    break
+                else:
+                    # There are still pending URLs - if this is the last iteration, log a warning
+                    if iteration >= max_iterations:
+                        logger.warning(f"Maximum iterations ({max_iterations}) reached with {remaining_pending} pending URLs remaining.")
+                        logger.warning("Some URLs may not have been processed. Consider running the process again.")
+                    else:
+                        logger.warning(f"Found {remaining_pending} pending URLs remaining after analysis phase.")
+                        logger.warning(f"Will run another iteration ({iteration + 1}/{max_iterations}).")
+                        # Continue to the next iteration automatically
             
-            # PHASE 4: VECTOR GENERATION PHASE
-            # ===============================
-            logger.info("==================================================")
-            logger.info("STARTING VECTOR GENERATION PHASE")
-            logger.info("==================================================")
-            logger.info(f"Processed {analysis_results['total_processed']} URLs in analysis phase")
+            # Final update of pending URL count
+            result["remaining_pending_urls"] = self._check_for_remaining_pending_urls(max_depth)
             
+            # PHASE 5: Advance level in config if needed
+            # =========================================
             if not self.cancel_requested:
-                from scripts.analysis.vector_store_generator import VectorStoreGenerator
-                vector_generator = VectorStoreGenerator(self.data_folder)
-                vector_result = await vector_generator.generate_vector_stores(force_update=True)
-                result["vector_generation"] = vector_result
-                
-                # Also clean up temporary files
-                vector_generator.cleanup_temporary_files()
-                
-                logger.info("Vector generation completed successfully")
-            else:
-                result["vector_generation"] = {"status": "cancelled"}
-                logger.info("Vector generation cancelled")
+                try:
+                    # Get current crawl level from config
+                    import json
+                    config_file = os.path.join(os.path.dirname(self.data_folder), "config.json")
+                    
+                    if os.path.exists(config_file):
+                        with open(config_file, 'r') as f:
+                            config_data = json.load(f)
+                            current_level = config_data.get("current_process_level", 1)
+                            
+                        logger.info(f"Current process level from config: {current_level}")
+                        
+                        # If current level URLs are all processed, advance to next level
+                        level_pending = pending_by_level.get(current_level, 0)
+                        if level_pending == 0 and current_level < max_depth:
+                            next_level = current_level + 1
+                            logger.info(f"All URLs at level {current_level} processed, advancing to level {next_level}")
+                            
+                            # Update config
+                            config_data["current_process_level"] = next_level
+                            with open(config_file, 'w') as f:
+                                json.dump(config_data, f, indent=2)
+                                
+                            # Update level completion status
+                            if "crawl_config" not in config_data:
+                                config_data["crawl_config"] = {
+                                    "current_max_level": next_level,
+                                    "max_depth": max_depth,
+                                    "level_completion": {}
+                                }
+                                
+                            # Add or update level completion entry
+                            level_key = f"level_{current_level}"
+                            if "level_completion" not in config_data["crawl_config"]:
+                                config_data["crawl_config"]["level_completion"] = {}
+                                
+                            config_data["crawl_config"]["level_completion"][level_key] = {
+                                "is_complete": True,
+                                "last_processed": datetime.now().isoformat(),
+                                "urls_processed": analysis_results["processed_by_level"].get(current_level, {}).get("processed", 0)
+                            }
+                            
+                            # Update config with new level completion status
+                            with open(config_file, 'w') as f:
+                                json.dump(config_data, f, indent=2)
+                                
+                            logger.info(f"Updated config: current_process_level={next_level}, marked level {current_level} as complete")
+                            result["level_advanced"] = {
+                                "previous_level": current_level,
+                                "next_level": next_level
+                            }
+                except Exception as e:
+                    logger.error(f"Error updating process level in config: {e}")
             
             logger.info("==================================================")
-            logger.info("KNOWLEDGE PROCESSING COMPLETED SUCCESSFULLY")
+            logger.info("KNOWLEDGE PROCESSING COMPLETED")
             logger.info("==================================================")
-            logger.info(f"Discovery phase: {discovery_result['total_discovered']} URLs discovered")
-            logger.info(f"Analysis phase: {analysis_results['total_processed']} URLs processed, {analysis_results['successful']} successful, {analysis_results['failed']} errors")
+            logger.info(f"Discovery phase: {result['discovery_phase'].get('total_discovered', 0)} URLs discovered")
+            logger.info(f"Analysis phase: {result['analysis_phase']['total_processed']} URLs processed, "
+                      f"{result['analysis_phase']['successful']} successful, "
+                      f"{result['analysis_phase']['failed']} failed")
             
-            self.processing_active = False
-            
+            if result["remaining_pending_urls"] > 0:
+                logger.warning(f"Remaining pending URLs: {result['remaining_pending_urls']}")
+                
             return {
                 "status": "success",
-                "message": "Knowledge processing completed in phases",
+                "message": "Knowledge processing completed successfully",
                 "data": result
             }
             
         except Exception as e:
-            logger.error(f"Error in phased knowledge processing: {e}", exc_info=True)
-            self.processing_active = False
+            logger.error(f"Error in process_knowledge_in_phases: {e}", exc_info=True)
             return {
                 "status": "error",
-                "message": str(e),
-                "data": {}
+                "message": f"Error processing knowledge: {str(e)}",
+                "data": result if 'result' in locals() else {}
             }
+        finally:
+            self.processing_active = False
     
     def _check_for_remaining_pending_urls(self, max_depth: int = 4) -> int:
         """
@@ -1536,6 +1034,85 @@ class KnowledgeOrchestrator:
             logger.warning(f"Found {total_pending} pending URLs remaining: {level_info}")
         
         return total_pending
+
+    def advance_to_next_level(self, current_level: int, max_depth: int) -> Dict[str, Any]:
+        """
+        Advance to the next crawl level, marking all URLs from the current level as processed.
+        This ensures that we properly move forward in the crawling process and don't
+        get stuck processing the same level over and over.
+        
+        Args:
+            current_level: The current crawl level
+            max_depth: Maximum depth to crawl
+            
+        Returns:
+            Dictionary with advancement results
+        """
+        logger.info(f"Advancing from level {current_level} to level {current_level + 1}")
+        
+        # Mark all pending URLs from the current level as processed
+        from scripts.analysis.url_storage import URLStorageManager
+        processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
+        url_storage = URLStorageManager(processed_urls_file)
+        
+        # Make sure to correctly mark the current level as processed
+        mark_result = url_storage.mark_level_as_processed(current_level)
+        logger.info(f"Marked {mark_result.get('urls_processed', 0)} URLs at level {current_level} as processed")
+        
+        # Calculate next level
+        next_level = current_level + 1
+        
+        # If we've reached max depth, reset to level 1 to restart the process
+        if next_level > max_depth:
+            next_level = 1
+            logger.info(f"Reached maximum depth ({max_depth}), resetting to level {next_level}")
+        
+        # Update the config file with the new level
+        try:
+            from scripts.services.training_scheduler import update_process_level
+            if update_process_level(next_level):
+                logger.info(f"Updated current_process_level in config.json to {next_level}")
+            else:
+                logger.error(f"Failed to update current_process_level in config.json")
+        except Exception as e:
+            logger.error(f"Error updating current_process_level in config.json: {e}")
+        
+        # Update level completion status in config.json
+        try:
+            # Load the current config
+            config_path = Path(__file__).parents[2] / "config.json"
+            if config_path.exists():
+                # Fix: Using self.force_url_fetch instead of undefined force_fetch
+                with open(config_path, 'r') as f:
+                    config_data = json.loads(f.read())
+                    
+                # Update the level completion data
+                if 'crawl_config' in config_data and 'level_completion' in config_data['crawl_config']:
+                    level_key = f"level_{current_level}"
+                    if level_key in config_data['crawl_config']['level_completion']:
+                        # Mark this level as completed
+                        config_data['crawl_config']['level_completion'][level_key]['is_complete'] = True
+                        config_data['crawl_config']['level_completion'][level_key]['last_processed'] = datetime.now().isoformat()
+                        
+                    # Update the current max level
+                    config_data['crawl_config']['current_max_level'] = next_level
+                    
+                    # Write back the updated config
+                    with open(config_path, 'w') as f:
+                        json.dump(config_data, f, indent=2)
+                        
+                    logger.info(f"Updated level completion status for level {current_level} in config.json")
+            else:
+                logger.warning(f"Config file not found at {config_path}")
+        except Exception as e:
+            logger.error(f"Error updating level completion in config.json: {e}")
+        
+        return {
+            "previous_level": current_level,
+            "next_level": next_level,
+            "urls_processed": mark_result.get('urls_processed', 0),
+            "max_depth": max_depth
+        }
 
 # Standalone function for easy import
 async def process_knowledge_base(data_folder=None, request_app_state=None, **kwargs):

@@ -142,7 +142,7 @@ class ContentFetcher:
         return True
     
     def get_main_page_with_links(self, url: str, max_depth: int = 4, go_deeper: bool = None, breadth_first: bool = True, 
-                               discover_only_level: int = 4, force_reprocess: bool = False, resource_id: str = None) -> Tuple[bool, Dict[str, Any]]:
+                               discover_only_level: int = 4, resource_id: str = None) -> Tuple[bool, Dict[str, Any]]:
         """
         Retrieves the main page content and identifies links to additional pages.
         Can go multiple layers deep to find more content-rich pages.
@@ -153,7 +153,7 @@ class ContentFetcher:
             go_deeper: (Deprecated) If True, will look for links two levels deep (use max_depth instead)
             breadth_first: If True, will discover all URLs in breadth-first order (completing all level 1 URLs before level 2)
             discover_only_level: Maximum level to discover URLs (default 4). URLs beyond this level will not be discovered.
-            force_reprocess: If True, process URLs even if they've already been processed
+            resource_id: Optional resource ID to associate with discovered URLs
             
         Returns:
             Tuple of (success_flag, dict with main_html and additional_urls)
@@ -176,19 +176,12 @@ class ContentFetcher:
                 # We want to find new URLs at deeper levels, not reanalyze content
                 if self.url_storage.url_is_processed(url):
                     logger.info(f"URL {url} already processed, but continuing with discovery to find deeper URLs")
-                    # CRITICAL: Even though URL is processed, we need to initiate discovery to find deeper URLs
-                    # We will visit this URL again but ONLY to discover new URLs at deeper levels
-                    force_reprocess = True  # Ensure we can process this URL for discovery
                 # Continue with the discovery process
             else:
                 # Normal analysis mode - check if URL is already processed
-                if self.url_storage.url_is_processed(url) and not force_reprocess:
+                if self.url_storage.url_is_processed(url):
                     logger.info(f"Main URL {url} already processed, skipping fetch")
                     return False, {"error": "URL already processed"}
-                
-                # If force_reprocess is true for already processed URL in analysis mode, log it
-                if self.url_storage.url_is_processed(url) and force_reprocess:
-                    logger.info(f"Force reprocessing already processed URL: {url}")
             
             # Store the base domain for building absolute URLs
             base_domain, base_path, base_url = get_base_domain_and_url(url)
@@ -238,7 +231,6 @@ class ContentFetcher:
                 max_depth=discovery_depth,  # Use our calculated discovery depth
                 visited_urls=visited_urls,
                 urls_by_level=urls_by_level,
-                force_reprocess=force_reprocess,  # Use force_reprocess from parameter
                 resource_id=resource_id  # Pass the resource ID for tracking
             )
             
@@ -382,6 +374,17 @@ class ContentFetcher:
             force_reprocess: If True, include URLs even if they've already been processed
             resource_id: Optional ID of the resource for tracking association
         """
+        # Initialize collections if they're None
+        if visited_urls is None:
+            visited_urls = set()
+        if urls_by_level is None:
+            urls_by_level = {}
+        
+        # Make sure all level keys exist in the urls_by_level dictionary
+        for level in range(1, max_depth + 1):
+            if level not in urls_by_level:
+                urls_by_level[level] = []
+        
         # For level 1, extract links directly from the root page
         logger.info(f"Processing URL discovery at level 1 (direct from resource)")
         
@@ -537,7 +540,7 @@ class ContentFetcher:
                     except Exception as e:
                         logger.warning(f"Error processing level 2 URL {level_2_url}: {e}")
                         
-                # Store level 3 URLs
+                # Store level 3 URLs - FIXED to check if level 3 exists in the dictionary
                 urls_by_level[3].extend(level_3_urls)
                 logger.info(f"Discovered {len(level_3_urls)} new URLs at level 3")
                 
@@ -595,7 +598,7 @@ class ContentFetcher:
                         except Exception as e:
                             logger.warning(f"Error processing level 3 URL {level_3_url}: {e}")
                             
-                    # Store level 4 URLs
+                    # Store level 4 URLs - FIXED to check if level 4 exists in the dictionary
                     urls_by_level[4].extend(level_4_urls)
                     logger.info(f"Discovered {len(level_4_urls)} new URLs at level 4")
         
@@ -620,7 +623,7 @@ class ContentFetcher:
         return self.web_fetcher.fetch_page(url, headers, timeout)
     
     def fetch_content(self, url: str, max_depth: int = 4, process_by_level: bool = True, 
-                     batch_size: int = 50, current_level: int = None, force_reprocess: bool = False,
+                     batch_size: int = 50, current_level: int = None,
                      discovery_only: bool = False, resource_id: str = None) -> Tuple[bool, Dict[str, str]]:
         """
         Safely retrieves website content with error handling.
@@ -632,7 +635,6 @@ class ContentFetcher:
             process_by_level: If True, processes URLs strictly level by level (all level 1 URLs before level 2)
             batch_size: Maximum number of URLs to process at each level to limit memory usage
             current_level: If specified, only discover URLs at this specific level (for level-based processing)
-            force_reprocess: If True, reprocess URLs even if they've already been processed
             discovery_only: If True, focus on URL discovery without analyzing content
             
         Returns:
@@ -648,16 +650,13 @@ class ContentFetcher:
             if self.discovery_only_mode:
                 # In discovery mode, always process URLs regardless of processed status
                 if self.url_storage.url_is_processed(url):
-                    logger.info(f"Allowing rediscovery for already processed URL: {url}")
+                    logger.info(f"URL {url} is already processed, but we're in discovery mode so continuing anyway")
             else:
-                # In analysis mode, check if URL is already processed (unless force_reprocess is True)
-                if self.url_storage.url_is_processed(url) and not force_reprocess:
-                    logger.info(f"Skipping already processed URL for analysis: {url}")
-                    return True, {"main": "", "error": "URL already processed"}
-                
-                # Log if force_reprocess is True for an already processed URL
-                if self.url_storage.url_is_processed(url) and force_reprocess:
-                    logger.info(f"Force reprocessing already processed URL: {url}")
+                # In analysis mode, check if URL is already processed
+                if self.url_storage.url_is_processed(url):
+                    logger.info(f"URL {url} is already processed, skipping content analysis")
+                    # Since we're skipping, return empty result with success=True
+                    return True, {"main": "", "additional_urls": [], "error": "URL already processed"}
 
             # Special handling for discovery_only mode
             if self.discovery_only_mode:
@@ -669,7 +668,6 @@ class ContentFetcher:
                     max_depth=max_depth,
                     breadth_first=True,
                     discover_only_level=max_depth,
-                    force_reprocess=force_reprocess,
                     resource_id=resource_id  # Pass the resource ID for URL association
                 )
                 
@@ -729,7 +727,6 @@ class ContentFetcher:
                 max_depth=max_depth,
                 breadth_first=True,
                 discover_only_level=max_depth,
-                force_reprocess=force_reprocess,
                 resource_id=resource_id  # Pass the resource ID for URL association
             )
 
@@ -776,7 +773,7 @@ class ContentFetcher:
                     logger.info(f"Processing {len(urls_to_process)} URLs at level 1 immediately")
                     
                     for idx, additional_url in enumerate(urls_to_process):
-                        if self.url_storage.url_is_processed(additional_url) and not force_reprocess:
+                        if self.url_storage.url_is_processed(additional_url):
                             logger.info(f"Skipping already processed subpage URL at level 1: {additional_url}")
                             continue
                             
@@ -911,6 +908,29 @@ class ContentFetcher:
         
         # Check if we have pending URLs to potentially enable discovery from processed URLs
         discovery_status = self.check_discovery_needed(max_depth)
+        total_pending = discovery_status["total_pending"]
+        
+        # If there are already enough pending URLs, skip discovery
+        # This is a critical addition to prevent unnecessary URL rediscovery
+        if total_pending > 100 and not force_reprocess:  # Consider 100 URLs as plenty
+            logger.info(f"SKIPPING DISCOVERY: Found {total_pending} pending URLs already. No need for additional discovery.")
+            logger.info(f"To force rediscovery, run with force_reprocess=True")
+            
+            # Return early with stats about existing URLs
+            results = {
+                "total_urls": len(urls),
+                "successful": 0,
+                "failed": 0,
+                "skipped": len(urls),
+                "discovered_by_level": discovery_status["pending_by_level"],
+                "total_discovered": total_pending,
+                "discovery_skipped": True,
+                "reason": f"Already have {total_pending} pending URLs"
+            }
+            
+            # Restore original discovery mode
+            self.discovery_only_mode = original_discovery_mode
+            return results
         
         # If no pending URLs and we're at level 0 in config, force_reprocess
         if discovery_status["total_pending"] == 0:
@@ -945,10 +965,11 @@ class ContentFetcher:
                 else:
                     logger.info(f"[{idx+1}/{len(urls)}] Running URL discovery for: {url}")
                 
-                # Always perform discovery, even for URLs that have been processed before
-                if self.url_storage.get_discovery_status(url):
-                    logger.info(f"URL {url} previously completed discovery phase, but rediscovering to ensure completeness")
-                    # Continue with discovery instead of skipping
+                # Check if we've already done discovery for this URL and skip if so
+                if self.url_storage.get_discovery_status(url) and not force_reprocess:
+                    logger.info(f"URL {url} already completed discovery phase, skipping")
+                    results["skipped"] += 1
+                    continue
                 
                 # Track all URLs discovered from this resource
                 resource_discovered = 0

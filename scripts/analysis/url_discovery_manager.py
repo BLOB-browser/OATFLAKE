@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 
 from scripts.analysis.single_resource_processor import SingleResourceProcessor
 from scripts.analysis.url_storage import URLStorageManager
+from scripts.analysis.content_fetcher import ContentFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -51,22 +52,43 @@ class URLDiscoveryManager:
         """
         logger.info(f"No pending URLs at level {level}, triggering URL discovery on all resources")
         
-        # Load resources to trigger discovery
+        # Check if the resources file exists
         if not os.path.exists(self.resources_csv_path):
             logger.warning(f"Resources file not found: {self.resources_csv_path}")
             return {"status": "error", "error": "resources_file_not_found"}
             
-        resources_df = pd.read_csv(self.resources_csv_path)
+        # Use the dedicated discovery function that doesn't use SingleResourceProcessor
+        return self.discover_urls_from_resources_direct(level, max_depth)
+    
+    def discover_urls_from_resources_direct(self, level: int = 1, max_depth: int = 4) -> Dict[str, Any]:
+        """
+        Discover URLs directly from resources using ContentFetcher, without going through SingleResourceProcessor.
+        This provides a cleaner separation between discovery and analysis.
         
-        # Only process resources that have a URL
+        Args:
+            level: The level to discover URLs for (typically 1)
+            max_depth: Maximum depth for URL discovery
+            
+        Returns:
+            Dictionary with discovery results
+        """
+        logger.info(f"Starting direct URL discovery at level {level} with max_depth={max_depth}")
+        
+        # Load resources with URLs
+        resources_df = pd.read_csv(self.resources_csv_path)
         resources_with_url = resources_df[resources_df['url'].notna()]
         
-        # Initialize the SingleResourceProcessor with forced fetch
-        single_processor = SingleResourceProcessor(self.data_folder)
-        single_processor.force_fetch = True
+        # Initialize ContentFetcher directly
+        content_fetcher = ContentFetcher(timeout=120)  # Use longer timeout for discovery
+        
+        # Set discovery_only_mode to True
+        content_fetcher.discovery_only_mode = True
+        logger.info("Set discovery_only_mode=True in ContentFetcher for dedicated discovery")
         
         # Process every resource to trigger URL discovery
         processed_resources = 0
+        total_discovered_urls = 0
+        
         for idx, row in resources_with_url.iterrows():
             # Check for cancellation
             if self.cancel_requested:
@@ -75,22 +97,25 @@ class URLDiscoveryManager:
                 
             resource = row.to_dict()
             resource_url = resource.get('url', '')
+            resource_id = resource.get('title', '')  # Use title as resource ID
             
             if not resource_url:
                 continue
                 
-            logger.info(f"Triggering URL discovery for resource: {resource.get('title', 'Unnamed')} - {resource_url}")
+            logger.info(f"Triggering direct URL discovery for resource: {resource_id} - {resource_url}")
             
-            # Process the resource to discover URLs
-            result = single_processor.process_resource(
-                resource=resource,
-                resource_id=f"{idx+1}/{len(resources_with_url)}",
-                idx=idx,
-                csv_path=self.resources_csv_path,
-                max_depth=max_depth,  # Use maximum depth for discovery
-                process_by_level=True,  # Ensure we use level-based processing for proper URL discovery
-                discovery_only=True  # Only discover URLs, don't process content
+            # Use ContentFetcher's discovery_phase method directly
+            result = content_fetcher.discovery_phase(
+                urls=[resource_url],
+                max_depth=max_depth,
+                force_reprocess=True,  # Always force reprocessing for discovery
+                resource_ids={resource_url: resource_id}  # Map URLs to resource IDs
             )
+            
+            # Log discovery results
+            discovered_urls = result.get("total_discovered", 0)
+            total_discovered_urls += discovered_urls
+            logger.info(f"Discovered {discovered_urls} URLs from resource {resource_id}")
             
             processed_resources += 1
         
@@ -102,14 +127,59 @@ class URLDiscoveryManager:
             return {
                 "status": "skipped", 
                 "reason": "no_pending_urls_after_discovery", 
-                "resources_processed": processed_resources
+                "resources_processed": processed_resources,
+                "total_discovered": total_discovered_urls
             }
         else:
             logger.info(f"Found {len(pending_urls)} pending URLs at level {level} after discovery")
             return {
                 "status": "success", 
                 "discovered_urls": len(pending_urls),
-                "resources_processed": processed_resources
+                "resources_processed": processed_resources,
+                "total_discovered": total_discovered_urls
+            }
+    
+    def check_and_perform_discovery(self, level: int = 1, max_depth: int = 4) -> Dict[str, Any]:
+        """
+        Check if URL discovery is needed and perform it automatically if necessary.
+        
+        Args:
+            level: The level to check and potentially discover URLs for
+            max_depth: Maximum depth for URL discovery
+            
+        Returns:
+            Dictionary with status and action taken
+        """
+        # Check if there are any pending URLs at the specified level
+        pending_urls = self.url_storage.get_pending_urls(depth=level)
+        
+        if not pending_urls:
+            # No pending URLs, check if there are unanalyzed resources
+            if not os.path.exists(self.resources_csv_path):
+                return {"status": "error", "error": "resources_file_not_found"}
+                
+            resources_df = pd.read_csv(self.resources_csv_path)
+            resources_with_url = resources_df['url'].notna().sum()
+            analyzed_resources = resources_df['analysis_completed'].fillna(False).sum()
+            unanalyzed_resources = resources_with_url - analyzed_resources
+            
+            if unanalyzed_resources > 0:
+                # We have unanalyzed resources and no pending URLs, so perform discovery
+                logger.info("No pending URLs but unanalyzed resources exist. Automatically performing URL discovery.")
+                # Use the direct discovery method instead of going through SingleResourceProcessor
+                return self.discover_urls_from_resources_direct(level=level, max_depth=max_depth)
+            else:
+                return {
+                    "status": "skipped",
+                    "reason": "no_unanalyzed_resources",
+                    "message": "No pending URLs and no unanalyzed resources. Nothing to discover."
+                }
+        else:
+            return {
+                "status": "skipped",
+                "reason": "pending_urls_exist",
+                "message": f"Found {len(pending_urls)} pending URLs at level {level}. No need for discovery.",
+                "pending_count": len(pending_urls)
             }
     
     def check_discovery_needed(self) -> Dict[str, Any]:
@@ -158,9 +228,9 @@ class URLDiscoveryManager:
                 "status": "success"
             }
             
-            # If discovery is needed and there are resources with URLs, suggest triggering discovery
-            if discovery_needed and resources_with_url > 0:
-                result["recommendation"] = "No pending URLs found but there are unanalyzed resources. Consider triggering URL discovery by running with force_url_fetch=True"
+            # If discovery is needed, add a note suggesting to use the new check_and_perform_discovery method
+            if discovery_needed:
+                result["recommendation"] = "No pending URLs found but there are unanalyzed resources. Use check_and_perform_discovery() to automatically handle discovery."
             
             return result
             

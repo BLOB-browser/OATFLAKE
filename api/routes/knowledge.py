@@ -46,59 +46,31 @@ async def cancel_knowledge_processing(force: bool = False):
     logger.info(f"Knowledge processing cancellation requested (force={force})")
     
     try:
-        # Import our knowledge orchestrator
-        from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
-        from utils.config import get_data_path
+        if not _processing_active:
+            return {"status": "success", "message": "No active processing to cancel"}
         
-        # Create orchestrator to send cancellation request
-        orchestrator = KnowledgeOrchestrator(get_data_path())
-        result = orchestrator.cancel_processing()
-        
-        # For backward compatibility, also set the old cancel event
+        # Set cancellation flag
         _processor_cancel_event.set()
         
-        # If force is True, also try to cancel via interruptible_llm directly
-        if force:
-            from scripts.analysis.interruptible_llm import request_interrupt
-            request_interrupt()
-            
-            # Also try cancellation in MainProcessor if available
-            try:
-                from scripts.analysis.main_processor import MainProcessor
-                logger.info("Sending cancellation signal to all MainProcessor instances")
-                
-                # Set global cancellation flag if present
-                if hasattr(MainProcessor, '_cancel_processing'):
-                    MainProcessor._cancel_processing = True
-                    logger.info("Set MainProcessor._cancel_processing = True")
-            except Exception as e:
-                logger.warning(f"Could not signal MainProcessor: {e}")
+        # Import and use the orchestrator's cancel method if available
+        from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
+        data_path = get_data_path()
+        orchestrator = KnowledgeOrchestrator(data_path)
+        cancel_result = orchestrator.cancel_processing()
         
-        # Wait a short time for processing to stop
-        waited_time = 0
-        max_wait_time = 5  # seconds
-        check_interval = 0.5  # seconds
-        
-        while _processing_active and waited_time < max_wait_time:
-            time.sleep(check_interval)
-            waited_time += check_interval
+        # Also cancel any running LLM processes
+        from scripts.analysis.interruptible_llm import request_interrupt
+        request_interrupt()
         
         return {
-            "status": "success",
-            "message": "Cancellation signal sent" if _processing_active else "Processing stopped",
-            "processing_stopped": not _processing_active
+            "status": "success", 
+            "message": "Cancellation request sent to knowledge processor",
+            "details": cancel_result
         }
         
     except Exception as e:
-        logger.error(f"Error during cancellation: {e}")
-        
-        # Set cancellation flag as fallback
-        _processor_cancel_event.set()
-        
-        return {
-            "status": "partial_success",
-            "message": f"Cancellation signal sent with warning: {e}"
-        }
+        logger.error(f"Error canceling knowledge processing: {e}", exc_info=True)
+        return {"status": "error", "message": f"Error during cancellation: {str(e)}"}
 
 @router.post("/process")  # Now the full path will be /api/knowledge/process
 async def process_knowledge_base(
@@ -171,49 +143,72 @@ async def process_knowledge_base(
     logger.info(f"Starting comprehensive knowledge base processing... group_id={group_id}, force_update={force_update}")
     
     try:
-        # Import our modular knowledge processing components
-        from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
-        
         # Get data path from config
-        from utils.config import get_data_path
         data_path = get_data_path()
         
-        # Create the knowledge orchestrator
-        orchestrator = KnowledgeOrchestrator(data_path)
+        # Use the knowledge orchestrator to handle the processing
+        from scripts.analysis.knowledge_orchestrator import process_knowledge_base as orchestrator_process
         
-        # Process the knowledge base using the orchestrator
-        result = await orchestrator.process_knowledge(
-            request_app_state=request.app.state,
-            skip_markdown_scraping=skip_markdown_scraping,
-            analyze_resources=analyze_resources,
-            analyze_all_resources=analyze_all_resources,
-            batch_size=batch_size,
-            resource_limit=resource_limit,
-            force_update=force_update,
-            skip_vector_generation=skip_vector_generation,
-            check_unanalyzed=check_unanalyzed,
-            skip_questions=skip_questions,
-            skip_goals=skip_goals,
-            max_depth=max_depth,
-            force_url_fetch=force_url_fetch,
-            process_level=process_level,  # Pass through the level to process
-            auto_advance_level=auto_advance_level,  # Whether to advance to next level automatically
-            continue_until_end=continue_until_end   # Whether to continue processing all levels
-        )
-        
-        # Add group_id for frontend compatibility
-        if "data" in result:
-            result["data"]["group_id"] = group_id
-        
-        # Update processing flag
-        _processing_active = False
-        
-        return result
+        # Process based on specified level
+        if process_level is not None:
+            logger.info(f"Processing only URLs at level {process_level}")
+            
+            # Check if we should process pending URLs directly
+            from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
+            orchestrator = KnowledgeOrchestrator(data_path)
+            
+            # Process URLs at this specific level - removed force_fetch parameter
+            result = orchestrator.process_urls_at_level(
+                level=process_level,
+                batch_size=batch_size
+            )
+            
+            # If auto-advance is enabled, check completion and move to next level
+            if auto_advance_level and result.get("status") == "success":
+                advance_result = orchestrator.advance_to_next_level(process_level, max_depth)
+                result["level_advanced"] = advance_result
+                
+                # If continue_until_end is True, trigger processing at the next level
+                if continue_until_end and advance_result.get("next_level"):
+                    # Process next level in a non-blocking way
+                    import asyncio
+                    asyncio.create_task(process_knowledge_base(
+                        request=request,
+                        group_id=group_id,
+                        process_level=advance_result["next_level"],
+                        auto_advance_level=True,
+                        continue_until_end=True,
+                        force_url_fetch=force_url_fetch,
+                        batch_size=batch_size
+                    ))
+                    result["next_level_processing"] = "started"
+            
+            return result
+        else:
+            # Process in phases with the orchestrator
+            result = await orchestrator_process(
+                data_folder=data_path,
+                request_app_state=request.app.state,
+                skip_markdown_scraping=skip_markdown_scraping,
+                analyze_resources=analyze_resources,
+                analyze_all_resources=analyze_all_resources,
+                batch_size=batch_size,
+                resource_limit=resource_limit,
+                force_update=force_update,
+                skip_vector_generation=skip_vector_generation,
+                check_unanalyzed=check_unanalyzed,
+                skip_questions=skip_questions,
+                skip_goals=skip_goals,
+                max_depth=max_depth,
+                force_url_fetch=force_url_fetch
+            )
+            
+            return result
         
     except Exception as e:
         logger.error(f"Error processing knowledge base: {e}", exc_info=True)
         _processing_active = False
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
 @router.post("/extract-goals")  # Now the full path will be /api/knowledge/extract-goals
 async def extract_goals(request: Request):
@@ -226,34 +221,23 @@ async def extract_goals(request: Request):
     logger.info("Starting standalone goal extraction")
     try:
         # Get data path from config
-        from utils.config import get_data_path
         data_path = get_data_path()
         
-        # Import our goal extractor component
-        from scripts.analysis.goal_extractor_step import GoalExtractorStep
+        # Create goal extractor
+        extractor = GoalExtractor(data_path)
         
-        # Initialize goal extractor
-        goal_extractor = GoalExtractorStep(data_path)
-        
-        # Extract goals using the client from the request state
-        goals_result = await goal_extractor.extract_goals(ollama_client=request.app.state.ollama_client)
-        
-        if goals_result.get("status") == "success":
-            return {
-                "status": "success",
-                "message": f"Successfully extracted {goals_result.get('goals_extracted', 0)} goals",
-                "data": goals_result
-            }
+        # Extract goals with client from request
+        if hasattr(request.app.state, "ollama_client"):
+            result = await extractor.extract_goals(request.app.state.ollama_client)
         else:
-            return {
-                "status": "warning",
-                "message": goals_result.get("message", "Unknown issue during goal extraction"),
-                "data": goals_result
-            }
+            # Try without client
+            result = await extractor.extract_goals()
             
+        # Return results
+        return result
     except Exception as e:
         logger.error(f"Error extracting goals: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
 # Add a stats endpoint in the knowledge router that calls the original in stats.py
 @router.get("/stats")
@@ -264,7 +248,5 @@ async def get_knowledge_stats(group_id: str = None):
     This endpoint redirects to the existing implementation in stats.py
     """
     # Import the original function from stats
-    from .stats import get_knowledge_stats as original_stats_function
-    
-    # Call and return the result from the original implementation
-    return await original_stats_function(group_id)
+    from .stats import get_stats
+    return await get_stats(group_id)
