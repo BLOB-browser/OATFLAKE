@@ -71,7 +71,7 @@ class ResourceLLM:
                 response = interruptible_post(
                     "http://localhost:11434/api/generate",
                     json=args,
-                    timeout=300  # 5 minute timeout for long processing
+                    timeout=3600  # 5 minute timeout for long processing
                 )
                 
                 if is_interrupt_requested():
@@ -161,7 +161,7 @@ class ResourceLLM:
             logger.info(f"Calling Ollama API with model {self.model}")
             
             # Use a much longer timeout (5 minutes) - LLMs should take the time they need
-            with httpx.Client(timeout=300.0) as client:  # 5 minute timeout
+            with httpx.Client(timeout=3600) as client:  # 5 minute timeout
                 response = client.post(url, json=payload)
                 
                 if response.status_code == 200:
