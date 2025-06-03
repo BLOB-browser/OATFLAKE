@@ -148,9 +148,8 @@ class URLBatchProcessor:
             results: Dictionary to store results (modified in-place)
         """
         logger.warning("No pending URLs found, attempting recovery strategies")
-        
-        # Try to trigger discovery for level 1
-        discovery_result = self.discovery_manager.discover_urls_from_resources(level=1, max_depth=max_depth)
+          # Try to trigger discovery for level 1
+        discovery_result = self.discovery_manager.discover_urls_from_resources_sync(level=1, max_depth=max_depth)
         
         if discovery_result.get("status") == "success" and discovery_result.get("discovered_urls", 0) > 0:
             # If discovery worked, process level 1
@@ -167,11 +166,11 @@ class URLBatchProcessor:
             results["successful"] += level_result.get('success_count', 0)
             results["failed"] += level_result.get('error_count', 0)
         else:
-            # If discovery didn't work, try a final attempt on levels 3 and 4
-            # which might have been missed in earlier processing
+            # If discovery didn't work, try a final attempt starting from the lowest levels
+            # to ensure proper hierarchical processing
             logger.warning("No URLs found through discovery, making one final attempt with direct processing")
             
-            for level in [3, 4]:
+            for level in range(1, max_depth + 1):
                 logger.warning(f"Final attempt to check level {level} URLs with force_fetch={force_fetch}")
                 level_result = self.level_processor.process_level(
                     level=level,

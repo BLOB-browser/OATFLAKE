@@ -8,7 +8,6 @@ import glob
 from datetime import datetime
 from scripts.data.data_processor import DataProcessor
 from scripts.data.markdown_processor import MarkdownProcessor
-from scripts.services.data_analyser import DataAnalyser
 from scripts.services.question_generator import generate_questions, save_questions, get_config_path
 from utils.config import BACKEND_CONFIG
 from scripts.analysis.goal_extractor import GoalExtractor
@@ -262,94 +261,6 @@ async def get_knowledge_stats(group_id: str = None):
             }
         }
 
-@router.post("/knowledge/analyze-resources")
-async def analyze_resources(group_id: str = None, batch_size: int = 5, max_resources: int = None, analyze_all: bool = False):
-    """
-    Analyze resources from resources.csv to enhance tags, extract definitions, and identify projects.
-    
-    Steps:
-    1. Use an LLM to analyze website content from URLs in resources.csv
-    2. Extract and enhance tags for resources
-    3. Extract definitions to definitions.csv
-    4. Identify potential projects and save to projects.csv
-    
-    Args:
-        group_id: Optional group ID
-        batch_size: Number of resources to process in each batch (default: 5)
-        max_resources: Maximum number of resources to process (default: process all)
-        analyze_all: If True, reanalyze all resources even if they have existing analysis
-    """
-    logger.info(f"Starting resource analysis... group_id={group_id}, batch_size={batch_size}, max_resources={max_resources}, analyze_all={analyze_all}")
-    try:
-        # Get data path from config
-        data_path = Path(BACKEND_CONFIG['data_path'])
-        resources_csv_path = data_path / "resources.csv"
-        
-        if not resources_csv_path.exists():
-            logger.error(f"Resources file not found: {resources_csv_path}")
-            raise HTTPException(status_code=404, detail="Resources file not found")
-        
-        # Create and run the data analyzer
-        logger.info("ANALYZING RESOURCES WITH LLM")
-        logger.info("===========================")
-        
-        analyzer = DataAnalyser()
-        logger.info(f"Using LLM provider: {analyzer.provider}")
-        
-        # Process resources using our enhanced LLM analyzer
-        # If analyze_all is True, force reanalysis regardless of existing data
-        updated_resources, projects = analyzer.analyze_resources(
-            csv_path=str(resources_csv_path),
-            batch_size=batch_size,
-            max_resources=max_resources,
-            force_reanalysis=analyze_all
-        )
-        
-        # Get definitions extracted during analysis
-        definitions = analyzer._get_definitions_from_resources(updated_resources)
-        
-        # Count the resources that were actually processed by the LLM
-        resources_with_llm = sum(1 for r in updated_resources 
-                             if r.get('analysis_results') and 
-                             isinstance(r.get('analysis_results'), dict))
-        
-        logger.info(f"Successfully processed {resources_with_llm} resources with LLM analysis")
-        
-        # Save processed data
-        analyzer.save_updated_resources(updated_resources)
-        
-        # Save projects separately if any were found
-        if projects:
-            analyzer.save_projects_csv(projects)
-            logger.info(f"Saved {len(projects)} identified projects to projects.csv")
-        
-        # Save definitions through data_saver if any were found
-        if definitions:
-            analyzer.data_saver.save_definitions(definitions)
-            logger.info(f"Saved {len(definitions)} extracted definitions to definitions.csv")
-        
-        # Build comprehensive analysis result to return
-        analysis_result = {
-            "resources_processed": len(updated_resources),
-            "resources_analyzed": resources_with_llm,
-            "resources_updated": sum(1 for r in updated_resources 
-                                 if r.get('tags') and 
-                                 isinstance(r.get('tags'), list) and 
-                                 len(r.get('tags')) > 0),
-            "definitions_extracted": len(definitions),
-            "projects_identified": len(projects),
-            "group_id": group_id
-        }
-        
-        logger.info(f"Resource analysis completed: {analysis_result}")
-        return {
-            "status": "success",
-            "message": "Resources analyzed successfully",
-            "data": analysis_result
-        }
-    except Exception as e:
-        logger.error(f"Error analyzing resources: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 def check_for_file_changes(data_path: Path, file_patterns, last_check_time=None):
     """

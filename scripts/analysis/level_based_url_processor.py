@@ -37,17 +37,16 @@ class LevelBasedURLProcessor:
         self.data_folder = data_folder
         
         # Import required components
-        from scripts.analysis.single_resource_processor import SingleResourceProcessor
+        from scripts.analysis.single_resource_processor_universal import SingleResourceProcessorUniversal
         from scripts.analysis.cleanup_manager import CleanupManager
         from scripts.analysis.url_storage import URLStorageManager
         from utils.config import get_data_path
-        
-        # Initialize components
-        self.single_processor = SingleResourceProcessor(data_folder)
+          # Initialize components
+        self.single_processor = SingleResourceProcessorUniversal(data_folder)
         self.cleanup_manager = CleanupManager(data_folder)
         
-        # Initialize URL storage manager
-        processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+        # Initialize URL storage manager - use data_folder parameter for consistency
+        processed_urls_file = os.path.join(data_folder, "processed_urls.csv")
         self.url_storage = URLStorageManager(processed_urls_file)
         
         # Track processing state
@@ -185,10 +184,9 @@ class LevelBasedURLProcessor:
         
         # Keep track of resources that were completely processed to current level
         completed_resources = []
-        
-        # Import content fetcher for crawling
-        from scripts.analysis.content_fetcher import ContentFetcher
-        content_fetcher = ContentFetcher()
+          # Import URL discovery manager for crawling
+        from scripts.analysis.url_discovery_manager import URLDiscoveryManager
+        discovery_manager = URLDiscoveryManager(self.data_folder)
         
         # Process each resource up to current_url_level depth
         for idx, row in enumerate(resources_df.iterrows()):
@@ -211,15 +209,15 @@ class LevelBasedURLProcessor:
                 logger.warning(f"Resource at index {resource_idx} has no URL, skipping")
                 continue
             
-            resource_title = resource.get('title', 'Untitled')
-            logger.info(f"Processing resource {idx+1}/{len(resources_df)}: {resource_title} ({resource_url})")
+            resource_id = resource.get('title', 'Untitled')
+            logger.info(f"Processing resource {idx+1}/{len(resources_df)}: {resource_id} ({resource_url})")
             
-            try:
-                # Use content_fetcher to discover URLs up to current level
-                result = content_fetcher.get_main_page_with_links(
+            try:                # Use discovery_manager to discover URLs up to current level
+                result = discovery_manager.url_discovery.get_main_page_with_links(
                     url=resource_url,
                     max_depth=self.current_url_level,
-                    discover_only_level=None  # Process all levels up to current_url_level
+                    discover_only_level=None,  # Process all levels up to current_url_level
+                    resource_id=resource_id
                 )
                 
                 # Track statistics
@@ -228,7 +226,7 @@ class LevelBasedURLProcessor:
                     urls_discovered = result.get('urls_discovered', 0)
                     stats["urls_discovered"] += urls_discovered
                     
-                    logger.info(f"Successfully processed {resource_title}, discovered {urls_discovered} URLs")
+                    logger.info(f"Successfully processed {resource_id}, discovered {urls_discovered} URLs")
                     
                     # Check if this resource has been fully processed to current level
                     pending_for_resource = self.url_storage.get_pending_urls_for_origin(resource_url)
@@ -236,11 +234,11 @@ class LevelBasedURLProcessor:
                         completed_resources.append(resource_id)
                 else:
                     stats["error_count"] += 1
-                    logger.error(f"Error processing {resource_title}: {result.get('error', 'Unknown error')}")
+                    logger.error(f"Error processing {resource_id}: {result.get('error', 'Unknown error')}")
             
             except Exception as e:
                 stats["error_count"] += 1
-                logger.error(f"Exception processing {resource_title}: {e}")
+                logger.error(f"Exception processing {resource_id}: {e}")
             
             stats["resources_processed"] += 1
         

@@ -108,17 +108,26 @@ class URLProcessorStep:
                     try:
                         resources_df = pd.read_csv(resources_csv_path)
                         if not resources_df.empty:
-                            added_count = 0
-                            resources_with_url = resources_df[resources_df['url'].notna()]
+                            added_count = 0                            # Use either origin_url or url field based on what's available
+                            if 'origin_url' in resources_df.columns:
+                                resources_with_url = resources_df[resources_df['origin_url'].notna()]
+                                url_field = 'origin_url'
+                            else:
+                                resources_with_url = resources_df[resources_df['url'].notna()]
+                                url_field = 'url'
+                                
                             for _, row in resources_with_url.iterrows():
-                                url = row.get('url')
+                                url = row.get(url_field)
+                                # Generate a unique resource_id for this resource (use row index + 1)
+                                resource_id = str(row.name + 1)  # row.name is the index, +1 for 1-based IDs
                                 if url and isinstance(url, str) and url.startswith('http'):
                                     # Check if already in pending URLs
                                     pending_urls = url_storage.get_pending_urls(depth=1)
                                     if not any(p.get('url') == url for p in pending_urls):
-                                        # Add as level 1 URL with origin as itself
-                                        url_storage.save_pending_url(url, depth=1, origin=url)
+                                        # Save with the generated resource_id
+                                        url_storage.save_pending_url(url, depth=1, origin=url, resource_id=resource_id)
                                         added_count += 1
+                                        logger.info(f"Added URL {url} with resource_id {resource_id}")
                             logger.info(f"Added {added_count} URLs from resources.csv to level 1 queue")
                     except Exception as e:
                         logger.error(f"Error seeding URLs from resources: {e}")

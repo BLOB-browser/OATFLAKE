@@ -537,8 +537,8 @@ class VectorStoreManager:
                         title = None
                         if doc.metadata.get('title'):
                             title = doc.metadata.get('title')
-                        elif doc.metadata.get('resource_title'):
-                            title = doc.metadata.get('resource_title')
+                        elif doc.metadata.get('resource_id'):
+                            title = doc.metadata.get('resource_id')
                         
                         # If we have a title, use it as a potential topic
                         detected_topics = []

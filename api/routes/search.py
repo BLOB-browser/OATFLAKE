@@ -369,11 +369,11 @@ async def get_references(request: Request):
                         hybrid_score = (0.5 * position_score) + (0.5 * term_overlap_score)
                         
                         # Log detailed info about this result with improved scoring
-                        logger.info(f"Content #{i+1}: '{meta.get('resource_title', meta.get('title', 'Untitled'))}' - Hybrid score: {hybrid_score:.4f} (position: {position_score:.4f}, terms: {term_overlap_count})")
+                        logger.info(f"Content #{i+1}: '{meta.get('resource_id', meta.get('title', 'Untitled'))}' - Hybrid score: {hybrid_score:.4f} (position: {position_score:.4f}, terms: {term_overlap_count})")
                         
                         # Create structured content item with rich metadata
                         content_item = {
-                            "title": meta.get("resource_title", meta.get("material_title", meta.get("title", "Untitled"))),
+                            "title": meta.get("resource_id", meta.get("material_title", meta.get("title", "Untitled"))),
                             "content": doc.page_content,
                             "type": meta.get("source_type", "content"),
                             "resource_url": meta.get("resource_url", ""),

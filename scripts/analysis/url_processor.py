@@ -27,8 +27,7 @@ def clean_url(url: str) -> str:
     # Remove trailing slashes
     while url.endswith('/') and len(url) > 1:
         url = url[:-1]
-    
-    # Fix common URL issues
+      # Fix common URL issues
     
     # Remove embedded file:/// protocol if present
     if "file:///" in url:
@@ -42,9 +41,11 @@ def clean_url(url: str) -> str:
             # Keep only the part after the second ://
             url = parts[0] + "://" + second_part.split("://", 1)[1]
     
-    # Add http:// if missing
+    # Add https:// if missing, but check for double prefixes
     if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
+        # Make sure we're not adding https:// to a URL that already has it
+        # This prevents creating URLs like https://https://example.com
+        url = 'https://' + url.lstrip('/')  # Also remove any leading slashes
     
     # Remove query parameters for certain file types
     ext_to_clean = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.zip', '.rar']
@@ -184,7 +185,7 @@ def resolve_absolute_url(href: str, base_domain: str, current_url: str = None) -
         '/site/privacy', '/contact', '/about', '/careers',
         'github.com/login', 'github.com/join', 'github.com/features',
         # Common auth & utility paths
-        'sign-in', 'log-in', 'register', 'password-reset',
+        'sign-in', 'log-in', 'register', 'password-reset', 'email-protection',
         # Notion and documentation platforms
         'notion.so/login', 'notion.so/signup', 'notion.so/pricing',
         '/api-docs', '/graphql', '/api-reference', '/robots.txt',
@@ -200,8 +201,7 @@ def resolve_absolute_url(href: str, base_domain: str, current_url: str = None) -
         if pattern.lower() in href.lower():
             logger.debug(f"Skipping platform utility URL with pattern '{pattern}': {href[:50]}...")
             return False, ""
-        
-    # Convert to absolute URL if needed
+          # Convert to absolute URL if needed
     if href.startswith('/'):
         absolute_url = f"{base_domain}{href}"
     elif not href.startswith(('http://', 'https://')):
@@ -211,7 +211,9 @@ def resolve_absolute_url(href: str, base_domain: str, current_url: str = None) -
             absolute_url = f"{current_base}/{href}"
         else:
             # Fallback to base_domain if no current URL provided
-            absolute_url = f"{base_domain}/{href}"
+            # Ensure base_domain doesn't already contain a trailing slash to prevent double slashes
+            base_domain_clean = base_domain.rstrip('/')
+            absolute_url = f"{base_domain_clean}/{href.lstrip('/')}"
     else:
         # For absolute URLs, we'll keep links to some important external domains that are
         # commonly used in educational content and documentation
@@ -549,7 +551,7 @@ def extract_project_links(soup: BeautifulSoup, project_keywords: List[str] = Non
             'project', 'work', 'case', 'study', 'portfolio', 'article', 'publication', 
             'research', 'detail', 'post', 'assignment', 'homework', 'lab', 'exercise',
             'experiment', 'gallery', 'showcase', 'collection', 'demo', 'thesis', 
-            'dissertation', 'capstone', 'final', 'class', 'course', 'semester'
+            'dissertation', 'capstone', 'final', 'class', 'week', 'student', 'course', 'semester'
         ]
     
     project_links = []

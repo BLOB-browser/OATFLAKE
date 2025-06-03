@@ -36,12 +36,12 @@ class MainProcessor:
         self.last_checked_url_count = 0
         
         # Import specialized components
-        from scripts.analysis.single_resource_processor import SingleResourceProcessor
+        from scripts.analysis.single_resource_processor_universal import SingleResourceProcessorUniversal
         from scripts.analysis.cleanup_manager import CleanupManager
         from scripts.analysis.vector_generator import VectorGenerator
         
         # Initialize components
-        self.single_processor = SingleResourceProcessor(data_folder)
+        self.single_processor = SingleResourceProcessorUniversal(data_folder)
         self.cleanup_manager = CleanupManager(data_folder)
         self.vector_generator = VectorGenerator(data_folder)
         
@@ -319,7 +319,7 @@ class MainProcessor:
     def process_single_resource(self, resource: Dict, resource_id: str, idx: int, csv_path: str) -> Dict[str, Any]:
         """
         Process a single resource through content fetching, analysis and storage.
-        Now delegates to the SingleResourceProcessor.
+        Now delegates to the SingleResourceProcessorUniversal.
         
         Args:
             resource: The resource dictionary 

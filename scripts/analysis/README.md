@@ -166,9 +166,9 @@ The analysis system can be used programmatically in Python:
 
 ```python
 # Process a single resource
-from scripts.analysis.single_resource_processor import SingleResourceProcessor
+from scripts.analysis.single_resource_processor_universal import SingleResourceProcessorUniversal
 
-processor = SingleResourceProcessor("data")
+processor = SingleResourceProcessorUniversal("data")
 resource = {"url": "https://example.com", "title": "Example Site"}
 result = processor.process_resource(resource)
 

@@ -56,8 +56,7 @@ class WebFetcher:
                 verify=self.verify_ssl,
                 allow_redirects=True
             )
-            
-            # Handle different status codes explicitly
+              # Handle different status codes explicitly
             if response.status_code == 200:
                 logger.info(f"Successfully fetched content from {url}")
                 return True, response.text
@@ -69,6 +68,10 @@ class WebFetcher:
                 # Access forbidden or unauthorized
                 logger.warning(f"Access denied for {url}: HTTP {response.status_code}")
                 return False, f"HTTP {response.status_code} Access Denied: {url}"
+            elif response.status_code in (500, 502, 503, 504):
+                # Server errors that should trigger fallback discovery
+                logger.warning(f"Server error for {url}: HTTP {response.status_code} - this should trigger fallback discovery")
+                return False, f"HTTP {response.status_code} Server Error: {url}"
             else:
                 # Other HTTP errors
                 logger.warning(f"Failed to fetch {url}: HTTP {response.status_code}")
@@ -81,3 +84,21 @@ class WebFetcher:
         except Exception as e:
             logger.error(f"Unexpected error fetching {url}: {e}")
             return False, ""
+
+    def is_server_error(self, error_message: str) -> bool:
+        """Check if an error message indicates a server error that should trigger fallbacks
+        
+        Args:
+            error_message: The error message returned from fetch_page
+            
+        Returns:
+            True if this is a server error that should trigger fallback discovery
+        """
+        server_error_indicators = [
+            "HTTP 500 Server Error",
+            "HTTP 502 Server Error", 
+            "HTTP 503 Server Error",
+            "HTTP 504 Server Error"
+        ]
+        
+        return any(indicator in error_message for indicator in server_error_indicators)

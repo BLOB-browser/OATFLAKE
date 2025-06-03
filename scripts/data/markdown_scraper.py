@@ -189,24 +189,24 @@ class MarkdownScraper:
                 for title, url in website_matches:
                     # If this line is right after a name line, use that name as the title
                     if current_name and i > 0 and name_line_pattern.search(lines[i-1]):
-                        resource_title = current_name
+                        resource_id = current_name
                     else:
-                        resource_title = title
+                        resource_id = title
                     
-                    logger.info(f"Found URL to scrape: {resource_title} - {url}")
+                    logger.info(f"Found URL to scrape: {resource_id} - {url}")
                     
                     # Add to URLs to scrape later
-                    self.urls_to_scrape.add((resource_title, url))
+                    self.urls_to_scrape.add((resource_id, url))
                     
                     # Extract tags if any
                     tags = self.tag_pattern.findall(line)
-                    logger.info(f"Tags for {resource_title}: {tags}")
+                    logger.info(f"Tags for {resource_id}: {tags}")
                     
                     # Extract just the tag names
                     tag_names = [tag[0] for tag in tags]
                     
                     resource = {
-                        "title": resource_title,
+                        "title": resource_id,
                         "url": url,
                         "description": line,
                         "type": "website",

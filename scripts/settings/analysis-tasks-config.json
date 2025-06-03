@@ -1,0 +1,13 @@
+{ "resource": {
+    "prompt_template": "Your task: Create a detailed analysis of this RESOURCE.\n\nFocus on understanding:\n- What this resource is about\n- Who it's intended for\n- Why it was created\n- Where it comes from (if mentioned)\n- What makes it valuable or unique"
+  },
+  "method": {
+    "prompt_template": "Your task: Identify METHODS or PROCESSES described in this content.\n\nONLY INCLUDE ACTUAL METHODS/PROCESSES:\n- Research methods or methodologies\n- Design processes with clear sequences\n- Technical procedures with defined steps\n- Workflows that others could implement\n- Frameworks with practical implementation steps\n\nDO NOT INCLUDE:\n- Single techniques without multiple steps\n- Generic concepts without actionable steps\n- Vague approaches without clear procedures\n\nReturn ALL methods or processes you find as a JSON array of objects, each with the required fields. If no methods are found, return an empty array [].\nDo not include any explanation or markdown."
+  },
+  "definition": {
+    "prompt_template": "Your task: Identify DEFINITIONS or TERMS explicitly defined in this content.\n\nONLY INCLUDE ACTUAL DEFINITIONS:\n- Technical terms with explicit definitions\n- Concepts that are clearly explained\n- Specialized vocabulary with descriptions\n- Acronyms with their full expansions and meanings\n- Important phrases where meaning is explicitly stated\n\nDO NOT INCLUDE:\n- Topics without clear definitions\n- Vague concepts without explicit explanations\n- General descriptions without defining specific terms\n\nReturn ALL definitions or terms you find as a JSON array of objects, each with the required fields. If no definitions are found, return an empty array [].\nDo not include any explanation or markdown."
+  },
+  "project": {
+    "prompt_template": "Your task: Identify PROJECTS described in this content.\n\nONLY INCLUDE ACTUAL PROJECTS:\n- Research projects with clear objectives\n- Development or implementation projects\n- Case studies with specific outcomes\n- Practical applications of concepts or theories\n- Initiatives with defined goals and timelines\n\nDO NOT INCLUDE:\n- General topics without project details\n- Vague mentions without specific implementation\n- Theoretical concepts without practical application\n\nReturn ALL projects you find as a JSON array of objects, each with the required fields. If no projects are found, return an empty array [].\nDo not include any explanation or markdown."
+  }
+}

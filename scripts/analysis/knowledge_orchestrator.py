@@ -18,15 +18,16 @@ class KnowledgeOrchestrator:
     Orchestrates the entire knowledge processing workflow by coordinating all steps.
     This is the main entry point for the knowledge processing pipeline.
     """
-    
-    def __init__(self, data_folder: str):
+    def __init__(self, data_folder: str = None):
         """
         Initialize the knowledge orchestrator.
         
         Args:
-            data_folder: Path to the data directory
+            data_folder: Path to the data directory (if None, gets from config)
         """
-        self.data_folder = data_folder
+        # Always use the configured data path instead of passed parameter
+        from utils.config import get_data_path
+        self.data_folder = get_data_path()
         self.processing_active = False
         self.cancel_requested = False
         
@@ -67,7 +68,7 @@ class KnowledgeOrchestrator:
                                check_unanalyzed: bool = True,
                                skip_questions: bool = False,
                                skip_goals: bool = False,
-                               max_depth: int = 4,
+                               max_depth: int = 5,
                                force_url_fetch: bool = False,
                                process_level: Optional[int] = None,
                                auto_advance_level: bool = False,
@@ -171,23 +172,22 @@ class KnowledgeOrchestrator:
                         "message": f"Resources file not found: {resources_csv_path}",
                         "data": result
                     }
-                else:
-                    # Initialize URL discovery manager
+                else:                    # Initialize URL discovery manager
                     url_discovery = URLDiscoveryManager(self.data_folder)
-                    
-                    # Get all resources with URLs
+                      # Get all resources with URLs
                     resources_df = pd.read_csv(resources_csv_path)
-                    resources_with_url = resources_df[resources_df['url'].notna()]
+                    # Use origin_url instead of url for compatibility with universal schema
+                    resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
                     
                     # Log discovery details
                     logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
                     
-                    # Trigger discovery using the direct method for better separation of concerns
-                    discovery_result = url_discovery.discover_urls_from_resources_direct(
-                        level=process_level or 1,
-                        max_depth=max_depth
+                    # Call discover_urls_from_resources with correct method name
+                    logger.info(f"Starting URL discovery from resources with max_depth={max_depth}")
+                    discovery_result = await url_discovery.discover_urls_from_resources(
+                        max_depth=max_depth,
+                        force_reprocess=force_url_fetch
                     )
-                    
                     # Log discovery results
                     if discovery_result.get("status") == "success":
                         logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
@@ -250,7 +250,7 @@ class KnowledgeOrchestrator:
                 logger.info("==================================================")
                 
                 # Process URLs at the selected level
-                url_analysis_result = self.process_urls_at_level(
+                url_analysis_result = await self.process_urls_at_level(
                     level=current_level,
                     batch_size=batch_size
                 )
@@ -424,10 +424,10 @@ class KnowledgeOrchestrator:
                 pending_urls = url_storage.get_pending_urls(depth=level)
                 pending_urls_by_level[level] = len(pending_urls)
                 total_pending_urls += len(pending_urls)
-            
-            # Get overall resource statistics
+              # Get overall resource statistics
             total_resources = len(resources_df)
-            resources_with_url = resources_df['url'].notna().sum()
+            # Use origin_url instead of url for compatibility with universal schema
+            resources_with_url = resources_df['origin_url'].notna().sum() if 'origin_url' in resources_df.columns else resources_df['url'].notna().sum()
             analyzed_resources = resources_df['analysis_completed'].fillna(False).sum()
             unanalyzed_resources = resources_with_url - analyzed_resources
             
@@ -482,7 +482,7 @@ class KnowledgeOrchestrator:
                 "error": str(e)
             }
     
-    def process_urls_at_level(self, level: int, batch_size: int = 50) -> Dict[str, Any]:
+    async def process_urls_at_level(self, level: int, batch_size: int = 50) -> Dict[str, Any]:
         """
         Process all pending URLs at a specific level.
         
@@ -494,20 +494,24 @@ class KnowledgeOrchestrator:
             Dictionary with processing results
         """
         if level < 1:
-            logger.warning(f"Invalid level {level} specified. Level must be >= 1. Defaulting to level 1.")
-            level = 1
+            logger.error(f"Invalid level {level} specified. Level must be >= 1.")
+            return {
+                "status": "error",
+                "error": f"Invalid level {level} specified. Level must be >= 1.",
+                "level": level
+            }
             
         logger.info(f"Processing all pending URLs at level {level}")
         
         # Initialize components
-        from scripts.analysis.single_resource_processor import SingleResourceProcessor
+        from scripts.analysis.single_resource_processor_universal import SingleResourceProcessorUniversal
         from scripts.analysis.url_storage import URLStorageManager
         from scripts.analysis.url_discovery_manager import URLDiscoveryManager
         import pandas as pd
         import os
         import csv
         
-        single_processor = SingleResourceProcessor(self.data_folder)
+        single_processor = SingleResourceProcessorUniversal(self.data_folder)
         resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
         processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
         url_storage = URLStorageManager(processed_urls_file)
@@ -527,20 +531,24 @@ class KnowledgeOrchestrator:
                     "reason": "no_resources_file",
                     "message": f"Resources file not found: {resources_csv_path}"
                 }
-            
-            # Load resources with URLs for discovery
+              # Load resources with URLs for discovery
             resources_df = pd.read_csv(resources_csv_path)
-            resources_with_url = resources_df[resources_df['url'].notna()]
+            # Use origin_url instead of url for compatibility with universal schema
+            resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
             
             if len(resources_with_url) > 0:
                 logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
                 
                 # Initialize URL discovery manager
                 url_discovery = URLDiscoveryManager(self.data_folder)
-                
-                # Trigger discovery starting at the current level
+                  # Trigger discovery starting at the current level
                 logger.info(f"Starting URL discovery at level {level}")
-                discovery_result = url_discovery.discover_urls_from_resources(level=level, max_depth=level+1)
+                # FIXED: Use the full max_depth from config instead of limiting to level+1
+                # Get max_depth from config
+                from utils.config import load_config
+                config = load_config()
+                config_max_depth = config.get("crawl_config", {}).get("max_depth", 2)                # Use the config value - this method IS async, so await it
+                discovery_result = await url_discovery.discover_urls_from_resources(level=level, max_depth=config_max_depth)
                 
                 # Log discovery results
                 if discovery_result.get("status") == "success":
@@ -582,11 +590,12 @@ class KnowledgeOrchestrator:
             if not os.path.exists(resources_csv_path):
                 logger.warning(f"Resources file not found: {resources_csv_path}")
                 logger.info("Will still process URLs without resource context")
-                resources_df = pd.DataFrame(columns=['url', 'title'])
+                resources_df = pd.DataFrame(columns=['origin_url', 'title'])
                 resources_with_url = resources_df
             else:
                 resources_df = pd.read_csv(resources_csv_path)
-                resources_with_url = resources_df[resources_df['url'].notna()]
+                # Use origin_url instead of url for compatibility with universal schema
+                resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
             
             # Group URLs by origin
             urls_by_origin = {}
@@ -606,25 +615,37 @@ class KnowledgeOrchestrator:
                 # Check for cancellation
                 if self.cancel_requested:
                     logger.info(f"URL processing at level {level} cancelled")
-                    break
-                
-                # Find the resource this origin URL belongs to
+                    break                # Find the resource this origin URL belongs to
                 resource_for_origin = None
                 for _, row in resources_with_url.iterrows():
-                    if row['url'] == origin_url:
+                    # Check origin_url first, then url as fallback
+                    url_field = 'origin_url' if 'origin_url' in row else 'url'
+                    if row[url_field] == origin_url:
                         resource_for_origin = row.to_dict()
                         break
                 
-                # If we don't have resource context, create a minimal one
+                # If we don't have resource context, try to find it in resource_urls mapping
                 if resource_for_origin is None:
+                    # Check if this URL is associated with a resource in resource_urls.csv
+                    resource_id_from_map = url_storage.get_resource_id_for_url(origin_url)
+                    if resource_id_from_map:
+                        # Look up the resource by this ID
+                        for _, row in resources_df.iterrows():
+                            if str(row.get('title', '')) == resource_id_from_map:
+                                resource_for_origin = row.to_dict()
+                                logger.info(f"Found resource for URL {origin_url} via resource_urls mapping: {resource_id_from_map}")
+                                break
+                  # If we still don't have resource context, create a minimal one
+                if resource_for_origin is None:                    # During discovery phase, just use origin URL without generating a title
                     resource_for_origin = {
-                        'url': origin_url,
-                        'title': f"Origin URL: {origin_url}"
+                        'origin_url': origin_url,  # Use origin_url as the primary URL field
+                        'url': origin_url,        # Keep url for backward compatibility
+                        'title': resource_id_from_map or ""  # Use existing resource ID if available
                     }
-                    logger.info(f"No resource found for origin URL: {origin_url}, using minimal context")
+                    logger.info(f"No resource found for origin URL: {origin_url}. Using existing resource ID: {resource_id_from_map or 'none'}")
                     
                 logger.info(f"Processing {len(urls_for_origin)} URLs at level {level} from origin: {origin_url}")
-                origin_resource_title = resource_for_origin.get('title', 'Unnamed')
+                origin_resource_id = resource_for_origin.get('title', 'Unnamed')
                 
                 # Process each URL using the specific_url_processor
                 for idx, pending_url_data in enumerate(urls_for_origin):
@@ -657,9 +678,9 @@ class KnowledgeOrchestrator:
                         # Increment the attempt count
                         url_storage.increment_url_attempt(url_to_process)
                         
-                        # Process the URL using SingleResourceProcessor's process_specific_url method
+                        # Process the URL using SingleResourceProcessorUniversal's process_specific_url method
                         # This is the ANALYSIS phase - we're not discovering URLs anymore
-                        logger.info(f"ANALYSIS PHASE: Processing URL {url_to_process} at level {url_depth} using SingleResourceProcessor")
+                        logger.info(f"ANALYSIS PHASE: Processing URL {url_to_process} at level {url_depth} using SingleResourceProcessorUniversal")
                         success_result = single_processor.process_specific_url(
                             url=url_to_process,
                             origin_url=origin,
@@ -733,7 +754,7 @@ class KnowledgeOrchestrator:
 
     async def process_knowledge_in_phases(self, 
                                     request_app_state=None,
-                                    max_depth: int = 4,
+                                    max_depth: int = 5,  # Changed from 4 to 5 to match config
                                     force_url_fetch: bool = False,
                                     batch_size: int = 50) -> Dict[str, Any]:
         """
@@ -805,12 +826,10 @@ class KnowledgeOrchestrator:
                     else:
                         # Run discovery phase using URL Discovery Manager with direct method
                         discovery = URLDiscoveryManager(self.data_folder)
-                        
-                        # Call discover_urls_from_resources_direct with the correct parameters
-                        # This uses our new direct method that doesn't rely on SingleResourceProcessor
-                        logger.info(f"Starting direct URL discovery from resources with max_depth={max_depth}")
-                        discovery_result = discovery.discover_urls_from_resources_direct(
-                            level=1,  # Start with level 1
+                          # Call discover_urls_from_resources with the correct parameters
+                        # This uses our URL discovery manager for discovery operations
+                        logger.info(f"Starting URL discovery from resources with max_depth={max_depth}")
+                        discovery_result = await discovery.discover_urls_from_resources(
                             max_depth=max_depth
                         )
                         
@@ -876,7 +895,7 @@ class KnowledgeOrchestrator:
                         continue
                     
                     # Process URLs at this level using process_urls_at_level
-                    level_result = self.process_urls_at_level(
+                    level_result = await self.process_urls_at_level(
                         level=level,
                         batch_size=batch_size
                     )
@@ -1120,20 +1139,15 @@ async def process_knowledge_base(data_folder=None, request_app_state=None, **kwa
     Process all knowledge base files as a standalone function.
     
     Args:
-        data_folder: Path to data folder (if None, gets from config)
+        data_folder: Path to data folder (deprecated - now always uses config)
         request_app_state: FastAPI request.app.state
         **kwargs: All other KnowledgeOrchestrator parameters
     
     Returns:
         Dictionary with processing results
     """
-    # Get data folder from config if not provided
-    if data_folder is None:
-        from utils.config import get_data_path
-        data_folder = get_data_path()
-    
-    # Initialize orchestrator
-    orchestrator = KnowledgeOrchestrator(data_folder)
+    # Initialize orchestrator (always uses config-based path now)
+    orchestrator = KnowledgeOrchestrator()
     
     # Process knowledge
     return await orchestrator.process_knowledge(request_app_state=request_app_state, **kwargs)

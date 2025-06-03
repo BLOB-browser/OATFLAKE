@@ -147,12 +147,33 @@ def update_process_level(new_level):
 def increment_process_level():
     """Increment the current processing level by 1, or reset to 0 if it's at max level"""
     current_level = get_current_process_level()
-    max_level = 4  # Maximum URL depth level to process
+    
+    # Read max_level from crawl_config in config.json
+    max_level = get_max_level_from_config()
     
     # If current level is at max, reset to 0, otherwise increment
     new_level = 0 if current_level >= max_level else current_level + 1
     
     return update_process_level(new_level)
+
+def get_max_level_from_config():
+    """Get the maximum level from crawl_config in config.json"""
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Get max_depth from crawl_config, default to 4 if not found
+            max_level = config.get('crawl_config', {}).get('max_depth', 4)
+            logger.info(f"Read max_level={max_level} from crawl_config in config.json")
+            return max_level
+        else:
+            logger.warning("Config file not found, using default max_level=4")
+            return 4
+    except Exception as e:
+        logger.error(f"Error reading max_level from config: {e}, using default max_level=4")
+        return 4
 
 def get_status():
     """Get the current status of the scheduler"""
@@ -525,8 +546,8 @@ def _training_loop():
                             "check_unanalyzed": "true",          # Always check for unanalyzed resources
                             "force_url_fetch": "true",           # Enable URL discovery to find new URLs
                             
-                            # Set process_level to 0 to start with discovery and main pages
-                            "process_level": "0",
+                            # Get current process level from config, but ensure it's valid (>= 1)
+                            "process_level": str(max(1, get_current_process_level())),
                             
                             # Enable auto-advancing through levels and continuous processing
                             "auto_advance_level": "true",                                     # Auto-advance to next level
