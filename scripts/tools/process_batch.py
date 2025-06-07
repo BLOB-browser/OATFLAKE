@@ -132,12 +132,11 @@ async def process_batch(doc_type, data_path, batch_size=10, rebuild_index=True):
         store_name = "reference_store"
         if doc_type in ["resources", "materials"]:
             store_name = "content_store"
-        
-        # Process documents
+          # Process documents with optimized chunking for performance
         from langchain.text_splitter import RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=300, 
-            chunk_overlap=25
+            chunk_size=1500,    # Optimized chunk size for better performance
+            chunk_overlap=200   # Optimized overlap for better context preservation
         )
         chunks = text_splitter.split_documents(documents)
         

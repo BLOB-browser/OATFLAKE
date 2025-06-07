@@ -139,12 +139,11 @@ class DocumentProcessor:
                     return {"status": "warning", "message": f"No {doc_type} documents found"}
                 
                 logger.info(f"Loaded {len(documents)} {doc_type} documents")
-                
-                # Split documents if needed (simplified for demo)
+                  # Split documents with optimized settings for performance
                 from langchain.text_splitter import RecursiveCharacterTextSplitter
                 text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=300, 
-                    chunk_overlap=25
+                    chunk_size=1500,    # Optimized chunk size for better performance
+                    chunk_overlap=200   # Optimized overlap for better context preservation
                 )
                 chunks = text_splitter.split_documents(documents)
                 

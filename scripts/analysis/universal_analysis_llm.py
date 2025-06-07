@@ -298,11 +298,11 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 "parallel": self.model_config["parallel"]
             }
             
-            # Use standard requests with a reasonable timeout
+            # Use standard requests with an extended timeout for complex analysis
             response = requests.post(
                 f"{self.base_url}/api/generate",
                 json=api_params,
-                timeout=180.0  # 3-minute timeout
+                timeout=600.0  # 10-minute timeout for complex document analysis
             )
             
             # Process response normally
@@ -539,10 +539,20 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
             List of dictionaries containing structured data from all chunks
         """
         try:
-            # Initialize text splitter with consistent settings optimized for performance
+            # For content analysis (web content), bypass chunking since content is already limited
+            # during HTML extraction (2000-4000 chars). Chunking creates unnecessary overhead.
+            if len(content) <= 5000:  # Content from HTML extraction is typically pre-limited
+                logger.info(f"Content is pre-limited ({len(content)} chars), using direct analysis to avoid unnecessary chunking")
+                return self.analyze_content(title, url, content, content_type)
+            
+            # Only use chunking for very large content (e.g., full documents, PDFs)
+            logger.info(f"Content is large ({len(content)} chars), proceeding with chunked analysis")
+            
+            # Initialize text splitter with optimized settings for performance
+            # Using larger chunks to reduce excessive tiny chunks that create processing overhead
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=200,       # Lower chunk size for less CPU load
-                chunk_overlap=20,     # Lower chunk overlap
+                chunk_size=1500,      # Optimized chunk size for better performance (7.5x larger than before)
+                chunk_overlap=200,    # Optimized overlap for better context preservation (10x more overlap)
                 separators=[
                     "\n\n",          # First try to split on double newlines
                     "\n",            # Then single newlines
@@ -558,7 +568,7 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
             content_chunks = text_splitter.split_text(content)
             logger.info(f"Split content into {len(content_chunks)} chunks for analysis")
             
-            # If content is small enough, use direct analysis
+            # If content is small enough after splitting, use direct analysis
             if len(content_chunks) <= 1:
                 logger.info("Content small enough for direct analysis")
                 return self.analyze_content(title, url, content, content_type)

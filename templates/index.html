@@ -12,6 +12,19 @@
         // Add immediate console log to verify script loading
         console.log('HTML loaded, waiting for DOM...');
         
+        // Add global error handler to catch any JavaScript errors
+        window.addEventListener('error', function(e) {
+            console.error('❌ Global JavaScript Error:', e.error);
+            console.error('❌ Error message:', e.message);
+            console.error('❌ Error filename:', e.filename);
+            console.error('❌ Error line:', e.lineno);
+            console.error('❌ Error column:', e.colno);
+        });
+        
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('❌ Unhandled Promise Rejection:', e.reason);
+        });
+        
         // Define global switchToTab function that will be available immediately
         window.switchToTab = function(tab) {
             console.log('Global switchToTab called for', tab);
@@ -224,9 +237,15 @@
         <div id="manage_dataViewContainer" class="view-container hidden">
             <div id="dataContainer"></div>
         </div>
-        
-        <!-- Settings is now a modal only, rendered in a separate div -->
+          <!-- Settings is now a modal only, rendered in a separate div -->
         <div id="settingsContainer"></div>
+        
+        <!-- Debug Button (temporary) -->
+        <div id="debugSection" style="position: fixed; bottom: 10px; right: 10px; z-index: 9999;">
+            <button onclick="debugSearchBox()" class="bg-red-600 text-white px-3 py-2 rounded text-sm">
+                🔧 Debug SearchBox
+            </button>
+        </div>
     </div>
         
         <!-- Widget scripts -->
@@ -242,12 +261,11 @@
         <script src="/static/js/slides/search.js"></script>
         <script src="/static/js/slides/data.js"></script>
         <script src="/static/js/slides/settings.js"></script>
-        
-        <!-- Components that depend on slides -->
+          <!-- Components that depend on slides -->
         <script src="/static/js/components/switch.js"></script>
         <script src="/static/js/components/action-bar.js"></script>
         <script src="/static/js/components/response-box.js"></script>
-        <script src="/static/js/components/search-box.js"></script>
+        <!-- search-box.js is loaded dynamically by search.js -->
         <script src="/static/js/components/system-settings.js"></script>
         
         <!-- Core application (load last) -->
@@ -339,13 +357,72 @@
         }
 
         // Call this when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize the status update
+        document.addEventListener('DOMContentLoaded', function() {            // Initialize the status update
             updateAllStatus();
             
             // Set up event listeners
             wireUpEventListeners();
         });
+        
+        // Debug function to test SearchBox component
+        function debugSearchBox() {
+            console.log('🔧 === DEBUG SEARCHBOX ===');
+            
+            // Check if search container exists
+            const searchContainer = document.getElementById('searchContainer');
+            console.log('searchContainer found:', !!searchContainer);
+            
+            // Check if search-box component is registered
+            const isRegistered = !!customElements.get('search-box');
+            console.log('search-box component registered:', isRegistered);
+            
+            // Find any existing search-box elements
+            const existingBoxes = document.querySelectorAll('search-box');
+            console.log('existing search-box elements:', existingBoxes.length);
+            
+            if (existingBoxes.length > 0) {
+                const firstBox = existingBoxes[0];
+                console.log('first search-box isConnected:', firstBox.isConnected);
+                console.log('first search-box innerHTML length:', firstBox.innerHTML.length);
+                
+                // Look for the Generate button
+                const generateButton = firstBox.querySelector('#processButton');
+                console.log('Generate button found:', !!generateButton);
+                
+                if (generateButton) {
+                    console.log('Generate button visible:', generateButton.offsetParent !== null);
+                    console.log('Generate button classes:', generateButton.className);
+                    console.log('Generate button parent classes:', generateButton.parentElement?.className);
+                    
+                    // Test click
+                    console.log('Simulating Generate button click...');
+                    generateButton.click();
+                } else {
+                    // List all buttons
+                    const allButtons = firstBox.querySelectorAll('button');
+                    console.log('Total buttons in search-box:', allButtons.length);
+                    allButtons.forEach((btn, i) => {
+                        console.log(`Button ${i}: id="${btn.id}", text="${btn.textContent.trim()}"`);
+                    });
+                }
+            } else {
+                console.log('No search-box elements found. Trying to create one...');
+                if (searchContainer && isRegistered) {
+                    const newBox = document.createElement('search-box');
+                    newBox.id = 'debug-search-box';
+                    searchContainer.appendChild(newBox);
+                    console.log('Created new search-box element');
+                } else {
+                    console.log('Cannot create search-box: container or registration missing');
+                }
+            }
+            
+            // Switch to search view if not already there
+            if (window.viewSwitch && window.viewSwitch.activeView !== 'search') {
+                console.log('Switching to search view...');
+                window.viewSwitch.switchView('search');
+            }
+        }
     </script>
 </body>
 </html>

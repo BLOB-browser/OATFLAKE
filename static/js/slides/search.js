@@ -1,6 +1,7 @@
 /**
  * SearchSlide - Handles the generation of the search interface
  * Uses our custom search-box component
+ * CACHE BUSTER: v1.3.0 - FIXED GENERATE BUTTON REFERENCES STORAGE
  */
 const SearchSlide = (() => {
     // HTML template for the search interface using web components
@@ -41,22 +42,39 @@ const SearchSlide = (() => {
         if (!container) return;
         
         // Insert template into container
-        container.innerHTML = template;
-        
-        // Just load the search-box component directly - no need for the widget intermediary
-        loadScript('/static/js/components/search-box.js')
+        container.innerHTML = template;        // Just load the search-box component directly - no need for the widget intermediary
+        loadScript('/static/js/components/search-box.js?v=' + Date.now())
             .then(() => {
-                console.log('Search box component loaded successfully');
+                console.log('🔧 Search box script loaded with timestamp cache-bust');
+                console.log('🔧 searchBoxRegistered flag:', window.searchBoxRegistered);
+                console.log('🔧 customElements.get("search-box"):', !!customElements.get('search-box'));
                 
                 // Wait a brief moment to ensure the component is fully registered
                 setTimeout(() => {
                     try {
                         // Explicitly create the search-box element and add it to the container
                         const searchBoxContainer = container.querySelector('#searchBoxContainer');
-                        if (searchBoxContainer) {
-                            // Create the HTML directly instead of using createElement
-                            searchBoxContainer.innerHTML = '<search-box id="searchBox"></search-box>';
-                            console.log('Search box added to DOM using innerHTML');
+                        console.log('🔧 Found searchBoxContainer:', !!searchBoxContainer);                        if (searchBoxContainer) {
+                            // Create the search-box element using createElement to trigger web component lifecycle
+                            const searchBoxElement = document.createElement('search-box');
+                            searchBoxElement.id = 'searchBox';
+                            console.log('🔧 Created element:', searchBoxElement);
+                            console.log('🔧 Element tag name:', searchBoxElement.tagName);
+                            console.log('🔧 Element constructor:', searchBoxElement.constructor.name);
+                            
+                            searchBoxContainer.appendChild(searchBoxElement);
+                            console.log('🔧 Search box added to DOM using createElement - CACHE BUST v1.2.3');
+                            
+                            // Check if the element was actually created
+                            const createdElement = searchBoxContainer.querySelector('search-box');
+                            console.log('🔧 Created element found:', !!createdElement);
+                            
+                            // Wait a moment and check if connectedCallback was called
+                            setTimeout(() => {
+                                console.log('🔧 Checking if element is connected...');
+                                console.log('🔧 Element isConnected:', createdElement?.isConnected);
+                                console.log('🔧 Element parentNode:', !!createdElement?.parentNode);
+                            }, 500);
                             
                             // Set up event listener for search responses
                             document.addEventListener('search-response', function(event) {
@@ -65,9 +83,11 @@ const SearchSlide = (() => {
                                     handleSearchResponse(responseData);
                                 }
                             });
+                        } else {
+                            console.error('🔧 searchBoxContainer not found in DOM');
                         }
                     } catch (error) {
-                        console.error('Error creating search-box:', error);
+                        console.error('🔧 Error creating search-box:', error);
                     }
                 }, 100);
             })
@@ -211,3 +231,23 @@ document.addEventListener('DOMContentLoaded', function() {
         SearchSlide.render(searchContainer);
     }
 });
+
+// Show the process button by making the container visible
+console.log('✅ Search completed, showing Generate button');
+console.log('Container element found:', !!container);
+if (container) {
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'center';
+    container.style.justifyContent = 'center';
+    container.style.height = '100%';
+    container.style.width = '100%';
+    container.style.padding = '0';
+    container.style.margin = '0';
+    container.style.overflow = 'hidden';
+    container.classList.remove('hidden');
+    container.classList.add('flex');
+    
+    // Optionally, scroll to the top of the container
+    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}

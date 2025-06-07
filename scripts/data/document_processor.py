@@ -14,14 +14,13 @@ logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
     """Handles text processing and document chunking."""
-    
     def __init__(self):
-        """Initialize document processor with consistent configurations across all devices."""
-        # Use consistent chunking settings for all devices - optimized for lower CPU systems
-        logger.info("Using consistent chunking settings for all devices")
+        """Initialize document processor with optimized chunking configurations."""
+        # Use optimized chunking settings for better performance and analysis quality
+        logger.info("Using optimized chunking settings for better performance")
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200,       # Lower chunk size for less CPU load
-            chunk_overlap=20,     # Lower chunk overlap
+            chunk_size=1500,      # Larger chunk size for better context and fewer chunks
+            chunk_overlap=200,    # Moderate overlap for context preservation
             separators=[
                 "\n\n",          # First try to split on double newlines
                 "\n",            # Then single newlines

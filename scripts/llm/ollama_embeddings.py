@@ -5,6 +5,7 @@ from langchain.embeddings.base import Embeddings
 import logging
 import asyncio
 from datetime import datetime
+from .embedding_cache import EmbeddingCache  # Import the cache
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,8 @@ class OllamaEmbeddings(Embeddings):
         model_name: str = "nomic-embed-text",  # Use nomic-embed-text as default
         batch_size: int = 10,  # Default batch size (will be adjusted based on system)
         dimension: int = 768,  # nomic-embed-text dimension
-        timeout: float = 3600.0  # Default timeout in seconds (very high to ensure completion)
+        timeout: float = 3600.0,  # Default timeout in seconds (very high to ensure completion)
+        cache: EmbeddingCache = None  # Add support for passing an existing cache
     ):
         self.base_url = base_url
         self.model_name = model_name
@@ -23,7 +25,10 @@ class OllamaEmbeddings(Embeddings):
         self.dimension = dimension
         self.timeout = timeout  # Store timeout as instance variable
         self._http_client = httpx.AsyncClient(timeout=timeout)
-        logger.info(f"Initialized OllamaEmbeddings with model: {model_name}, batch_size: {batch_size}, timeout: {timeout}s")
+        
+        # Initialize cache if not provided
+        self.cache = cache or EmbeddingCache(max_size=1000, ttl=3600)  # Default 1-hour TTL
+        logger.info(f"Initialized OllamaEmbeddings with model: {model_name}, batch_size: {batch_size}, timeout: {timeout}s, cache enabled: True")
 
     async def aembeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for multiple texts"""
@@ -40,9 +45,8 @@ class OllamaEmbeddings(Embeddings):
                 
             # Continue with filtered texts
             texts = filtered_texts
-            embeddings = []
             total_texts = len(texts)
-            logger.info(f"Generating embeddings for {total_texts} texts using {self.model_name}")
+            embeddings = []
             
             # Check if we need more detailed progress logging
             high_volume = total_texts > 500
@@ -50,7 +54,11 @@ class OllamaEmbeddings(Embeddings):
             
             # Use a standard effective batch size for consistency
             effective_batch_size = 30 if high_volume else self.batch_size
-            logger.info(f"Using batch size {effective_batch_size} for embeddings ({total_texts} texts)")
+            
+            # Track metrics for this batch
+            cache_hits = 0
+            cache_misses = 0
+            saved_time = 0  # estimated time saved in seconds
             
             # Process in batches
             for i in range(0, len(texts), effective_batch_size):
@@ -59,38 +67,82 @@ class OllamaEmbeddings(Embeddings):
                 
                 batch = texts[i:i + effective_batch_size]
                 batch_embeddings = []
+                texts_to_embed = []
+                cache_indices = []
                 
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    tasks = []
-                    for text in batch:
-                        tasks.append(
-                            client.post(
-                                f"{self.base_url}/api/embeddings",
-                                json={
-                                    "model": self.model_name,
-                                    "prompt": text,  # No need for formatting with nomic-embed-text
-                                }
-                            )
-                        )
-                    responses = await asyncio.gather(*tasks)
+                # Check cache for each text in the batch
+                for j, text in enumerate(batch):
+                    # Try to get embedding from cache
+                    cached_embedding = self.cache.get(text)
+                    if cached_embedding:
+                        batch_embeddings.append(cached_embedding)
+                        cache_hits += 1
+                        # Add None as a placeholder to maintain alignment with batch indices
+                        texts_to_embed.append(None)
+                    else:
+                        # Need to generate embedding
+                        batch_embeddings.append(None)  # Placeholder
+                        texts_to_embed.append(text)
+                        cache_indices.append(j)
+                        cache_misses += 1
+                
+                # Generate embeddings for texts not found in cache
+                if texts_to_embed and any(text is not None for text in texts_to_embed):
+                    texts_to_actually_embed = [text for text in texts_to_embed if text is not None]
+                    logger.debug(f"Generating {len(texts_to_actually_embed)} embeddings not found in cache")
                     
-                    for response in responses:
-                        if response.status_code == 200:
-                            result = response.json()
-                            if 'embedding' in result:
-                                batch_embeddings.append(result['embedding'])
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        tasks = []
+                        for text in texts_to_actually_embed:
+                            tasks.append(
+                                client.post(
+                                    f"{self.base_url}/api/embeddings",
+                                    json={
+                                        "model": self.model_name,
+                                        "prompt": text,
+                                    }
+                                )
+                            )
+                        responses = await asyncio.gather(*tasks)
+                        
+                        # Process generated embeddings
+                        generated_embeddings = []
+                        for response in responses:
+                            if response.status_code == 200:
+                                result = response.json()
+                                if 'embedding' in result:
+                                    generated_embeddings.append(result['embedding'])
+                                else:
+                                    logger.error(f"Missing embedding in response: {result}")
+                                    generated_embeddings.append([0.0] * self.dimension)
                             else:
-                                logger.error(f"Missing embedding in response: {result}")
-                                batch_embeddings.append([0.0] * self.dimension)
-                        else:
-                            logger.error(f"Embedding failed: {response.text}")
-                            batch_embeddings.append([0.0] * self.dimension)
-                            
+                                logger.error(f"Embedding failed: {response.text}")
+                                generated_embeddings.append([0.0] * self.dimension)
+                          # Update cache with new embeddings
+                        non_none_texts = [text for text in texts_to_actually_embed if text is not None]
+                        for idx, (text, embedding) in enumerate(zip(non_none_texts, generated_embeddings)):
+                            self.cache.set(text, embedding)
+                        
+                        # Merge generated embeddings with cached ones
+                        generated_idx = 0
+                        for j, embedding in enumerate(batch_embeddings):
+                            if embedding is None:
+                                batch_embeddings[j] = generated_embeddings[generated_idx]
+                                generated_idx += 1
+                    
                 embeddings.extend(batch_embeddings)
+                
                 # Calculate batch processing time for performance metrics
                 batch_end_time = datetime.now()
                 batch_duration = (batch_end_time - batch_start_time).total_seconds()
-                batch_text_len = sum(len(t) for t in batch)
+                batch_text_len = sum(len(t) for t in batch if t)
+                
+                # Estimate time saved through caching for this batch
+                if cache_hits > 0:
+                    # Assume each embedding would have taken the same time as this batch per item
+                    avg_time_per_miss = batch_duration / max(1, cache_misses) if cache_misses > 0 else 0.1  # seconds
+                    time_saved_this_batch = cache_hits * avg_time_per_miss
+                    saved_time += time_saved_this_batch
                 
                 # Log progress less frequently for large batches to reduce log spam
                 if i % log_interval == 0 or i + effective_batch_size >= total_texts:
@@ -108,7 +160,11 @@ class OllamaEmbeddings(Embeddings):
                     
                     logger.info(f"Processed batch of {len(batch)} texts ({i + len(batch)}/{total_texts}) - {((i + len(batch))/total_texts*100):.1f}% complete")
                     logger.info(f"Batch stats: {time_per_item:.2f}s/item, {chars_per_second:.1f} chars/sec, ETA: {eta}")
+                    logger.info(f"Cache performance: {cache_hits} hits, {cache_misses} misses, est. {saved_time:.2f}s saved")
                 
+            # Log overall stats
+            cache_stats = self.cache.stats()
+            logger.info(f"Embedding generation complete - Cache stats: {cache_stats['hits']} hits, {cache_stats['misses']} misses, {cache_stats['size']}/{cache_stats['max_size']} entries")
             logger.info(f"Successfully generated {len(embeddings)} embeddings (dimension: {len(embeddings[0]) if embeddings else self.dimension})")
             return embeddings
             

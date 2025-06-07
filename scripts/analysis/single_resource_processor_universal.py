@@ -404,8 +404,9 @@ class SingleResourceProcessorUniversal:
             List of extracted items of the specified content type
         """
         try:
-            # Use the universal LLM to analyze content in chunks for better reliability
-            items = self.universal_llm.analyze_content_in_chunks(
+            # Use direct analysis since content is already pre-limited by HTML extractor (2000-4000 chars)
+            # This avoids unnecessary chunking overhead that creates many tiny chunks
+            items = self.universal_llm.analyze_content(
                 title=title,
                 url=url,
                 content=content,
