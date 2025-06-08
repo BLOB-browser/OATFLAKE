@@ -63,12 +63,13 @@ class SearchBox extends HTMLElement {    constructor() {
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation(); // Extra safety
-                
-                console.log('🔥 === CHECKING CONDITIONS FOR GENERATE ===');
+                  console.log('🔥 === CHECKING CONDITIONS FOR GENERATE ===');
                 console.log('🔥 - Has currentQuery:', !!this.currentQuery, '(', this.currentQuery, ')');
                 console.log('🔥 - Has references array:', !!this.references);
                 console.log('🔥 - References length:', this.references ? this.references.length : 'undefined');
+                console.log('🔥 - References type:', typeof this.references);
                 console.log('🔥 - References:', this.references);
+                console.log('🔥 - Array.isArray(this.references):', Array.isArray(this.references));
                   if (this.currentQuery && this.references && this.references.length > 0) {
                     console.log('🔥 ✅ ALL CONDITIONS MET - Calling processWithLLM...');
                     console.log('🔥 ✅ Query:', this.currentQuery);
@@ -288,13 +289,14 @@ class SearchBox extends HTMLElement {    constructor() {
             console.log('Search results:', data);
             console.log('🔍 References found:', (data.references || []).length);
             console.log('🔍 Content items found:', (data.content || []).length);
-            
-            // Store ALL results for later use (both references and content)
+              // Store ALL results for later use (both references and content)
             this.references = [
                 ...(data.references || []),
                 ...(data.content || [])
             ];
             console.log('🔍 Total stored results:', this.references.length);
+            console.log('🔍 ✅ REFERENCES STORED SUCCESSFULLY:', this.references);
+            console.log('🔍 ✅ this.references is now available for Generate button');
             
             // Display results
             this.displayReferences(data.references || [], data.content || []);

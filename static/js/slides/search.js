@@ -216,21 +216,14 @@ const SearchSlide = (() => {
             script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
             document.head.appendChild(script);
         });
-    }
-
-    // Return public API
+    }    // Return public API
     return {
         render
     };
 })();
 
-// Initialize when document is ready
-document.addEventListener('DOMContentLoaded', function() {
-    const searchContainer = document.getElementById('searchContainer');
-    if (searchContainer) {
-        SearchSlide.render(searchContainer);
-    }
-});
+// Removed automatic DOMContentLoaded initialization to prevent duplicate search boxes
+// Search slide is now only rendered by app.js initializeSlides()
 
 // Show the process button by making the container visible
 console.log('✅ Search completed, showing Generate button');

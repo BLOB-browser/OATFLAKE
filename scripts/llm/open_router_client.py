@@ -7,7 +7,6 @@ import asyncio
 from scripts.services.settings_manager import SettingsManager
 from scripts.models.settings import ModelSettings
 from .ollama_embeddings import OllamaEmbeddings
-from .embedding_cache import EmbeddingCache
 import os
 from dotenv import load_dotenv
 import time  # Import time for tracking connection check timestamps
@@ -25,9 +24,7 @@ _connection_cache = {
     "instances": 0
 }
 
-# Session-specific embedding cache, cleared between search operations
-# Not shared persistently across search operations
-_embedding_cache = EmbeddingCache(max_size=100, ttl=300)  # Smaller cache with shorter TTL
+# Session-specific embedding cache removed - using simple search cache instead
 
 class OpenRouterClient:
     def __init__(self, api_key: Optional[str] = None, base_url: str = "https://openrouter.ai/api/v1"):
@@ -70,18 +67,12 @@ class OpenRouterClient:
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.load_settings()
         self.default_model = "mistralai/mistral-nemo:free"  # Default model
-        
-        # Use local embeddings via Ollama with the session-specific cache
-        global _embedding_cache
-        self.embeddings = OllamaEmbeddings(cache=_embedding_cache)
-        
-        # Initialize vector stores
+          # Use local embeddings via Ollama without cache
+        self.embeddings = OllamaEmbeddings()
+          # Initialize vector stores
         self.reference_store = None
         self.content_store = None
         self.load_vector_stores()
-        
-        # Flag to track if we need to clear the cache between operations
-        self.cache_needs_reset = False
         
         logger.debug(f"Initialized OpenRouter client (instance #{_connection_cache['instances']})")
     
@@ -187,9 +178,8 @@ class OpenRouterClient:
                     )
                 )
                 
-                # Calculate scores using term overlap for additional relevance
-                results = []
-                for doc in vector_docs:
+                # Calculate scores using term overlap for additional relevance                results = []
+                for i, doc in enumerate(vector_docs):
                     # Calculate term overlap score
                     doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
                     term_overlap = len(query_terms.intersection(doc_terms))
@@ -197,7 +187,7 @@ class OpenRouterClient:
                     
                     # Since we don't have actual vector scores, estimate based on position
                     # (earlier results are more relevant in vector search)
-                    position_score = 1.0 - (vector_docs.index(doc) / (len(vector_docs) or 1))
+                    position_score = 1.0 - (i / (len(vector_docs) or 1))
                     
                     # Calculate hybrid score (combine position + term overlap)
                     hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
@@ -261,16 +251,19 @@ class OpenRouterClient:
                         return results[:k]
                 
                 # If all else fails, return an empty list
-                logger.error(f"All search methods failed. {e}")
+                logger.error(f"All search methods failed. {e}")                
                 return []
         except Exception as outer_e:
             logger.error(f"Error in hybrid search: {outer_e}")
         return []
 
-    async def _optimized_search(self, store, query: str, k: int = 5, alpha: float = 0.5) -> list:
+    async def _optimized_search(self, store, query: str, k: int = 5, alpha: float = 0.5, store_type: str = "unknown") -> list:
         """
         Perform optimized search using FAISS's text-based similarity_search() method.
         This eliminates redundant embedding generation by using FAISS's internal embedding.
+        
+        Performance optimization: Increase k significantly before applying weighting algorithms
+        to get better candidates for reranking. Content stores get more candidates than reference stores.
         """
         if not store:
             return []
@@ -279,18 +272,25 @@ class OpenRouterClient:
             # Extract key terms for relevance checking
             query_terms = set(term.lower() for term in query.split() if len(term) > 3)
             
+            # PERFORMANCE OPTIMIZATION: Different multipliers based on store type
+            # Content stores get more candidates since they contain the detailed information
+            # Reference stores get fewer since they're primarily for attribution/sourcing
+            if store_type == "content":
+                initial_k = max(k * 6, 30)  # Content: 6x more candidates, minimum 30
+            else:  # reference or unknown
+                initial_k = max(k * 3, 15)  # Reference: 3x more candidates, minimum 15
+            
             # Use FAISS's built-in text search that handles embedding generation internally
             vector_docs = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: store.similarity_search(
                     query,
-                    k=k * 2  # Get more candidates for reranking
+                    k=initial_k  # Use increased k for better candidate pool
                 )
             )
-            
-            # Calculate scores using term overlap for additional relevance
+              # Calculate scores using term overlap for additional relevance
             results = []
-            for doc in vector_docs:
+            for i, doc in enumerate(vector_docs):
                 # Calculate term overlap score
                 doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
                 term_overlap = len(query_terms.intersection(doc_terms))
@@ -298,7 +298,7 @@ class OpenRouterClient:
                 
                 # Since we don't have actual vector scores from similarity_search,
                 # estimate based on position (earlier results are more relevant)
-                position_score = 1.0 - (vector_docs.index(doc) / (len(vector_docs) or 1))
+                position_score = 1.0 - (i / (len(vector_docs) or 1))
                 
                 # Calculate hybrid score (combine position + term overlap)
                 hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
@@ -335,13 +335,13 @@ class OpenRouterClient:
             
             # Reference store search with optimized approach
             if self.reference_store is not None:
-                try:
-                    # Use optimized search that handles embedding generation internally
+                try:                    # Use optimized search that handles embedding generation internally
                     ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
                         k=k,
-                        alpha=0.7  # Weight vector search more heavily for references
+                        alpha=0.7,  # Weight vector search more heavily for references
+                        store_type="reference"
                     )
                     
                     if ref_results:
@@ -368,13 +368,13 @@ class OpenRouterClient:
 
             # Content store search with optimized approach
             if self.content_store is not None:
-                try:
-                    # Use optimized search with more weight on term overlap for content
+                try:                    # Use optimized search with more weight on term overlap for content
                     content_results = await self._optimized_search(
                         self.content_store,
                         query,
                         k=k,
-                        alpha=0.5  # Equal weight to vector and term overlap
+                        alpha=0.5,  # Equal weight to vector and term overlap
+                        store_type="content"
                     )
                     
                     if content_results:
@@ -421,13 +421,13 @@ class OpenRouterClient:
             references = []
             
             if self.reference_store is not None:
-                try:
-                    # Use optimized search for better relevance
+                try:                    # Use optimized search for better relevance
                     ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
                         k=k,
-                        alpha=0.7  # Weight vector search more heavily for references
+                        alpha=0.7,  # Weight vector search more heavily for references
+                        store_type="reference"
                     )
                     
                     # Process each reference with scores
@@ -739,11 +739,7 @@ INSTRUCTIONS:
                       # Add model info if available
                     if 'model' in result:
                         logger.info(f"Response generated by model: {result['model']}")
-                    
-                    # Clear the embedding cache after generation to ensure fresh search next time
-                    if self.cache_needs_reset:
-                        self.reset_cache()
-                    
+                      # Clear the cache between operations - removed
                     return generated_text
 
             except httpx.RequestError as e:
@@ -957,12 +953,11 @@ INSTRUCTIONS:
         except Exception as e:
             logger.error(f"Error listing models: {e}")
             return []
-    async def unified_search(self, query: str, k_reference: int = 3, k_content: int = 3) -> Dict[str, Any]:
+    async def unified_search(self, query: str, k_reference: int = 2, k_content: int = 8) -> Dict[str, Any]:        
         """
         Perform a unified search across both reference and content stores using a single embedding.
         
         This method eliminates redundant embedding generation by using one embedding for multiple searches.
-        The cache is used only for the current search session and will be cleared after generation.
         
         Args:
             query: The search query
@@ -972,10 +967,6 @@ INSTRUCTIONS:
         Returns:
             Dictionary with reference and content results, and metadata about the search
         """
-        # If we have a pending cache reset from previous operations, do it now
-        if self.cache_needs_reset:
-            self.reset_cache()
-            
         search_start = datetime.now()
         results = {
             "reference_results": [],
@@ -987,8 +978,6 @@ INSTRUCTIONS:
                 "content_count": 0
             }
         }
-          # Mark that the cache will need to be reset after generation
-        self.cache_needs_reset = True
         
         try:
             # Extract query terms for evaluation (no redundant embedding generation needed)
@@ -1045,7 +1034,7 @@ INSTRUCTIONS:
                             "term_overlap": meta.get("term_overlap", 0)
                         })
                     
-                    results["metadata"]["content_count"] = len(content_results)
+                    results["metadata"]["content_count"] = len(content_results)                    
                     logger.info(f"Found {len(content_results)} content results")
                 except Exception as e:
                     logger.error(f"Error searching content store: {e}")
@@ -1056,9 +1045,6 @@ INSTRUCTIONS:
             search_duration = (datetime.now() - search_start).total_seconds()
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             
-            # Mark that the cache will need to be reset after generation
-            self.cache_needs_reset = True
-            
             return results
             
         except Exception as e:
@@ -1067,12 +1053,11 @@ INSTRUCTIONS:
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             results["metadata"]["error"] = str(e)
             return results
-    async def search_deeper(self, query: str, pinned_items: List[Dict], k: int = 5) -> Dict[str, Any]:
+    async def search_deeper(self, query: str, pinned_items: List[Dict], k: int = 5) -> Dict[str, Any]:        
         """
         Perform a deeper search using pinned items and their context.
         
         This method uses pinned items as additional context for a more focused search.
-        The cache is used only for the current search session and will be cleared after generation.
         
         Args:
             query: The search query
@@ -1082,10 +1067,6 @@ INSTRUCTIONS:
         Returns:
             Dictionary with search results and metadata
         """
-        # If we have a pending cache reset from previous operations, do it now
-        if self.cache_needs_reset:
-            self.reset_cache()
-            
         search_start = datetime.now()
         results = {
             "deeper_results": [],
@@ -1094,7 +1075,7 @@ INSTRUCTIONS:
                 "search_duration_ms": 0,
                 "pinned_items_used": len(pinned_items),
                 "total_results": 0
-            }        }
+            }}
         
         try:
             # Extract core content from pinned items
@@ -1155,13 +1136,9 @@ INSTRUCTIONS:
             all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
             results["deeper_results"] = all_results[:k*2]  # Return top results across both stores
             results["metadata"]["total_results"] = len(all_results)
-            
-            # Calculate overall search duration
+              # Calculate overall search duration
             search_duration = (datetime.now() - search_start).total_seconds()
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
-            
-            # Mark that the cache will need to be reset after generation
-            self.cache_needs_reset = True
             
             return results
             
@@ -1171,10 +1148,8 @@ INSTRUCTIONS:
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             results["metadata"]["error"] = str(e)
             return results
-        
-    def reset_cache(self):
-        """Reset the embedding cache after completing a search-generation cycle."""
-        global _embedding_cache
-        _embedding_cache.clear()
-        self.cache_needs_reset = False
-        logger.info("Embedding cache cleared for next search operation")
+        def reset_cache(self):
+            """
+            Cache reset method removed - using simple search cache instead.
+            """
+        logger.info("Cache reset method disabled - using simple search cache instead")

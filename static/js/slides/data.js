@@ -281,18 +281,11 @@ const DataSlide = (() => {
                 }, 1000);
             });
         }
-    }
-
-    // Return public API
+    }    // Return public API
     return {
         render
     };
 })();
 
-// Initialize when document is ready
-document.addEventListener('DOMContentLoaded', function() {
-    const dataContainer = document.getElementById('dataContainer');
-    if (dataContainer) {
-        DataSlide.render(dataContainer);
-    }
-});
+// Removed automatic DOMContentLoaded initialization to prevent duplicate components
+// Data slide is now only rendered by app.js initializeSlides()

@@ -41,7 +41,7 @@ class OllamaClient:
                 ""               # Finally characters
             ],
             length_function=len,
-        )
+        )        # Conversation memory removed - using simple search cache instead
 
     def get_config_path(self):
         """Get the path to the config file in the project directory"""
@@ -207,10 +207,9 @@ class OllamaClient:
                 
                 # Get the raw docstore to extract IDs directly
                 docstore = store.docstore._dict if hasattr(store, 'docstore') else {}
-                
-                # Calculate scores using term overlap for additional relevance
+                  # Calculate scores using term overlap for additional relevance
                 results = []
-                for doc in vector_docs:
+                for i, doc in enumerate(vector_docs):
                     # Calculate term overlap score
                     doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
                     term_overlap = len(query_terms.intersection(doc_terms))
@@ -218,7 +217,7 @@ class OllamaClient:
                     
                     # Since we don't have actual vector scores, estimate based on position
                     # (earlier results are more relevant in vector search)
-                    position_score = 1.0 - (vector_docs.index(doc) / (len(vector_docs) or 1))
+                    position_score = 1.0 - (i / (len(vector_docs) or 1))
                     
                     # Calculate hybrid score (combine position + term overlap)
                     hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
@@ -302,13 +301,13 @@ class OllamaClient:
             
             # Reference store search with optimized approach
             if self.reference_store is not None:
-                try:
-                    # Use optimized search that handles embedding generation internally
+                try:                    # Use optimized search that handles embedding generation internally
                     ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
                         k=k,
-                        alpha=0.7  # Weight vector search more heavily for references
+                        alpha=0.7,  # Weight vector search more heavily for references
+                        store_type="reference"
                     )
                     
                     if ref_results:
@@ -333,13 +332,13 @@ class OllamaClient:
             else:
                 logger.warning("Reference store is not available")            # Content store search with optimized approach
             if self.content_store is not None:
-                try:
-                    # Use optimized search with more weight on term overlap for content
+                try:                    # Use optimized search with more weight on term overlap for content
                     content_results = await self._optimized_search(
                         self.content_store,
                         query,
                         k=k,
-                        alpha=0.5  # Equal weight to vector and term overlap
+                        alpha=0.5,  # Equal weight to vector and term overlap
+                        store_type="content"
                     )
                     
                     if content_results:
@@ -377,7 +376,8 @@ class OllamaClient:
                                 store,
                                 query,
                                 k=max(1, k//2),  # Use fewer results per topic store
-                                alpha=0.6  # Balanced weight for topic stores
+                                alpha=0.6,  # Balanced weight for topic stores
+                                store_type="reference"  # Topic stores are primarily for references
                             )
                             
                             # Add to consolidated results
@@ -454,13 +454,13 @@ class OllamaClient:
                     return ""
             else:
                 logger.warning(f"Store '{store_name}' not found (available topic stores: {', '.join(self.topic_stores.keys()) if self.topic_stores else 'none'})")
-                return ""
-              # Use optimized search instead of redundant embedding generation
+                return ""              # Use optimized search instead of redundant embedding generation
             results = await self._optimized_search(
                 store,
                 query,
                 k=k,
-                alpha=0.6  # Balanced weight between vector and term matching
+                alpha=0.6,  # Balanced weight between vector and term matching
+                store_type="reference" if store_name in ["reference_store"] or store_name.startswith("topic_") else "content"
             )
             
             if results:
@@ -548,7 +548,8 @@ class OllamaClient:
                                 store,
                                 query,
                                 k=max(1, k//2),  # Use fewer results per topic store
-                                alpha=0.6  # Balanced weight for topic stores
+                                alpha=0.6,  # Balanced weight for topic stores
+                                store_type="reference"  # Topic stores are primarily for references
                             )
                             
                             # Process results from this store
@@ -630,12 +631,10 @@ class OllamaClient:
             ready, status = await self.check_connection()
             if not ready:
                 logger.error(f"Ollama not ready: {status}")
-                return f"Model not available. Please check Ollama installation. Details: {status}"
-
-            # Use settings from model_settings.json or defaults
+                return f"Model not available. Please check Ollama installation. Details: {status}"            # Use settings from model_settings.json or defaults
             settings = self.settings_manager.load_settings()
             # Values from settings take precedence over hardcoded defaults
-            k_value = context_k if context_k is not None else 5
+            k_value = context_k if context_k is not None else 10  # Increased from 5 to 10 for better results
             max_tokens_value = max_tokens if max_tokens is not None else int(settings.max_tokens)
             temperature_value = float(settings.temperature) if hasattr(settings, 'temperature') else 0.3
             
@@ -684,15 +683,9 @@ INSTRUCTIONS:
 USER QUESTION: {prompt}
 
 DETAILED ANSWER:
-"""
-
+"""         
             try:
                 logger.info("Context preparation complete, now generating response from model...")
-                
-                # For troubleshooting: log if Ollama is reachable
-                if not await self.check_health():
-                    logger.error("Ollama health check failed before making request!")
-                    return "Error: Ollama API is not responding. Please check if Ollama is running."
                 
                 async with httpx.AsyncClient() as client:
                     logger.info(f"Generating response with: k={k_value}, max_tokens={max_tokens_value}, temp={temperature_value}")
@@ -841,14 +834,17 @@ DETAILED ANSWER:
         
         # Split the text into chunks
         text_chunks = self.text_splitter.split_text(text)
-        logger.info(f"Text processed into {len(text_chunks)} chunks")
+        logger.info(f"Text processed into {len(text_chunks)} chunks")        
         processed_text = " ".join(text_chunks)
-        return processed_text
+        return processed_text    
 
-    async def _optimized_search(self, store, query: str, k: int = 5, alpha: float = 0.5) -> list:
+    async def _optimized_search(self, store, query: str, k: int = 5, alpha: float = 0.5, store_type: str = "unknown") -> list:
         """
         Perform optimized search using FAISS's text-based similarity_search() method.
         This eliminates redundant embedding generation by using FAISS's internal embedding.
+        
+        Performance optimization: Increase k significantly before applying weighting algorithms
+        to get better candidates for reranking. Content stores get more candidates than reference stores.
         """
         if not store:
             return []
@@ -857,18 +853,42 @@ DETAILED ANSWER:
             # Extract key terms for relevance checking
             query_terms = set(term.lower() for term in query.split() if len(term) > 3)
             
-            # Use FAISS's built-in text search that handles embedding generation internally
-            vector_docs = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: store.similarity_search(
-                    query,
-                    k=k * 2  # Get more candidates for reranking
+            # PERFORMANCE OPTIMIZATION: Different multipliers based on store type
+            # Content stores get more candidates since they contain the detailed information
+            # Reference stores get fewer since they're primarily for attribution/sourcing
+            if store_type == "content":
+                initial_k = max(k * 6, 30)  # Content: 6x more candidates, minimum 30
+            else:  # reference or unknown
+                initial_k = max(k * 3, 15)  # Reference: 3x more candidates, minimum 15
+              # Use FAISS's built-in text search that handles embedding generation internally
+            try:
+                vector_docs = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: store.similarity_search(
+                        query,
+                        k=initial_k  # Use increased k for better candidate pool
+                    )
                 )
-            )
-            
-            # Calculate scores using term overlap for additional relevance
+            except KeyError as ke:
+                # Handle FAISS index/docstore mismatch - common issue with corrupted stores
+                logger.warning(f"FAISS index/docstore mismatch (KeyError: {ke}), trying with smaller k")
+                try:
+                    # Try with a much smaller k value
+                    smaller_k = min(5, initial_k // 4)
+                    vector_docs = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: store.similarity_search(
+                            query,
+                            k=smaller_k
+                        )
+                    )
+                    logger.info(f"Successfully retrieved {len(vector_docs)} docs with reduced k={smaller_k}")
+                except Exception as e2:
+                    logger.error(f"Failed even with reduced k: {e2}")
+                    return []
+              # Calculate scores using term overlap for additional relevance
             results = []
-            for doc in vector_docs:
+            for i, doc in enumerate(vector_docs):
                 # Calculate term overlap score
                 doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
                 term_overlap = len(query_terms.intersection(doc_terms))
@@ -876,7 +896,7 @@ DETAILED ANSWER:
                 
                 # Since we don't have actual vector scores from similarity_search,
                 # estimate based on position (earlier results are more relevant)
-                position_score = 1.0 - (vector_docs.index(doc) / (len(vector_docs) or 1))
+                position_score = 1.0 - (i / (len(vector_docs) or 1))
                 
                 # Calculate hybrid score (combine position + term overlap)
                 hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
@@ -889,11 +909,10 @@ DETAILED ANSWER:
                 
                 # Add to results for reranking
                 results.append((doc, hybrid_score))
-            
-            # Sort by hybrid score and return top k
+              # Sort by hybrid score and return top k
             results.sort(key=lambda x: x[1], reverse=True)
             return results[:k]
             
         except Exception as e:
-            logger.error(f"Error in optimized search: {e}")
+            logger.error(f"Error in optimized search: {e}", exc_info=True)
             return []

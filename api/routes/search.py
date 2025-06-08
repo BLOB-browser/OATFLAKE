@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from scripts.services.settings_manager import SettingsManager
+from scripts.services.conversation_logger import log_search_conversation
+from scripts.services.simple_search_cache import get_search_cache
 from scripts.models.settings import LLMProvider
 from scripts.llm.ollama_client import OllamaClient
 from scripts.llm.open_router_client import OpenRouterClient
@@ -65,9 +67,8 @@ async def process_web_request(request: Request):
                                 'provider': 'ollama',  # Default to ollama
                                 'model_name': getattr(request.app.state, 'ollama_client', {}).model if hasattr(request.app.state, 'ollama_client') else 'unknown'
                             }
-                        
-                        # Format response with model info and timing
-                        return {
+                          # Format response with model info and timing
+                        formatted_response = {
                             "response": response_data.get('response', ''),
                             "status": "success",
                             "complete": True,
@@ -85,6 +86,27 @@ async def process_web_request(request: Request):
                                                      if 'stages' in response_data else 0,
                             }
                         }
+                        
+                        # Log the completed conversation
+                        try:
+                            conversation_data = {
+                                'request_id': request_id,
+                                'query': response_data.get('query', original_query),
+                                'prompt': response_data.get('prompt', ''),
+                                'response': response_data.get('response', ''),
+                                'word_count': formatted_response['word_count'],
+                                'model_info': model_info,
+                                'skip_search': response_data.get('skip_search', False),
+                                'timing': formatted_response['timing'],
+                                'timestamp': formatted_response['timestamp'],
+                                'references': response_data.get('references', []),
+                                'content': response_data.get('content', [])
+                            }
+                            log_search_conversation(conversation_data)
+                        except Exception as e:
+                            logger.warning(f"Failed to log conversation {request_id}: {e}")
+                        
+                        return formatted_response
                     else:
                         # Response not ready yet, but being processed
                         return {
@@ -349,10 +371,17 @@ async def get_references(request: Request):
     try:
         body = await request.json()
         query = body.get('prompt') or body.get('query')
-        k_value = body.get('context_k', 5)  # Allow configurable number of results
+        k_value = body.get('context_k', 10)  # Increased from 5 to 10 for better results
         
         if not query:
             raise HTTPException(status_code=422, detail="No query provided")
+
+        # Check cache first to avoid duplicate searches
+        search_cache = get_search_cache()
+        cached_results = search_cache.get(query, k_value)
+        if cached_results:
+            logger.info(f"Returning cached search results for query: '{query[:50]}...'")
+            return cached_results
 
         # Use local Ollama client for vector search regardless of configured LLM provider
         # because vector search happens locally in all cases
@@ -520,9 +549,8 @@ async def get_references(request: Request):
                             "name": display_name,
                             "document_count": doc_count
                         }
-        
-        # Return all data in a comprehensive, well-structured format
-        return {
+          # Return all data in a comprehensive, well-structured format
+        response_data = {
             "status": "success",
             "query": query,
             "references": references,  # From reference_store and topic stores
@@ -544,6 +572,12 @@ async def get_references(request: Request):
                 }
             }
         }
+        
+        # Cache the results for potential reuse by /api/web endpoint
+        search_cache = get_search_cache()
+        search_cache.put(query, response_data, k_value)
+        
+        return response_data
     except Exception as e:
         logger.error(f"References request error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -561,8 +595,8 @@ async def check_ollama_status():
 
 class UnifiedSearchRequest(BaseModel):
     query: str
-    k_reference: Optional[int] = 3
-    k_content: Optional[int] = 3
+    k_reference: Optional[int] = 3  # Increased: references for attribution/sourcing
+    k_content: Optional[int] = 7    # Adjusted: content for detailed information (total 10)
     
 @router.post("/api/search/unified")
 async def unified_search(request: UnifiedSearchRequest, req: Request):
@@ -759,4 +793,23 @@ async def search_deeper(request: DeeperSearchRequest, req: Request):
     
     except Exception as e:
         logger.error(f"Error in deeper search: {e}", exc_info=True)
+        return {"error": str(e), "status": "error"}
+
+@router.get("/api/conversations/stats")
+async def get_conversation_stats():
+    """Get statistics about logged conversations."""
+    try:
+        from scripts.services.conversation_logger import get_conversation_logger
+        
+        logger_instance = get_conversation_logger()
+        stats = logger_instance.get_stats()
+        
+        return {
+            "status": "success",
+            "data": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting conversation stats: {e}", exc_info=True)
         return {"error": str(e), "status": "error"}

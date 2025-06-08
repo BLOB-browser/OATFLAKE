@@ -5,7 +5,6 @@ from langchain.embeddings.base import Embeddings
 import logging
 import asyncio
 from datetime import datetime
-from .embedding_cache import EmbeddingCache  # Import the cache
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +15,7 @@ class OllamaEmbeddings(Embeddings):
         model_name: str = "nomic-embed-text",  # Use nomic-embed-text as default
         batch_size: int = 10,  # Default batch size (will be adjusted based on system)
         dimension: int = 768,  # nomic-embed-text dimension
-        timeout: float = 3600.0,  # Default timeout in seconds (very high to ensure completion)
-        cache: EmbeddingCache = None  # Add support for passing an existing cache
+        timeout: float = 3600.0  # Default timeout in seconds (very high to ensure completion)
     ):
         self.base_url = base_url
         self.model_name = model_name
@@ -25,10 +23,7 @@ class OllamaEmbeddings(Embeddings):
         self.dimension = dimension
         self.timeout = timeout  # Store timeout as instance variable
         self._http_client = httpx.AsyncClient(timeout=timeout)
-        
-        # Initialize cache if not provided
-        self.cache = cache or EmbeddingCache(max_size=1000, ttl=3600)  # Default 1-hour TTL
-        logger.info(f"Initialized OllamaEmbeddings with model: {model_name}, batch_size: {batch_size}, timeout: {timeout}s, cache enabled: True")
+        logger.info(f"Initialized OllamaEmbeddings with model: {model_name}, batch_size: {batch_size}, timeout: {timeout}s")
 
     async def aembeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for multiple texts"""
