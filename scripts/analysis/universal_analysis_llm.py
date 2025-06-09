@@ -43,13 +43,22 @@ class UniversalAnalysisLLM:
     """
     
     def __init__(self, base_url: str = "http://localhost:11434", model: str = None, data_folder: str = None):
-        self.base_url = base_url
+        """
+        Initialize UniversalAnalysisLLM with static model settings.
         
-        # Store data folder for DataSaver initialization
+        Args:
+            base_url: Ollama API base URL
+            model: Override model name
+            data_folder: Path to data directory
+        """
+        # Set up data folder
         if data_folder is None:
             from utils.config import get_data_path
             data_folder = get_data_path()
         self.data_folder = data_folder
+        
+        # Set base URL
+        self.base_url = base_url
         
         # Initialize DataSaver for CSV storage operations
         from scripts.analysis.data_saver import DataSaver
@@ -58,7 +67,7 @@ class UniversalAnalysisLLM:
         # Load analysis-specific model settings
         self.settings = self._load_analysis_settings()
         
-        # Set model based on settings or parameter
+        # Set model based on settings or parameters
         if model:
             # Override with provided model
             if self.settings["provider"] == "ollama":
@@ -66,15 +75,11 @@ class UniversalAnalysisLLM:
             else:
                 self.openrouter_model = model
         else:
-            # Use settings for model selection
+            # Use settings
             if self.settings["provider"] == "ollama":
                 self.model = self.settings["model_name"]
             else:
                 self.openrouter_model = self.settings["openrouter_model"]
-        
-        # Get adaptive model configuration from the utility
-        from scripts.llm.processor_config_utils import get_adaptive_model_config
-        self.model_config = get_adaptive_model_config()
         
         # Load task configuration with prompts
         self.task_config = self._load_task_config()
@@ -85,13 +90,14 @@ class UniversalAnalysisLLM:
             self._load_openrouter_api_key()
         
         # Log initialization
-        logger.info(f"Initialized UniversalAnalysisLLM with provider: {self.settings['provider']}")
+        logger.info(f"🚀 Initialized UniversalAnalysisLLM with static model settings")
+        logger.info(f"Provider: {self.settings['provider']}")
         if self.settings["provider"] == "ollama":
             logger.info(f"Using Ollama model: {self.model}")
         else:
             logger.info(f"Using OpenRouter model: {self.openrouter_model}")
         
-        logger.info(f"Using {self.model_config['threads']} threads and {self.model_config['batch_size']} batch size")
+        logger.info(f"Model config: {self.settings['num_thread']} threads, {self.settings['num_ctx']} context")
     
     def _load_analysis_settings(self) -> Dict:
         """
@@ -288,21 +294,23 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 "stream": False,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                # Add all model configuration parameters
-                "threads": self.model_config["threads"],
-                "num_ctx": self.model_config["num_ctx"],
-                "num_gpu": self.model_config["num_gpu"],
-                "batch_size": self.model_config["batch_size"],
-                "num_keep": self.model_config["num_keep"],
-                "repeat_penalty": self.model_config["repeat_penalty"],
-                "parallel": self.model_config["parallel"]
+                # Add model configuration parameters using settings
+                "options": {
+                    "num_thread": self.settings.get("num_thread", 4),
+                    "num_ctx": self.settings.get("num_ctx", 256),
+                    "top_p": self.settings.get("top_p", 0.9),
+                    "top_k": self.settings.get("top_k", 40),
+                }
             }
             
-            # Use standard requests with an extended timeout for complex analysis
+            # Use standard timeout
+            timeout_seconds = 120
+            
+            # Use standard requests with timeout
             response = requests.post(
                 f"{self.base_url}/api/generate",
                 json=api_params,
-                timeout=600.0  # 10-minute timeout for complex document analysis
+                timeout=timeout_seconds
             )
             
             # Process response normally
@@ -324,15 +332,14 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             
             if format_type == "json":
                 try:
-                    # Extract JSON from response
+                    # Extract JSON from response using robust parsing
                     json_str = result["response"].strip()
-                    # Handle case where response includes markdown code blocks
-                    if "```json" in json_str:
-                        json_str = json_str.split("```json")[1].split("```")[0].strip()
-                    elif "```" in json_str:
-                        json_str = json_str.split("```")[1].split("```")[0].strip()
+                    structured_response = self._parse_json_response(json_str)
                     
-                    structured_response = json.loads(json_str)
+                    # Check if parsing failed
+                    if structured_response is None:
+                        logger.error("Failed to parse JSON response with robust parser")
+                        return None
                     
                     # Ensure it's a list
                     if isinstance(structured_response, dict):
@@ -352,7 +359,7 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                     
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse JSON response: {e}")
-                    logger.debug(f"Invalid JSON string: {json_str}")
+                    logger.debug(f"Raw response text: {result['response'][:200]}...")
                     return None
             else:
                 # For non-JSON responses, return the raw text
@@ -546,27 +553,10 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
                 return self.analyze_content(title, url, content, content_type)
             
             # Only use chunking for very large content (e.g., full documents, PDFs)
-            logger.info(f"Content is large ({len(content)} chars), proceeding with chunked analysis")
+            logger.info(f"Content is large ({len(content)} chars), proceeding with adaptive chunked analysis")
             
-            # Initialize text splitter with optimized settings for performance
-            # Using larger chunks to reduce excessive tiny chunks that create processing overhead
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1500,      # Optimized chunk size for better performance (7.5x larger than before)
-                chunk_overlap=200,    # Optimized overlap for better context preservation (10x more overlap)
-                separators=[
-                    "\n\n",          # First try to split on double newlines
-                    "\n",            # Then single newlines
-                    ". ",            # Then sentences
-                    ", ",            # Then clauses
-                    " ",             # Then words
-                    ""               # Finally characters
-                ],
-                length_function=len,
-            )
-            
-            # Split content into chunks
-            content_chunks = text_splitter.split_text(content)
-            logger.info(f"Split content into {len(content_chunks)} chunks for analysis")
+            # Use adaptive chunking method instead of duplicating logic
+            content_chunks = self._split_content_into_chunks(content)
             
             # If content is small enough after splitting, use direct analysis
             if len(content_chunks) <= 1:
@@ -759,6 +749,16 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
         except Exception as e:
             logger.error(f"Error saving items to universal CSV: {e}", exc_info=True)
     
+    def save_items_by_type(self, content_type: str, items: List[Dict]) -> None:
+        """
+        Public method to save items of a specific content type using universal schema.
+        
+        Args:
+            content_type: Content type determining which save method to use
+            items: List of items to save
+        """
+        self._save_items_by_type(items, content_type)
+    
     def _save_items_by_type(self, items: List[Dict], content_type: str) -> None:
         """
         Save items of a specific content type using the appropriate DataSaver method.
@@ -818,6 +818,24 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
                     methods.append(method)
                 self.data_saver.save_methods(methods)
                 
+            elif content_type == "reference":
+                # Save references to their own CSV file
+                references = []
+                for item in items:
+                    reference = {
+                        'title': item.get('title', ''),
+                        'description': item.get('description', ''),
+                        'tags': item.get('tags', []),
+                        'purpose': item.get('purpose', ''),
+                        'location': item.get('location', ''),
+                        'origin_url': item.get('origin_url', ''),
+                        'content_type': content_type,
+                        'created_at': item.get('created_at'),
+                        'analysis_completed': True,  # These items have been analyzed
+                    }
+                    references.append(reference)
+                self.data_saver.save_references(references)
+                
             elif content_type in ["resource", "material"]:
                 # Save as resources (default case)
                 resources = []
@@ -855,3 +873,193 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
             
         except Exception as e:
             logger.error(f"Error saving {content_type} items: {e}", exc_info=True)
+
+    def _parse_json_response(self, response_text: str) -> Any:
+        """
+        Parse JSON from LLM response with enhanced cleanup and validation.
+        Handles cases where LLM includes extra text after valid JSON.
+        
+        Args:
+            response_text: Raw response text from the LLM
+            
+        Returns:
+            Parsed JSON object/array
+        """
+        # Check for empty responses
+        if not response_text or response_text.strip() == "":
+            logger.error("Received empty response from LLM")
+            return None
+            
+        logger.debug(f"Parsing JSON from: {response_text[:100]}...")
+        
+        # First, handle markdown code blocks
+        json_str = response_text.strip()
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0].strip()
+        
+        try:
+            # Direct JSON parsing
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Advanced JSON extraction
+            try:
+                # Check for multiple JSON objects (invalid JSON) - reject these
+                if json_str.count('{') > json_str.count('[') and '}{' in json_str:
+                    logger.debug("Detected multiple concatenated JSON objects - rejecting")
+                    return None
+                
+                # Find the first occurrence of '[' or '{'
+                start = None
+                for i, char in enumerate(json_str):
+                    if (char in '[{'):
+                        start = i
+                        break
+                
+                if start is not None:
+                    # Find the matching closing bracket/brace
+                    opening_char = json_str[start]
+                    closing_char = ']' if opening_char == '[' else '}'
+                    
+                    # Track nesting level
+                    level = 0
+                    end = None
+                    in_string = False
+                    escape_next = False
+                    
+                    for i in range(start, len(json_str)):
+                        char = json_str[i]
+                        
+                        if escape_next:
+                            escape_next = False
+                            continue
+                            
+                        if char == '\\':
+                            escape_next = True
+                            continue
+                            
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            continue
+                            
+                        if not in_string:
+                            if char == opening_char:
+                                level += 1
+                            elif char == closing_char:
+                                level -= 1
+                                if level == 0:
+                                    end = i + 1
+                                    break
+                    
+                    if end is not None:
+                        # Extract the JSON portion
+                        json_text = json_str[start:end]
+                        logger.debug(f"Extracted JSON: {json_text[:100]}...")
+                        
+                        try:
+                            return json.loads(json_text)
+                        except json.JSONDecodeError as e:
+                            # Try cleaning up common issues
+                            logger.debug(f"Error with extracted JSON: {e}")
+                            cleaned_json = self._clean_json_text(json_text)
+                            try:
+                                return json.loads(cleaned_json)
+                            except json.JSONDecodeError:
+                                logger.debug("Cleaned JSON still invalid")
+                                return None
+            except Exception as e:
+                logger.error(f"Error extracting JSON: {e}")
+                
+            # If all parsing attempts fail, return None
+            logger.error("All JSON parsing attempts failed")
+            logger.debug(f"Failed to parse JSON: {response_text[:200]}...")
+            return None
+
+    def _clean_json_text(self, json_text: str) -> str:
+        """
+        Clean up common JSON formatting issues.
+        
+        Args:
+            json_text: Raw JSON text with potential formatting issues
+            
+        Returns:
+            Cleaned JSON text
+        """
+        try:
+            # Log the original text for debugging
+            logger.debug(f"Cleaning JSON text: {json_text[:50]}...")
+            
+            # Remove trailing commas before closing brackets/braces (more aggressive)
+            cleaned = re.sub(r',\s*([}\]])', r'\1', json_text)
+            
+            # Handle trailing commas at the end of objects/arrays more specifically
+            cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+            
+            # Remove any trailing commas after the last property in objects
+            cleaned = re.sub(r',(\s*})', r'\1', cleaned)
+            
+            # Remove any trailing commas after the last element in arrays  
+            cleaned = re.sub(r',(\s*])', r'\1', cleaned)
+            
+            # Ensure property names are quoted (but be careful not to quote already quoted names)
+            cleaned = re.sub(r'([^"\w])(\w+)(\s*:)', r'\1"\2"\3', cleaned)
+            
+            # Replace single quotes with double quotes for strings
+            cleaned = re.sub(r"'([^']*?)'", r'"\1"', cleaned)
+            
+            # Remove any control or non-printing characters
+            cleaned = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', cleaned)
+            
+            # Remove any extra whitespace
+            cleaned = re.sub(r'\s+', ' ', cleaned)
+            cleaned = cleaned.strip()
+            
+            return cleaned
+            
+        except Exception as e:
+            # If any cleanup fails, log it but return the original
+            logger.error(f"Error during JSON cleanup: {e}")
+            return json_text
+    
+    def _split_content_into_chunks(self, content: str) -> List[str]:
+        """
+        Split content into chunks using adaptive chunking settings based on system capabilities.
+        
+        Args:
+            content: Content to split into chunks
+            
+        Returns:
+            List of content chunks
+        """
+        try:
+            # Use default chunking configuration
+            chunk_size = 1500
+            chunk_overlap = 200
+            
+            # Initialize text splitter with default settings
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=[
+                    "\n\n",          # First try to split on double newlines
+                    "\n",            # Then single newlines
+                    ". ",            # Then sentences
+                    ", ",            # Then clauses
+                    " ",             # Then words
+                    ""               # Finally characters
+                ],
+                length_function=len,
+            )
+            
+            # Split content into chunks
+            content_chunks = text_splitter.split_text(content)
+            
+            logger.info(f"Adaptive chunking: {len(content_chunks)} chunks using {chunk_size} size/{chunk_overlap} overlap (system tier: {self.system_info['performance_tier']})")
+            
+            return content_chunks
+            
+        except Exception as e:
+            logger.error(f"Error splitting content into chunks: {e}")
+            # Return original content as single chunk if splitting fails
+            return [content]

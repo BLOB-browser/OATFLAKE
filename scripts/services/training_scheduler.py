@@ -7,6 +7,7 @@ import json
 import os
 import glob
 from datetime import datetime, time as dt_time, timedelta
+from utils.config import get_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -531,10 +532,8 @@ def _training_loop():
                     try:
                         # Mark that we're in processing mode
                         processing_active = True
-                        
-                        # Import the knowledge orchestrator directly
+                          # Import the knowledge orchestrator directly
                         from scripts.analysis.knowledge_orchestrator import process_knowledge_base as orchestrator_process
-                        from utils.config import get_data_path
                         
                         # Set parameters for scheduled processing
                         skip_markdown_scraping = False   # Process markdown files

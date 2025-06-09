@@ -9,31 +9,25 @@ class UniversalTable(BaseModel):
     This serves as a single schema for all content types based on the universal_table_example_restructured.json.
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = Field(default_factory=datetime.now)
-    content_type: str  # Type of content (method, definition, material, project, resource)
-    origin_url: Optional[str] = None  # Primary source URL for the content or file path    title: str
-    description: str
+    created_at: datetime = Field(default_factory=datetime.now)    
+    content_type: str  # Type of content (method, definition, material, project, reference)
+    origin_url: Optional[str] = None  # Primary source URL for the content or file path
+    title: str
+    description: str  # Detailed description of the entry (or definition for content_type: definition)
     tags: List[str] = []  # Array of keywords or tags
     purpose: Optional[str] = None  # Purpose or usecase of data
-    location: Optional[str] = ""  # Physical or geographical location
+    location: Optional[str] = None  # Physical or geographical location
     related_url: Optional[str] = None  # Additional related URLs
     status: str = "active"  # Current status of the item (active, archive, etc.)
-    creator_id: Optional[str] = "blob"  # ID of the content creator
+    creator_id: Optional[str] = "system"  # ID of the content creator
     collaborators: Optional[str] = None  # IDs of collaborators
     group_id: Optional[str] = "default"  # ID of the associated group
     last_updated_at: Optional[datetime] = None  # Timestamp of last update
     analysis_completed: bool = False  # Boolean indicating if analysis is complete
     visibility: str = "public"  # Status of visibility (public, private, etc.)
-    
-    # Content-type specific fields (will be populated based on content_type)
+      # Content-type specific fields (will be populated based on content_type)
     # For Method
     steps: Optional[List[str]] = None
-    
-    # For Definition
-    term: Optional[str] = None
-    definition: Optional[str] = None
-    source: Optional[str] = None
-    resource_url: Optional[str] = None
     
     # For Project
     goals: Optional[Union[str, List[str]]] = None
@@ -42,11 +36,11 @@ class UniversalTable(BaseModel):
     
     # For Material
     file_path: Optional[str] = None
-    fields: Optional[List[str]] = None
+    
     @validator('content_type')
     def validate_content_type(cls, v):
         # Allow any content type but log a warning if it's not one of the standard types
-        standard_types = ['method', 'definition', 'material', 'project', 'resource']
+        standard_types = ['method', 'definition', 'material', 'project', 'reference']
         if v not in standard_types:
             import logging
             logger = logging.getLogger(__name__)
@@ -66,12 +60,9 @@ class UniversalTable(BaseModel):
         if v not in valid_visibility:
             raise ValueError(f'visibility must be one of: {", ".join(valid_visibility)}')
         return v
-    
     @validator('tags')
     def validate_tags(cls, v, values):
-        # If tags is empty but fields exists (for backward compatibility), copy fields to tags
-        if not v and values.get('fields'):
-            return values['fields']
+        # Return tags or empty list if no tags provided
         return v or []
 
 # Keep existing UniversalContent base class and other derived classes for backward compatibility
@@ -82,11 +73,12 @@ class UniversalContent(BaseModel):
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
-    description: str
-    content_type: str  # Type of content (method, definition, material, project, resource)
+    description: str    
+    content_type: str  # Type of content (method, definition, material, project, reference)
     origin_url: Optional[str] = None  # Primary source URL for the content or file path
     tags: List[str] = []  # Array of keywords or tags
     purpose: Optional[str] = None  # Purpose or usecase of data
+    location: Optional[str] = None  # Physical or geographical location
     related_url: Optional[str] = None  # Additional related URLs
     status: str = "active"  # Current status of the item (active, archive, etc.)
     creator_id: Optional[str] = "system"  # ID of the content creator
@@ -161,7 +153,7 @@ class Project(UniversalContent):
         return v
 
 class Method(UniversalContent):
-    content_type: str = "method"  # Type of content (method, definition, material, project, resource)
+    content_type: str = "method"  # Type of content (method, definition, material, project, reference)
     
     # Method-specific fields
     steps: List[str] = []  # Steps for the method
@@ -185,13 +177,13 @@ class Method(UniversalContent):
         return v
 
 class Resource(UniversalContent):
-    content_type: str = "resource"  # Type of content (method, definition, material, project, resource)
+    content_type: str = "reference"  # Type of content (method, definition, material, project, reference)
     origin_url: HttpUrl  # Primary source URL for the content
     category: Optional[str] = None  # Category for backward compatibility
     @validator('content_type')
     def validate_content_type(cls, v):
         # Allow any content type but log a warning if it's not one of the standard types
-        standard_types = ['method', 'definition', 'material', 'project', 'resource']
+        standard_types = ['method', 'definition', 'material', 'project', 'reference']
         if v not in standard_types:
             import logging
             logger = logging.getLogger(__name__)

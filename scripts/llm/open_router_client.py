@@ -947,13 +947,13 @@ INSTRUCTIONS:
                 # Log warning if configured model not found
                 if not configured_model_found:
                     logger.warning(f"Currently configured model '{configured_model}' not found in available models list!")
-                    
-                return models
+                    return models
                 
         except Exception as e:
             logger.error(f"Error listing models: {e}")
             return []
-    async def unified_search(self, query: str, k_reference: int = 2, k_content: int = 8) -> Dict[str, Any]:        
+
+    async def unified_search(self, query: str, k_reference: int = 2, k_content: int = 8) -> Dict[str, Any]:
         """
         Perform a unified search across both reference and content stores using a single embedding.
         
@@ -979,11 +979,12 @@ INSTRUCTIONS:
             }
         }
         
-        try:
+        try:            
             # Extract query terms for evaluation (no redundant embedding generation needed)
             query_terms = set(term.lower() for term in query.split() if len(term) > 3)
             logger.debug(f"Query terms: {', '.join(query_terms) if query_terms else 'none'}")
-              # Reference store search using optimized approach
+            
+            # Reference store search using optimized approach
             if self.reference_store is not None:
                 try:
                     ref_results = await self._optimized_search(
@@ -1009,10 +1010,11 @@ INSTRUCTIONS:
                     results["metadata"]["reference_count"] = len(ref_results)
                     logger.info(f"Found {len(ref_results)} reference results")
                 except Exception as e:
-                    logger.error(f"Error searching reference store: {e}")
-            else:
-                logger.warning("Reference store not available")
-                  # Content store search using optimized approach
+                    logger.error(f"Error searching reference store: {e}")            
+                else:
+                    logger.warning("Reference store not available")
+                
+            # Content store search using optimized approach
             if self.content_store is not None:
                 try:
                     content_results = await self._optimized_search(
@@ -1033,8 +1035,7 @@ INSTRUCTIONS:
                             "vector_score": float(meta.get("vector_score", 0)),
                             "term_overlap": meta.get("term_overlap", 0)
                         })
-                    
-                    results["metadata"]["content_count"] = len(content_results)                    
+                    results["metadata"]["content_count"] = len(content_results)
                     logger.info(f"Found {len(content_results)} content results")
                 except Exception as e:
                     logger.error(f"Error searching content store: {e}")
@@ -1046,14 +1047,14 @@ INSTRUCTIONS:
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             
             return results
-            
         except Exception as e:
             logger.error(f"Error in unified search: {e}", exc_info=True)
             search_duration = (datetime.now() - search_start).total_seconds()
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             results["metadata"]["error"] = str(e)
             return results
-    async def search_deeper(self, query: str, pinned_items: List[Dict], k: int = 5) -> Dict[str, Any]:        
+
+    async def search_deeper(self, query: str, pinned_items: List[Dict], k: int = 5) -> Dict[str, Any]:
         """
         Perform a deeper search using pinned items and their context.
         
@@ -1098,9 +1099,10 @@ INSTRUCTIONS:
                 stores_to_search.append(("content", self.content_store))
                 
             # Search each store with the enhanced query context
-            all_results = []
+            all_results = []            
             for store_type, store in stores_to_search:
-                try:                    # Use optimized search with enhanced query
+                try:
+                    # Use optimized search with enhanced query
                     store_results = await self._optimized_search(
                         store,
                         enhanced_query,  # Use enhanced query for both vector and term matching
@@ -1131,25 +1133,25 @@ INSTRUCTIONS:
                     
                 except Exception as e:
                     logger.error(f"Error searching {store_type} store: {e}")
-            
-            # Sort all results by relevance score
+              # Sort all results by relevance score
             all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
             results["deeper_results"] = all_results[:k*2]  # Return top results across both stores
             results["metadata"]["total_results"] = len(all_results)
-              # Calculate overall search duration
+            
+            # Calculate overall search duration
             search_duration = (datetime.now() - search_start).total_seconds()
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             
             return results
-            
         except Exception as e:
             logger.error(f"Error in deeper search: {e}", exc_info=True)
             search_duration = (datetime.now() - search_start).total_seconds()
             results["metadata"]["search_duration_ms"] = int(search_duration * 1000)
             results["metadata"]["error"] = str(e)
             return results
-        def reset_cache(self):
-            """
-            Cache reset method removed - using simple search cache instead.
-            """
+
+    def reset_cache(self):
+        """
+        Cache reset method removed - using simple search cache instead.
+        """
         logger.info("Cache reset method disabled - using simple search cache instead")

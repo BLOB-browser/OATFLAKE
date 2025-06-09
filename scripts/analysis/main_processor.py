@@ -257,11 +257,10 @@ class MainProcessor:
             # Calculate duration
             stats["duration_seconds"] = (datetime.now() - stats["start_time"]).total_seconds()
             stats["status"] = "completed"
-            
-            # Ensure all entity types are saved to CSV files
-            # Import DataSaver to save these directly
-            from scripts.services.storage import DataSaver
-            data_saver = DataSaver()
+              # Ensure all entity types are saved to CSV files
+            # Import DataSaver to save these directly - using universal schema implementation
+            from scripts.analysis.data_saver import DataSaver
+            data_saver = DataSaver(self.data_folder)
             
             # Save each entity type if we have any
             if all_definitions:

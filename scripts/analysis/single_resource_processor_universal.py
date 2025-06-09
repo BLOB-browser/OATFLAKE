@@ -131,7 +131,8 @@ class SingleResourceProcessorUniversal:
                     title=resource_id,
                     url=main_url,
                     content=main_page_text,
-                    content_type=content_type
+                    content_type=content_type,
+                    origin_url=None  # Main pages have no parent URL
                 )
                 
                 # If we have results, ensure required fields and save them
@@ -413,15 +414,17 @@ class SingleResourceProcessorUniversal:
                 content_type=content_type
             )
             
-            # Ensure all items have origin_url field
+            # Ensure all items have correct URL relationship mapping
             if items:
                 for item in items:
-                    # Use origin_url if provided, otherwise use the current URL
-                    # This ensures all items have origin_url set properly for universal schema
-                    if origin_url:
-                        item['origin_url'] = origin_url
+                    # Set origin_url to the actual URL being analyzed (url parameter)
+                    item['origin_url'] = url
+                    
+                    # Set related_url to the parent/discovery URL (origin_url parameter from pending_urls.csv)
+                    if origin_url and origin_url != url:
+                        item['related_url'] = origin_url
                     else:
-                        item['origin_url'] = url
+                        item['related_url'] = None  # Main pages have no parent URL
                     
                     # Ensure both fields are present for backward compatibility
                     if 'url' not in item:
