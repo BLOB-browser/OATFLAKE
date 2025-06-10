@@ -1,22 +1,35 @@
 // Basic search-box web component with inline search functionality
 // No external dependencies required
 
+// Add immediate debugging
+console.log('🔧 === search-box.js file loading - CACHE BUST v1.7.0 - SKIP SEARCH FLAG ADDED - ' + Date.now() + ' ===');
+
 // Define the component immediately
-class SearchBox extends HTMLElement {
-    constructor() {
+class SearchBox extends HTMLElement {    constructor() {
         super();
+        console.log('🔧 SearchBox constructor called');
         this.currentQuery = '';
         this.references = [];
-    }
-
-    connectedCallback() {
+    }    connectedCallback() {
+        console.log('🔧 === SearchBox connectedCallback called ===');
         // Render the component when connected to the DOM
         this.render();
+          console.log('✅ SearchBox connected to DOM and rendered');
+        
+        // Add a simple click test to the entire component
+        this.addEventListener('click', (e) => {
+            console.log('🔧 Click detected on search-box component:', e.target);
+        });
         
         // Set up event listeners
         const form = this.querySelector('form');
         const input = this.querySelector('input');
         const processButton = this.querySelector('#processButton');
+
+        console.log('Elements found:');
+        console.log('- Form:', !!form);
+        console.log('- Input:', !!input);
+        console.log('- Process Button:', !!processButton);
 
         if (form && input) {
             form.addEventListener('submit', async (e) => {
@@ -27,14 +40,64 @@ class SearchBox extends HTMLElement {
                     await this.fetchReferences(query);
                 }
             });
-        }
-
-        if (processButton) {
-            processButton.addEventListener('click', async () => {
-                if (this.currentQuery && this.references.length > 0) {
+        }        if (processButton) {
+            console.log('🔧 Found process button, attaching event listener');
+            processButton.addEventListener('click', async (e) => {
+                console.log('🔥 === GENERATE BUTTON CLICKED ===');
+                console.log('🔥 Event target:', e.target);
+                console.log('🔥 Event type:', e.type);
+                console.log('🔥 Button ID:', e.target.id);
+                console.log('🔥 Button text:', e.target.textContent.trim());
+                console.log('🔥 Current query:', this.currentQuery);
+                console.log('🔥 References length:', this.references ? this.references.length : 'undefined');
+                console.log('🔥 References:', this.references);
+                console.log('🔥 About to call processWithLLM...');
+                
+                // EXTRA DEBUGGING - Check if form submission is also happening
+                console.log('🔥 🚨 === NETWORK DEBUGGING ===');
+                console.log('🔥 🚨 This should ONLY call /api/web');
+                console.log('🔥 🚨 If you see /api/references in network tab, there\'s a form submission conflict');
+                console.log('🔥 🚨 Button moved outside form to prevent conflicts');
+                
+                // Prevent any default behavior or propagation
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation(); // Extra safety
+                  console.log('🔥 === CHECKING CONDITIONS FOR GENERATE ===');
+                console.log('🔥 - Has currentQuery:', !!this.currentQuery, '(', this.currentQuery, ')');
+                console.log('🔥 - Has references array:', !!this.references);
+                console.log('🔥 - References length:', this.references ? this.references.length : 'undefined');
+                console.log('🔥 - References type:', typeof this.references);
+                console.log('🔥 - References:', this.references);
+                console.log('🔥 - Array.isArray(this.references):', Array.isArray(this.references));
+                  if (this.currentQuery && this.references && this.references.length > 0) {
+                    console.log('🔥 ✅ ALL CONDITIONS MET - Calling processWithLLM...');
+                    console.log('🔥 ✅ Query:', this.currentQuery);
+                    console.log('🔥 ✅ References count:', this.references.length);
                     await this.processWithLLM(this.currentQuery, this.references);
+                } else {
+                    console.log('🔥 ❌ CONDITIONS NOT MET FOR processWithLLM');
+                    console.log('🔥 ❌ - Has query:', !!this.currentQuery);
+                    console.log('🔥 ❌ - Has references:', !!(this.references && this.references.length > 0));
+                    
+                    // Let's try to search again if we don't have results
+                    if (this.currentQuery && (!this.references || this.references.length === 0)) {
+                        console.log('🔥 🔄 No references found, trying to search again...');
+                        await this.fetchReferences(this.currentQuery);
+                        
+                        // Try again after search
+                        if (this.references && this.references.length > 0) {
+                            console.log('🔥 ✅ After re-search, calling processWithLLM...');
+                            await this.processWithLLM(this.currentQuery, this.references);
+                        } else {
+                            console.log('🔥 ❌ Still no references after re-search');
+                        }
+                    }
                 }
             });
+            console.log('🔧 Event listener attached to process button');
+        } else {
+            console.log('❌ Process button not found!');
         }
     }
 
@@ -153,23 +216,23 @@ class SearchBox extends HTMLElement {
                     <div class="floating-references"></div>
                     
                     <!-- Search Input (centered) -->
-                    <div class="search-controls">
-                        <form class="search-input-container">
+                    <div class="search-controls">                        <form class="search-input-container">
                             <div class="relative w-full">
                                 <input type="text" 
                                       class="search-input"
                                       placeholder="Ask anything...">
                                 <div class="search-status absolute right-5 top-1/2 transform -translate-y-1/2 text-sm"></div>
-                                
-                                <!-- Process Button (inside input field) -->
-                                <div id="process-container" class="hidden">
-                                    <button id="processButton" 
-                                            class="text-white font-medium text-sm py-2 px-4 bg-indigo-600/90 hover:bg-indigo-600 rounded-lg transition-all duration-200">
-                                        Generate
-                                    </button>
-                                </div>
                             </div>
                         </form>
+                        
+                        <!-- Process Button (OUTSIDE form to prevent submission conflicts) -->
+                        <div id="process-container" class="hidden mt-4">
+                            <button id="processButton" 
+                                    type="button"
+                                    class="text-white font-medium text-sm py-2 px-4 bg-indigo-600/90 hover:bg-indigo-600 rounded-lg transition-all duration-200">
+                                Generate
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -193,14 +256,19 @@ class SearchBox extends HTMLElement {
         if (status) {
             status.innerHTML = '';
         }
-    }
-
-    async fetchReferences(query) {
+    }    async fetchReferences(query) {
+        console.log('🔍 === fetchReferences called ===');
+        console.log('🔍 THIS METHOD CALLS /api/references (SEARCH)');
+        console.log('🔍 Query:', query);
+        
         try {
             this.showLoadingState('Finding references...');
             
             // Call the actual local API endpoint
-            console.log('Searching for:', query);
+            console.log('🔍 Searching for:', query);
+            console.log('🔍 📤 CALLING /api/references - NOT /api/web');
+            console.log('🔍 📤 Endpoint URL: /api/references');
+            console.log('🔍 📤 Method: POST');
             
             // Make the API call to the local backend
             const response = await fetch('/api/references', {
@@ -217,13 +285,18 @@ class SearchBox extends HTMLElement {
 
             if (!response.ok) {
                 throw new Error(`Search failed with status: ${response.status}`);
-            }
-
-            const data = await response.json();
+            }            const data = await response.json();
             console.log('Search results:', data);
-            
-            // Store references for later use
-            this.references = data.references || [];
+            console.log('🔍 References found:', (data.references || []).length);
+            console.log('🔍 Content items found:', (data.content || []).length);
+              // Store ALL results for later use (both references and content)
+            this.references = [
+                ...(data.references || []),
+                ...(data.content || [])
+            ];
+            console.log('🔍 Total stored results:', this.references.length);
+            console.log('🔍 ✅ REFERENCES STORED SUCCESSFULLY:', this.references);
+            console.log('🔍 ✅ this.references is now available for Generate button');
             
             // Display results
             this.displayReferences(data.references || [], data.content || []);
@@ -319,10 +392,13 @@ class SearchBox extends HTMLElement {
             `;
             
             container.appendChild(card);
-        });
-    }
-    
-    async processWithLLM(query, references) {
+        });    }    async processWithLLM(query, references) {
+        console.log('🚀 === processWithLLM called ===');
+        console.log('🚀 THIS METHOD SHOULD CALL /api/web NOT /api/references');
+        console.log('🚀 Query:', query);
+        console.log('🚀 References count:', references ? references.length : 'undefined');
+        console.log('🚀 References:', references);
+        
         try {
             this.showLoadingState('Processing with local LLM...');
             
@@ -336,10 +412,11 @@ class SearchBox extends HTMLElement {
             
             // Create the full prompt with references and query
             const fullPrompt = `Please answer this question based on the references provided:\n\nQuestion: ${query}\n\nReferences:\n${formattedReferences}\n\nAnswer:`;
-            
-            console.log('Sending LLM request with prompt length:', fullPrompt.length);
-            
-            // Call the local backend through the /api/web endpoint which exists in your API
+              console.log('📤 Sending LLM request to /api/web with prompt length:', fullPrompt.length);
+            console.log('📤 🚨 CALLING /api/web - NOT /api/references 🚨');
+            console.log('📤 Endpoint URL: /api/web');
+            console.log('📤 Method: POST');
+              // Call the local backend through the /api/web endpoint which exists in your API
             const response = await fetch('/api/web', {
                 method: 'POST',
                 headers: {
@@ -347,11 +424,16 @@ class SearchBox extends HTMLElement {
                     'Accept': 'application/json'
                 },
                 body: JSON.stringify({
-                    query: query,
-                    prompt: fullPrompt,
-                    phase: 1
+                    query: query,                    // Original search query
+                    prompt: fullPrompt,              // Formatted prompt with references
+                    phase: 1,
+                    skip_search: true,               // Flag to bypass search since we already have references
+                    references_provided: true        // Additional flag for clarity
                 })
             });
+
+            console.log('📥 Response status:', response.status);
+            console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
 
             if (!response.ok) {
                 throw new Error(`Processing failed with status: ${response.status}`);
@@ -359,7 +441,7 @@ class SearchBox extends HTMLElement {
             
             // The web endpoint returns a request_id for phase 1
             const initialResult = await response.json();
-            console.log('Initial processing result:', initialResult);
+            console.log('📥 Initial processing result:', initialResult);
             
             if (initialResult.status === 'processing' && initialResult.request_id) {
                 // Phase 2: Poll for the completed response
@@ -610,6 +692,10 @@ class SearchBox extends HTMLElement {
     }
 }
 
-// Register the component immediately
-customElements.define('search-box', SearchBox);
-console.log('SearchBox component registered successfully');
+// Register the custom element
+if (!customElements.get('search-box')) {
+    customElements.define('search-box', SearchBox);
+    console.log('✅ SearchBox component registered successfully - CACHE BUST v1.5.0 - BUTTON TYPE=BUTTON FIX');
+} else {
+    console.log('⚠️ SearchBox component already registered');
+}

@@ -1,5 +1,6 @@
 /**
  * SettingsSlide - Handles the generation of the settings modal overlay
+ * Cache-busting version: v1.5.0 - NULL CHECKS FIXED
  */
 const SettingsSlide = (() => {
     // HTML template for the settings modal with tabs
@@ -354,12 +355,19 @@ const SettingsSlide = (() => {
     /**
      * Initialize the UI elements (modal, tabs, buttons)
      */
-    function initializeUI() {
-        // Get elements
+    function initializeUI() {        // Get elements
         const modal = document.getElementById('settingsModal');
         const openButton = document.getElementById('settingsButton'); // Using the button from the action bar
         const closeButton = document.getElementById('closeSettingsModal');
         const doneButton = document.getElementById('settingsDoneButton');
+        
+        // Debug: Check which elements were found
+        console.log('Settings elements found:', {
+            modal: !!modal,
+            openButton: !!openButton,
+            closeButton: !!closeButton,
+            doneButton: !!doneButton
+        });
         
         // Check if there are multiple elements with these IDs
         const localTabs = document.querySelectorAll('#localSettingsTab');
@@ -377,39 +385,44 @@ const SettingsSlide = (() => {
         const localTab = document.getElementById('localSettingsTab');
         const connectionTab = document.getElementById('connectionSettingsTab');
         const localPanel = document.getElementById('localSettingsPanel');
-        const connectionPanel = document.getElementById('connectionSettingsPanel');
-        
-        // Open modal 
-        openButton.addEventListener('click', () => {
-            modal.classList.remove('hidden');
-            // Apply animation
-            modal.style.opacity = '0';
-            setTimeout(() => {
-                modal.style.opacity = '1';
-                modal.style.transition = 'opacity 0.2s ease-in-out';
-            }, 10);
-        });
-        
-        // Close modal functions
+        const connectionPanel = document.getElementById('connectionSettingsPanel');        // Open modal 
+        if (openButton && modal) {
+            openButton.addEventListener('click', () => {
+                modal.classList.remove('hidden');
+                // Apply animation
+                modal.style.opacity = '0';
+                setTimeout(() => {
+                    modal.style.opacity = '1';
+                    modal.style.transition = 'opacity 0.2s ease-in-out';
+                }, 10);
+            });
+        }
+          // Close modal functions
         const closeModal = () => {
-            modal.style.opacity = '0';
-            setTimeout(() => {
-                modal.classList.add('hidden');
-                
-                // Dispatch event that modal has been closed
-                document.dispatchEvent(new CustomEvent('settingsModalClosed'));
-            }, 200);
-        };
-        
-        closeButton.addEventListener('click', closeModal);
-        doneButton.addEventListener('click', closeModal);
-        
-        // Close modal when clicking outside
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                closeModal();
+            if (modal) {
+                modal.style.opacity = '0';
+                setTimeout(() => {
+                    modal.classList.add('hidden');
+                    
+                    // Dispatch event that modal has been closed
+                    document.dispatchEvent(new CustomEvent('settingsModalClosed'));
+                }, 200);
             }
-        });
+        };
+          if (closeButton) {
+            closeButton.addEventListener('click', closeModal);
+        }
+        if (doneButton) {
+            doneButton.addEventListener('click', closeModal);
+        }
+          // Close modal when clicking outside
+        if (modal) {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    closeModal();
+                }
+            });
+        }
         
         console.log('Setting up tab switching listeners');
         console.log('Tabs found:', {
@@ -418,51 +431,59 @@ const SettingsSlide = (() => {
             localPanel: !!localPanel,
             connectionPanel: !!connectionPanel
         });
-        
-        // Set up additional tab switching for direct clicks (as a backup to the inline handlers)
-        localTab.addEventListener('click', (e) => {
-            // Don't interfere with the inline onclick handler
-            if (e.handled) return;
-            e.handled = true;
-            
-            console.log('Local tab clicked through event listener');
-            // Use the global function for consistency
-            if (window.switchToTab) {
-                window.switchToTab('local');
-            } else {
-                // Fallback if global function is not available
-                localPanel.classList.remove('hidden');
-                connectionPanel.classList.add('hidden');
+          // Set up additional tab switching for direct clicks (as a backup to the inline handlers)
+        if (localTab) {
+            localTab.addEventListener('click', (e) => {
+                // Don't interfere with the inline onclick handler
+                if (e.handled) return;
+                e.handled = true;
                 
-                // Update styles
-                localTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
-                localTab.classList.remove('text-neutral-400');
-                connectionTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
-                connectionTab.classList.add('text-neutral-400');
-            }
-        });
-        
-        connectionTab.addEventListener('click', (e) => {
-            // Don't interfere with the inline onclick handler
-            if (e.handled) return;
-            e.handled = true;
-            
-            console.log('Connection tab clicked through event listener');
-            // Use the global function for consistency
-            if (window.switchToTab) {
-                window.switchToTab('connection');
-            } else {
-                // Fallback if global function is not available
-                connectionPanel.classList.remove('hidden');
-                localPanel.classList.add('hidden');
+                console.log('Local tab clicked through event listener');
+                // Use the global function for consistency
+                if (window.switchToTab) {
+                    window.switchToTab('local');
+                } else {
+                    // Fallback if global function is not available
+                    if (localPanel) localPanel.classList.remove('hidden');
+                    if (connectionPanel) connectionPanel.classList.add('hidden');
+                      // Update styles
+                    if (localTab) {
+                        localTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                        localTab.classList.remove('text-neutral-400');
+                    }
+                    if (connectionTab) {
+                        connectionTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                        connectionTab.classList.add('text-neutral-400');
+                    }
+                }
+            });
+        }
+          if (connectionTab) {
+            connectionTab.addEventListener('click', (e) => {
+                // Don't interfere with the inline onclick handler
+                if (e.handled) return;
+                e.handled = true;
                 
-                // Update styles
-                connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
-                connectionTab.classList.remove('text-neutral-400');
-                localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
-                localTab.classList.add('text-neutral-400');
-            }
-        });
+                console.log('Connection tab clicked through event listener');
+                // Use the global function for consistency
+                if (window.switchToTab) {
+                    window.switchToTab('connection');
+                } else {
+                    // Fallback if global function is not available
+                    if (connectionPanel) connectionPanel.classList.remove('hidden');
+                    if (localPanel) localPanel.classList.add('hidden');
+                      // Update styles
+                    if (connectionTab) {
+                        connectionTab.classList.add('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                        connectionTab.classList.remove('text-neutral-400');
+                    }
+                    if (localTab) {
+                        localTab.classList.remove('text-indigo-400', 'border-b-2', 'border-indigo-500');
+                        localTab.classList.add('text-neutral-400');
+                    }
+                }
+            });
+        }
     }
     
     /**

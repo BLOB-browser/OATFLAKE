@@ -28,11 +28,10 @@ class OllamaClient:
         self.reference_store = None
         self.content_store = None
         self.load_vector_stores()
-        
-        # Initialize text splitter with consistent parameters
+          # Initialize text splitter with optimized parameters for performance
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200,
-            chunk_overlap=20,
+            chunk_size=1500,     # Optimized chunk size for better performance
+            chunk_overlap=200,   # Optimized overlap for better context preservation
             separators=[
                 "\n\n",          # First try to split on double newlines
                 "\n",            # Then single newlines
@@ -42,7 +41,7 @@ class OllamaClient:
                 ""               # Finally characters
             ],
             length_function=len,
-        )
+        )        # Conversation memory removed - using simple search cache instead
 
     def get_config_path(self):
         """Get the path to the config file in the project directory"""
@@ -181,8 +180,7 @@ class OllamaClient:
         except Exception as e:
             logger.error(f"Error loading vector stores: {e}")
             # Initialize empty topic_stores if something went wrong
-            self.topic_stores = {}
-
+            self.topic_stores = {}    
     async def _hybrid_search(self, store, query: str, query_embedding: list, k: int = 5, alpha: float = 0.5) -> list:
         """Perform hybrid search combining vector similarity with term overlap"""
         if not store:
@@ -192,79 +190,124 @@ class OllamaClient:
             # Extract key terms for relevance checking
             query_terms = set(term.lower() for term in query.split() if len(term) > 3)
             
-            # Get documents using standard similarity search
-            vector_docs = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: store.similarity_search_by_vector(
-                    query_embedding,
-                    k=k * 2  # Get more candidates for reranking
+            # First try the standard search
+            try:
+                # Get documents using standard similarity search
+                vector_docs = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: store.similarity_search_by_vector(
+                        query_embedding,
+                        k=k * 2  # Get more candidates for reranking
+                    )
                 )
-            )
-            
-            # Manually calculate scores
-            # First, get the vector from the query
-            faiss_index = store.index
-            
-            # Get the raw docstore to extract IDs directly
-            docstore = store.docstore._dict if hasattr(store, 'docstore') else {}
-            
-            # Calculate scores using term overlap for additional relevance
-            results = []
-            for doc in vector_docs:
-                # Calculate term overlap score
-                doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
-                term_overlap = len(query_terms.intersection(doc_terms))
-                term_overlap_score = term_overlap / max(len(query_terms), 1)
                 
-                # Since we don't have actual vector scores, estimate based on position
-                # (earlier results are more relevant in vector search)
-                position_score = 1.0 - (vector_docs.index(doc) / (len(vector_docs) or 1))
+                # Manually calculate scores
+                # First, get the vector from the query
+                faiss_index = store.index
                 
-                # Calculate hybrid score (combine position + term overlap)
-                hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
+                # Get the raw docstore to extract IDs directly
+                docstore = store.docstore._dict if hasattr(store, 'docstore') else {}
+                  # Calculate scores using term overlap for additional relevance
+                results = []
+                for i, doc in enumerate(vector_docs):
+                    # Calculate term overlap score
+                    doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
+                    term_overlap = len(query_terms.intersection(doc_terms))
+                    term_overlap_score = term_overlap / max(len(query_terms), 1)
+                    
+                    # Since we don't have actual vector scores, estimate based on position
+                    # (earlier results are more relevant in vector search)
+                    position_score = 1.0 - (i / (len(vector_docs) or 1))
+                    
+                    # Calculate hybrid score (combine position + term overlap)
+                    hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
+                    
+                    # Add metadata to track relevance factors
+                    doc.metadata["position_score"] = float(position_score)
+                    doc.metadata["term_overlap"] = term_overlap
+                    doc.metadata["hybrid_score"] = float(hybrid_score)
+                    doc.metadata["vector_score"] = float(position_score)  # Use position as proxy for vector score
+                    
+                    # Add to results for reranking
+                    results.append((doc, hybrid_score))
                 
-                # Add metadata to track relevance factors
-                doc.metadata["position_score"] = float(position_score)
-                doc.metadata["term_overlap"] = term_overlap
-                doc.metadata["hybrid_score"] = float(hybrid_score)
-                
-                # Add to results for reranking
-                results.append((doc, hybrid_score))
+                # Sort by hybrid score and return top k
+                results.sort(key=lambda x: x[1], reverse=True)
+                return results[:k]
             
-            # Sort by hybrid score and return top k
-            results.sort(key=lambda x: x[1], reverse=True)
-            return results[:k]
+            except Exception as e:
+                # If standard search fails, try a fallback approach with basic document retrieval
+                logger.warning(f"Standard vector search failed: {e}. Using fallback search method.")
+                
+                # Fallback to direct docstore access if possible
+                if hasattr(store, 'docstore') and hasattr(store.docstore, '_dict'):
+                    # Get a sample of documents directly from docstore
+                    docs = list(store.docstore._dict.values())[:min(k * 3, len(store.docstore._dict))]
+                    
+                    # If we have documents, calculate basic scores
+                    if docs:
+                        logger.info(f"Retrieved {len(docs)} documents directly from docstore")
+                        
+                        # Simplified scoring based only on term overlap
+                        results = []
+                        for i, doc in enumerate(docs):
+                            # Calculate term overlap score
+                            try:
+                                doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
+                                term_overlap = len(query_terms.intersection(doc_terms))
+                                term_overlap_score = term_overlap / max(len(query_terms), 1)
+                                
+                                # Position score based on docstore order (less reliable)
+                                position_score = 1.0 - (i / (len(docs) or 1))
+                                
+                                # Simple score
+                                score = term_overlap_score
+                                
+                                # Add metadata for consistency
+                                doc.metadata["position_score"] = float(position_score)
+                                doc.metadata["term_overlap"] = term_overlap
+                                doc.metadata["hybrid_score"] = float(score)
+                                doc.metadata["vector_score"] = 0.0  # No vector score in fallback
+                                
+                                # Add to results
+                                results.append((doc, score))
+                            except Exception as inner_e:
+                                # Skip problematic docs
+                                logger.error(f"Error processing doc in fallback: {inner_e}")
+                                continue
+                        
+                        # Sort and return
+                        results.sort(key=lambda x: x[1], reverse=True)
+                        return results[:k]
+                
+                # If all else fails, return an empty list
+                logger.error(f"All search methods failed. {e}")
+                return []
             
-        except Exception as e:
-            logger.error(f"Error in hybrid search: {e}")
-            return []
-
+        except Exception as outer_e:
+            logger.error(f"Error in hybrid search: {outer_e}")
+            return []    
     async def get_relevant_context(self, query: str, k: int = 3) -> str:
-        """Get relevant context from both stores using hybrid search"""
+        """Get relevant context from both stores using optimized search"""
         context_parts = []
         
         try:
             from datetime import datetime
             search_start = datetime.now()
             
-            # Get query embedding
-            query_embedding = await self.embeddings.aembeddings([query])
-            logger.info(f"Generated query embedding with {len(query_embedding[0])} dimensions")
-            
             # Check for specific terms to help with relevance evaluation
             query_terms = set(term.lower() for term in query.split() if len(term) > 3)
             logger.info(f"Query terms: {', '.join(query_terms) if query_terms else 'none'}")
             
-            # Reference store search with hybrid approach
+            # Reference store search with optimized approach
             if self.reference_store is not None:
-                try:
-                    # Use hybrid search for better relevance
-                    ref_results = await self._hybrid_search(
+                try:                    # Use optimized search that handles embedding generation internally
+                    ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
-                        query_embedding[0],
                         k=k,
-                        alpha=0.7  # Weight vector search more heavily for references
+                        alpha=0.7,  # Weight vector search more heavily for references
+                        store_type="reference"
                     )
                     
                     if ref_results:
@@ -287,18 +330,15 @@ class OllamaClient:
                 except Exception as e:
                     logger.error(f"Error searching reference store: {e}")
             else:
-                logger.warning("Reference store is not available")
-
-            # Content store search with hybrid approach
+                logger.warning("Reference store is not available")            # Content store search with optimized approach
             if self.content_store is not None:
-                try:
-                    # Use hybrid search with more weight on term overlap for content
-                    content_results = await self._hybrid_search(
+                try:                    # Use optimized search with more weight on term overlap for content
+                    content_results = await self._optimized_search(
                         self.content_store,
                         query,
-                        query_embedding[0],
                         k=k,
-                        alpha=0.5  # Equal weight to vector and term overlap
+                        alpha=0.5,  # Equal weight to vector and term overlap
+                        store_type="content"
                     )
                     
                     if content_results:
@@ -331,14 +371,13 @@ class OllamaClient:
                 topic_results = []
                 for store_name, store in self.topic_stores.items():
                     if store is not None:
-                        try:
-                            # Search this topic store
-                            store_results = await self._hybrid_search(
+                        try:                            # Search this topic store using optimized approach
+                            store_results = await self._optimized_search(
                                 store,
                                 query,
-                                query_embedding[0],
                                 k=max(1, k//2),  # Use fewer results per topic store
-                                alpha=0.6  # Balanced weight for topic stores
+                                alpha=0.6,  # Balanced weight for topic stores
+                                store_type="reference"  # Topic stores are primarily for references
                             )
                             
                             # Add to consolidated results
@@ -415,18 +454,13 @@ class OllamaClient:
                     return ""
             else:
                 logger.warning(f"Store '{store_name}' not found (available topic stores: {', '.join(self.topic_stores.keys()) if self.topic_stores else 'none'})")
-                return ""
-            
-            # Get query embedding
-            query_embedding = await self.embeddings.aembeddings([query])
-            
-            # Use hybrid search for this store
-            results = await self._hybrid_search(
+                return ""              # Use optimized search instead of redundant embedding generation
+            results = await self._optimized_search(
                 store,
                 query,
-                query_embedding[0],
                 k=k,
-                alpha=0.6  # Balanced weight between vector and term matching
+                alpha=0.6,  # Balanced weight between vector and term matching
+                store_type="reference" if store_name in ["reference_store"] or store_name.startswith("topic_") else "content"
             )
             
             if results:
@@ -461,23 +495,18 @@ class OllamaClient:
             
         except Exception as e:
             logger.error(f"Error getting context from {store_name}: {e}")
-            return ""
-
+            return ""    
     async def get_relevant_references(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Get relevant references with metadata using hybrid search"""
+        """Get relevant references with metadata using optimized search"""
         try:
             references = []
             
-            # Get query embedding
-            query_embedding = await self.embeddings.aembeddings([query])
-            
             if self.reference_store is not None:
                 try:
-                    # Use hybrid search for better relevance
-                    ref_results = await self._hybrid_search(
+                    # Use optimized search for better relevance
+                    ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
-                        query_embedding[0],
                         k=k,
                         alpha=0.7  # Weight vector search more heavily for references
                     )
@@ -514,14 +543,13 @@ class OllamaClient:
                 # Search each topic store
                 for store_name, store in self.topic_stores.items():
                     if store is not None:
-                        try:
-                            # Search this topic store (fewer results per store)
-                            store_results = await self._hybrid_search(
+                        try:                            # Search this topic store (fewer results per store)
+                            store_results = await self._optimized_search(
                                 store,
                                 query,
-                                query_embedding[0],
                                 k=max(1, k//2),  # Use fewer results per topic store
-                                alpha=0.6  # Balanced weight for topic stores
+                                alpha=0.6,  # Balanced weight for topic stores
+                                store_type="reference"  # Topic stores are primarily for references
                             )
                             
                             # Process results from this store
@@ -603,12 +631,10 @@ class OllamaClient:
             ready, status = await self.check_connection()
             if not ready:
                 logger.error(f"Ollama not ready: {status}")
-                return f"Model not available. Please check Ollama installation. Details: {status}"
-
-            # Use settings from model_settings.json or defaults
+                return f"Model not available. Please check Ollama installation. Details: {status}"            # Use settings from model_settings.json or defaults
             settings = self.settings_manager.load_settings()
             # Values from settings take precedence over hardcoded defaults
-            k_value = context_k if context_k is not None else 5
+            k_value = context_k if context_k is not None else 10  # Increased from 5 to 10 for better results
             max_tokens_value = max_tokens if max_tokens is not None else int(settings.max_tokens)
             temperature_value = float(settings.temperature) if hasattr(settings, 'temperature') else 0.3
             
@@ -657,15 +683,9 @@ INSTRUCTIONS:
 USER QUESTION: {prompt}
 
 DETAILED ANSWER:
-"""
-
+"""         
             try:
                 logger.info("Context preparation complete, now generating response from model...")
-                
-                # For troubleshooting: log if Ollama is reachable
-                if not await self.check_health():
-                    logger.error("Ollama health check failed before making request!")
-                    return "Error: Ollama API is not responding. Please check if Ollama is running."
                 
                 async with httpx.AsyncClient() as client:
                     logger.info(f"Generating response with: k={k_value}, max_tokens={max_tokens_value}, temp={temperature_value}")
@@ -814,6 +834,85 @@ DETAILED ANSWER:
         
         # Split the text into chunks
         text_chunks = self.text_splitter.split_text(text)
-        logger.info(f"Text processed into {len(text_chunks)} chunks")
+        logger.info(f"Text processed into {len(text_chunks)} chunks")        
         processed_text = " ".join(text_chunks)
-        return processed_text
+        return processed_text    
+
+    async def _optimized_search(self, store, query: str, k: int = 5, alpha: float = 0.5, store_type: str = "unknown") -> list:
+        """
+        Perform optimized search using FAISS's text-based similarity_search() method.
+        This eliminates redundant embedding generation by using FAISS's internal embedding.
+        
+        Performance optimization: Increase k significantly before applying weighting algorithms
+        to get better candidates for reranking. Content stores get more candidates than reference stores.
+        """
+        if not store:
+            return []
+            
+        try:
+            # Extract key terms for relevance checking
+            query_terms = set(term.lower() for term in query.split() if len(term) > 3)
+            
+            # PERFORMANCE OPTIMIZATION: Different multipliers based on store type
+            # Content stores get more candidates since they contain the detailed information
+            # Reference stores get fewer since they're primarily for attribution/sourcing
+            if store_type == "content":
+                initial_k = max(k * 6, 30)  # Content: 6x more candidates, minimum 30
+            else:  # reference or unknown
+                initial_k = max(k * 3, 15)  # Reference: 3x more candidates, minimum 15
+              # Use FAISS's built-in text search that handles embedding generation internally
+            try:
+                vector_docs = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: store.similarity_search(
+                        query,
+                        k=initial_k  # Use increased k for better candidate pool
+                    )
+                )
+            except KeyError as ke:
+                # Handle FAISS index/docstore mismatch - common issue with corrupted stores
+                logger.warning(f"FAISS index/docstore mismatch (KeyError: {ke}), trying with smaller k")
+                try:
+                    # Try with a much smaller k value
+                    smaller_k = min(5, initial_k // 4)
+                    vector_docs = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: store.similarity_search(
+                            query,
+                            k=smaller_k
+                        )
+                    )
+                    logger.info(f"Successfully retrieved {len(vector_docs)} docs with reduced k={smaller_k}")
+                except Exception as e2:
+                    logger.error(f"Failed even with reduced k: {e2}")
+                    return []
+              # Calculate scores using term overlap for additional relevance
+            results = []
+            for i, doc in enumerate(vector_docs):
+                # Calculate term overlap score
+                doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
+                term_overlap = len(query_terms.intersection(doc_terms))
+                term_overlap_score = term_overlap / max(len(query_terms), 1)
+                
+                # Since we don't have actual vector scores from similarity_search,
+                # estimate based on position (earlier results are more relevant)
+                position_score = 1.0 - (i / (len(vector_docs) or 1))
+                
+                # Calculate hybrid score (combine position + term overlap)
+                hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
+                
+                # Add metadata to track relevance factors
+                doc.metadata["position_score"] = float(position_score)
+                doc.metadata["term_overlap"] = term_overlap
+                doc.metadata["hybrid_score"] = float(hybrid_score)
+                doc.metadata["vector_score"] = float(position_score)  # Use position as proxy for vector score
+                
+                # Add to results for reranking
+                results.append((doc, hybrid_score))
+              # Sort by hybrid score and return top k
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results[:k]
+            
+        except Exception as e:
+            logger.error(f"Error in optimized search: {e}", exc_info=True)
+            return []

@@ -110,21 +110,21 @@ def main():
             logger.info("Resetting to level 0 and enabling URL rediscovery mode")
             # Update config to level 0
             update_config_level(0)
-            
-            # Import URL storage and ContentFetcher to enable rediscovery mode
+              # Import URL storage and URL discovery manager to enable rediscovery mode
             try:
                 from scripts.analysis.url_storage import URLStorageManager
-                from scripts.analysis.content_fetcher import ContentFetcher
+                from scripts.analysis.url_discovery_manager import URLDiscoveryManager 
                 from utils.config import get_data_path
                 
                 # Initialize components
-                processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                data_path = get_data_path()
+                processed_urls_file = os.path.join(data_path, "processed_urls.csv")
                 url_storage = URLStorageManager(processed_urls_file)
-                content_fetcher = ContentFetcher()
+                discovery_manager = URLDiscoveryManager(data_path)
                 
                 # Enable rediscovery mode
                 url_storage.set_rediscovery_mode(True)
-                content_fetcher.allow_processed_url_discovery = True
+                discovery_manager.url_discovery.allow_processed_url_discovery = True
                 
                 logger.info("URL rediscovery mode enabled. Run with level 1 to start discovery process.")
                 return
@@ -166,26 +166,26 @@ def main():
             # Check current level from config
             current_level = check_config_level()
             
-            if current_level == 0:
-                # We're at level 0, check if we have pending URLs
+            if current_level == 0:            # We're at level 0, check if we have pending URLs
                 # Get data from URL storage
                 try:
                     from scripts.analysis.url_storage import URLStorageManager
-                    from scripts.analysis.content_fetcher import ContentFetcher
+                    from scripts.analysis.url_discovery_manager import URLDiscoveryManager
                     from utils.config import get_data_path
                     
                     # Initialize components
-                    processed_urls_file = os.path.join(get_data_path(), "processed_urls.csv")
+                    data_path = get_data_path()
+                    processed_urls_file = os.path.join(data_path, "processed_urls.csv")
                     url_storage = URLStorageManager(processed_urls_file)
-                    content_fetcher = ContentFetcher()
+                    discovery_manager = URLDiscoveryManager(data_path)
                     
                     # Check if we need discovery
-                    discovery_status = content_fetcher.check_discovery_needed(max_depth=4)
+                    discovery_status = discovery_manager.url_discovery.check_discovery_needed(max_depth=4)
                     
                     if discovery_status["discovery_needed"]:
                         logger.info("No pending URLs found and system is at level 0 - enabling URL rediscovery")
                         url_storage.set_rediscovery_mode(True)
-                        content_fetcher.allow_processed_url_discovery = True
+                        discovery_manager.url_discovery.allow_processed_url_discovery = True
                         logger.info("URL rediscovery mode enabled.")
                         
                         # Suggest next step

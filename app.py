@@ -13,6 +13,8 @@ from api.routes.openrouter_models import router as openrouter_models_router  # I
 from api.routes.goals import router as goals_router
 # Import knowledge stats function directly
 from api.routes.stats import get_knowledge_stats
+# Import analysis settings router
+from api.routes.analysis_settings import router as analysis_settings_router
 from scripts.models.schemas import Definition, JsonRequest, ConnectionRequest, ConnectionResponse, Project, Method, Resource, WebRequest, WebResponse, AnswerRequest  # Add AnswerRequest
 from scripts.services import storage, connection
 from utils.config import BACKEND_CONFIG
@@ -278,6 +280,9 @@ app.include_router(goals_router)  # Add goals router
 # Add these lines to include the missing routers
 app.include_router(definitions_router)
 app.include_router(projects_router)
+
+# Include analysis settings router
+app.include_router(analysis_settings_router)
 
 # Add direct mapping for knowledge stats endpoint to fix 404 error
 app.add_api_route("/api/data/stats/knowledge", get_knowledge_stats, methods=["GET"])

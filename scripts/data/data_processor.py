@@ -17,12 +17,11 @@ class DataProcessor:
     def __init__(self, data_path: Path, group_id: str = "default"):
         self.base_path = Path(data_path)
         self.group_id = group_id
-        
-        # Consistent chunking settings for all devices - optimized for low CPU
-        logger.info("Using consistent chunking settings for all devices - optimized for low CPU")
+          # Optimized chunking settings for better performance and analysis quality
+        logger.info("Using optimized chunking settings for better performance and analysis quality")
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200,       # Lower chunk size for less CPU load
-            chunk_overlap=20,      # Lower chunk overlap
+            chunk_size=1500,      # Optimized chunk size for better performance
+            chunk_overlap=200,    # Optimized overlap for better context preservation
             separators=[
                 "\n\n",          # First try to split on double newlines
                 "\n",            # Then single newlines

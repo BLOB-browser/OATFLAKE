@@ -142,18 +142,19 @@ class RAGHandler:
         """Get relevant context from both stores using hybrid search"""
         context_parts = []
         
-        try:
+        try:            
             search_start = datetime.now()
             
             # Reference store search with hybrid approach
             if self.reference_store is not None:
                 try:
-                    # Use hybrid search for better relevance
-                    ref_results = await self._hybrid_search(
+                    # Use optimized search for better relevance
+                    ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
                         k=k,
-                        alpha=0.7  # Weight vector search more heavily for references
+                        alpha=0.7,  # Weight vector search more heavily for references
+                        store_type="reference"
                     )
                     
                     if ref_results:
@@ -174,17 +175,16 @@ class RAGHandler:
                 except Exception as e:
                     logger.error(f"Error searching reference store: {e}")
             else:
-                logger.warning("Reference store is not available")
-
-            # Content store search with hybrid approach
-            if self.content_store is not None:
+                logger.warning("Reference store is not available")            # Content store search with hybrid approach
+            if self.content_store is not None:                
                 try:
-                    # Use hybrid search with more weight on term overlap for content
-                    content_results = await self._hybrid_search(
+                    # Use optimized search with more weight on term overlap for content
+                    content_results = await self._optimized_search(
                         self.content_store,
                         query,
                         k=k,
-                        alpha=0.5  # Equal weight to vector and term overlap
+                        alpha=0.5,  # Equal weight to vector and term overlap
+                        store_type="content"
                     )
                     
                     if content_results:
@@ -231,14 +231,14 @@ class RAGHandler:
         try:
             references = []
             
-            if self.reference_store is not None:
-                try:
-                    # Use hybrid search for better relevance
-                    ref_results = await self._hybrid_search(
+            if self.reference_store is not None:                
+                try:                    # Use optimized search for better relevance
+                    ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
                         k=k,
-                        alpha=0.7  # Weight vector search more heavily for references
+                        alpha=0.7,  # Weight vector search more heavily for references
+                        store_type="reference"
                     )
                     
                     # Process each reference with scores
@@ -278,25 +278,18 @@ class RAGHandler:
                     "query": query,
                     "k": k,
                     "query_time": datetime.now().isoformat()
-                }
-            }
-            
-            # Get query embedding for both searches
-            embedding_start = datetime.now()
-            query_embedding = await self.embeddings.aembeddings([query])
-            embedding_vector = query_embedding[0]
-            embedding_time = (datetime.now() - embedding_start).total_seconds()
-            results["timing"]["embedding_generation"] = embedding_time
+                }            }
             
             # Reference store search
             if self.reference_store is not None:
-                ref_start = datetime.now()
+                ref_start = datetime.now()                
                 try:
-                    ref_results = await self._hybrid_search(
+                    ref_results = await self._optimized_search(
                         self.reference_store,
                         query,
                         k=k,
-                        alpha=0.7
+                        alpha=0.7,
+                        store_type="reference"
                     )
                     
                     for doc, score in ref_results:
@@ -313,16 +306,16 @@ class RAGHandler:
                     
                 ref_time = (datetime.now() - ref_start).total_seconds()
                 results["timing"]["reference_search"] = ref_time
-                
-            # Content store search
+                  # Content store search
             if self.content_store is not None:
-                content_start = datetime.now()
+                content_start = datetime.now()                
                 try:
-                    content_results = await self._hybrid_search(
+                    content_results = await self._optimized_search(
                         self.content_store,
                         query,
                         k=k,
-                        alpha=0.5
+                        alpha=0.5,
+                        store_type="content"
                     )
                     
                     for doc, score in content_results:
@@ -356,3 +349,65 @@ class RAGHandler:
                 "error": str(e),
                 "query": query
             }
+    async def _optimized_search(self, store, query: str, k: int = 5, alpha: float = 0.5, store_type: str = "unknown") -> List[Tuple[Any, float]]:
+        """
+        Perform optimized search using FAISS's text-based similarity_search() method.
+        This eliminates redundant embedding generation by using FAISS's internal embedding.
+        
+        Performance optimization: Increase k significantly before applying weighting algorithms
+        to get better candidates for reranking. Content stores get more candidates than reference stores.
+        """
+        if not store:
+            return []
+            
+        try:
+            # Extract key terms for relevance checking
+            query_terms = set(term.lower() for term in query.split() if len(term) > 3)
+            
+            # PERFORMANCE OPTIMIZATION: Different multipliers based on store type
+            # Content stores get more candidates since they contain the detailed information
+            # Reference stores get fewer since they're primarily for attribution/sourcing
+            if store_type == "content":
+                initial_k = max(k * 6, 30)  # Content: 6x more candidates, minimum 30
+            else:  # reference or unknown
+                initial_k = max(k * 3, 15)  # Reference: 3x more candidates, minimum 15
+            
+            # Use FAISS's built-in text search that handles embedding generation internally
+            vector_docs = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: store.similarity_search(
+                    query,
+                    k=initial_k  # Use increased k for better candidate pool
+                )
+            )
+              # Calculate scores using term overlap for additional relevance
+            results = []
+            for i, doc in enumerate(vector_docs):
+                # Calculate term overlap score
+                doc_terms = set(term.lower() for term in doc.page_content.split() if len(term) > 3)
+                term_overlap = len(query_terms.intersection(doc_terms))
+                term_overlap_score = term_overlap / max(len(query_terms), 1)
+                
+                # Since we don't have actual vector scores from similarity_search,
+                # estimate based on position (earlier results are more relevant)
+                position_score = 1.0 - (i / (len(vector_docs) or 1))
+                
+                # Calculate hybrid score (combine position + term overlap)
+                hybrid_score = (alpha * position_score) + ((1 - alpha) * term_overlap_score)
+                
+                # Add metadata to track relevance factors
+                doc.metadata["position_score"] = float(position_score)
+                doc.metadata["term_overlap"] = term_overlap
+                doc.metadata["hybrid_score"] = float(hybrid_score)
+                doc.metadata["vector_score"] = float(position_score)  # Use position as proxy for vector score
+                
+                # Add to results for reranking
+                results.append((doc, hybrid_score))
+            
+            # Sort by hybrid score and return top k
+            results.sort(key=lambda x: x[1], reverse=True)
+            return results[:k]
+            
+        except Exception as e:
+            logger.error(f"Error in optimized search: {e}")
+            return []

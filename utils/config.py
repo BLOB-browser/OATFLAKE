@@ -35,6 +35,30 @@ def get_data_path():
             
     return default_path
 
+def load_config():
+    """Load the main project config.json as a dict."""
+    project_root = Path(__file__).parent.parent
+    project_config_path = project_root / 'config.json'
+    user_config_path = Path.home() / '.blob' / 'config.json'
+
+    if project_config_path.exists():
+        try:
+            with open(project_config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error reading config.json: {e}")
+            pass
+
+    if user_config_path.exists():
+        try:
+            with open(user_config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error reading user config.json: {e}")
+            pass
+
+    return {}
+
 def save_to_env(key, value):
     """Save a key-value pair to the .env file."""
     env_path = Path(__file__).parent.parent / '.env'

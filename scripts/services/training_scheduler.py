@@ -7,6 +7,7 @@ import json
 import os
 import glob
 from datetime import datetime, time as dt_time, timedelta
+from utils.config import get_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +148,33 @@ def update_process_level(new_level):
 def increment_process_level():
     """Increment the current processing level by 1, or reset to 0 if it's at max level"""
     current_level = get_current_process_level()
-    max_level = 4  # Maximum URL depth level to process
+    
+    # Read max_level from crawl_config in config.json
+    max_level = get_max_level_from_config()
     
     # If current level is at max, reset to 0, otherwise increment
     new_level = 0 if current_level >= max_level else current_level + 1
     
     return update_process_level(new_level)
+
+def get_max_level_from_config():
+    """Get the maximum level from crawl_config in config.json"""
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Get max_depth from crawl_config, default to 4 if not found
+            max_level = config.get('crawl_config', {}).get('max_depth', 4)
+            logger.info(f"Read max_level={max_level} from crawl_config in config.json")
+            return max_level
+        else:
+            logger.warning("Config file not found, using default max_level=4")
+            return 4
+    except Exception as e:
+        logger.error(f"Error reading max_level from config: {e}, using default max_level=4")
+        return 4
 
 def get_status():
     """Get the current status of the scheduler"""
@@ -505,127 +527,142 @@ def _training_loop():
                         logger.info("New data detected, starting knowledge processing")
                     else:
                         logger.info("No file changes, but found unanalyzed resources - starting processing")
-                    
-                    # Use the API endpoint to trigger knowledge processing
-                    import requests
+                      # Call knowledge processing function directly instead of using HTTP API
+                    import asyncio
                     try:
                         # Mark that we're in processing mode
                         processing_active = True
-                        
-                        url = "http://localhost:8999/api/knowledge/process"
+                          # Import the knowledge orchestrator directly
+                        from scripts.analysis.knowledge_orchestrator import process_knowledge_base as orchestrator_process
                         
                         # Set parameters for scheduled processing
-                        params = {
-                            # Basic parameters
-                            "skip_markdown_scraping": "false",   # Process markdown files
-                            "analyze_resources": str(time_to_end_minutes >= 60).lower(),  # Only analyze resources if >60 min left
-                            "analyze_all_resources": "false",    # Only analyze resources that need it
-                            "batch_size": "1",                   # Process 1 resource at a time for stability
-                            "force_update": "false",             # Let the API decide if processing is needed
-                            "check_unanalyzed": "true",          # Always check for unanalyzed resources
-                            "force_url_fetch": "true",           # Enable URL discovery to find new URLs
-                            
-                            # Set process_level to 0 to start with discovery and main pages
-                            "process_level": "0",
-                            
-                            # Enable auto-advancing through levels and continuous processing
-                            "auto_advance_level": "true",                                     # Auto-advance to next level
-                            "continue_until_end": str(time_to_end_minutes >= 30).lower(),     # Continue all levels if we have time
-                            
-                            # Only do vector generation, questions and goals in the final phase
-                            # These will be done automatically when auto_advance_level reaches level 0 again
-                            "skip_vector_generation": "false",   # This parameter tells the API to generate vectors
-                            "skip_questions": str(time_to_end_minutes < 60).lower(),  # Skip questions if < 60 min left
-                            "skip_goals": str(time_to_end_minutes < 60).lower()       # Skip goals if < 60 min left
-                        }
+                        skip_markdown_scraping = False   # Process markdown files
+                        analyze_resources = time_to_end_minutes >= 60  # Only analyze resources if >60 min left
+                        analyze_all_resources = False    # Only analyze resources that need it
+                        batch_size = 1                   # Process 1 resource at a time for stability
+                        force_update = False             # Let the API decide if processing is needed
+                        check_unanalyzed = True          # Always check for unanalyzed resources
+                        force_url_fetch = True           # Enable URL discovery to find new URLs
                         
-                        logger.info(f"Calling knowledge processing API endpoint: {url}")
-                        response = requests.post(url, params=params)
+                        # Get current process level from config, but ensure it's valid (>= 1)
+                        process_level = max(1, get_current_process_level())
                         
-                        if response.status_code == 200:
-                            result = response.json()
-                            if result.get("status") == "success":
-                                logger.info("Knowledge processing completed successfully via API")
-                                
-                                # Check if vector generation was already performed
-                                vector_generation = result.get("data", {}).get("vector_generation", {})
-                                if vector_generation.get("status") == "success":
-                                    logger.info("Vector generation was already performed during knowledge processing")
-                                    # No need to rebuild FAISS indexes again
-                                else:
-                                    # 4. If vectors weren't generated, it directly calls the rebuild script:
-                                    logger.info("Vector generation wasn't performed during knowledge processing, rebuilding now...")
-                                    
-                                    try:
-                                        # Import the rebuild function from the rebuild script
-                                        from scripts.tools.rebuild_faiss_indexes import rebuild_indexes
-                                        import asyncio
-                                        
-                                        # Get data path from config
-                                        data_path = get_data_path()
-                                        
-                                        # Run the rebuild_faiss_indexes.py script as a separate process
-                                        logger.info(f"Running FAISS index rebuild as separate process with data path: {data_path}")
-                                        
-                                        import subprocess
-                                        import sys
-                                        
-                                        # Get the path to the rebuild script
-                                        from pathlib import Path
-                                        script_path = Path(__file__).parents[2] / "scripts" / "tools" / "rebuild_faiss_indexes.py"
-                                        
-                                        # Run the script as a separate process to ensure it has full stdout/stderr
-                                        logger.info(f"Executing rebuild script: {script_path}")
-                                        try:
-                                            # Run with the same Python interpreter
-                                            python_path = sys.executable
-                                            cmd = [python_path, str(script_path), "--data-path", str(data_path)]
-                                            
-                                            # Execute with real-time output
-                                            process = subprocess.Popen(
-                                                cmd,
-                                                stdout=subprocess.PIPE,
-                                                stderr=subprocess.STDOUT,
-                                                universal_newlines=True,
-                                                bufsize=1
-                                            )
-                                            
-                                            # Stream the output in real-time
-                                            logger.info("===== BEGIN REBUILD SCRIPT OUTPUT =====")
-                                            for line in process.stdout:
-                                                line = line.strip()
-                                                if line:
-                                                    logger.info(f"REBUILD: {line}")
-                                            
-                                            # Wait for process to complete
-                                            return_code = process.wait()
-                                            logger.info("===== END REBUILD SCRIPT OUTPUT =====")
-                                            
-                                            rebuild_result = (return_code == 0)
-                                            
-                                            if rebuild_result:
-                                                logger.info("FAISS index rebuild completed successfully")
-                                            else:
-                                                logger.warning(f"FAISS index rebuild had issues, return code: {return_code}")
-                                        
-                                        except Exception as e:
-                                            logger.error(f"Error running rebuild script: {e}")
-                                            rebuild_result = False
-                                    except Exception as rebuild_error:
-                                        logger.error(f"Error rebuilding FAISS indexes: {rebuild_error}")
-                                # API endpoint already generates questions, no need for separate call
-                                questions_result = result.get("data", {}).get("questions", {})
-                                questions_generated = questions_result.get("questions_generated", 0)
-                                logger.info(f"Generated {questions_generated} questions during processing")
-                            elif result.get("status") == "skipped":
-                                logger.info(f"Knowledge processing skipped: {result.get('message')}")
+                        # Enable auto-advancing through levels and continuous processing
+                        auto_advance_level = True                                     # Auto-advance to next level
+                        continue_until_end = time_to_end_minutes >= 30               # Continue all levels if we have time
+                        
+                        # Only do vector generation, questions and goals in the final phase
+                        skip_vector_generation = False   # Generate vectors
+                        skip_questions = time_to_end_minutes < 60   # Skip questions if < 60 min left
+                        skip_goals = time_to_end_minutes < 60       # Skip goals if < 60 min left
+                        
+                        logger.info(f"Calling knowledge processing function directly with process_level={process_level}")
+                          # Call the function directly instead of making HTTP request
+                        data_path = get_data_path()
+                        
+                        # Run the async function in a new event loop since we're in a thread
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            result = loop.run_until_complete(orchestrator_process(
+                                data_folder=data_path,
+                                request_app_state=None,  # No app state needed for scheduler
+                                skip_markdown_scraping=skip_markdown_scraping,
+                                analyze_resources=analyze_resources,
+                                analyze_all_resources=analyze_all_resources,
+                                batch_size=batch_size,
+                                force_update=force_update,
+                                check_unanalyzed=check_unanalyzed,
+                                force_url_fetch=force_url_fetch,
+                                process_level=process_level,
+                                auto_advance_level=auto_advance_level,
+                                continue_until_end=continue_until_end,
+                                skip_vector_generation=skip_vector_generation,
+                                skip_questions=skip_questions,
+                                skip_goals=skip_goals,
+                                max_depth=5
+                            ))
+                        finally:
+                            loop.close()
+                        if result and result.get("status") == "success":
+                            logger.info("Knowledge processing completed successfully via direct function call")
+                            
+                            # Check if vector generation was already performed
+                            vector_generation = result.get("data", {}).get("vector_generation", {})
+                            if vector_generation.get("status") == "success":
+                                logger.info("Vector generation was already performed during knowledge processing")
+                                # No need to rebuild FAISS indexes again
                             else:
-                                logger.error(f"Knowledge processing failed: {result.get('message')}")
+                                # 4. If vectors weren't generated, it directly calls the rebuild script:
+                                logger.info("Vector generation wasn't performed during knowledge processing, rebuilding now...")
+                                
+                                try:
+                                    # Import the rebuild function from the rebuild script
+                                    from scripts.tools.rebuild_faiss_indexes import rebuild_indexes
+                                    import asyncio
+                                    
+                                    # Get data path from config
+                                    data_path = get_data_path()
+                                    
+                                    # Run the rebuild_faiss_indexes.py script as a separate process
+                                    logger.info(f"Running FAISS index rebuild as separate process with data path: {data_path}")
+                                    
+                                    import subprocess
+                                    import sys
+                                    
+                                    # Get the path to the rebuild script
+                                    from pathlib import Path
+                                    script_path = Path(__file__).parents[2] / "scripts" / "tools" / "rebuild_faiss_indexes.py"
+                                    
+                                    # Run the script as a separate process to ensure it has full stdout/stderr
+                                    logger.info(f"Executing rebuild script: {script_path}")
+                                    try:
+                                        # Run with the same Python interpreter
+                                        python_path = sys.executable
+                                        cmd = [python_path, str(script_path), "--data-path", str(data_path)]
+                                        
+                                        # Execute with real-time output
+                                        process = subprocess.Popen(
+                                            cmd,
+                                            stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT,
+                                            universal_newlines=True,
+                                            bufsize=1
+                                        )
+                                        
+                                        # Stream the output in real-time
+                                        logger.info("===== BEGIN REBUILD SCRIPT OUTPUT =====")
+                                        for line in process.stdout:
+                                            line = line.strip()
+                                            if line:
+                                                logger.info(f"REBUILD: {line}")
+                                        
+                                        # Wait for process to complete
+                                        return_code = process.wait()
+                                        logger.info("===== END REBUILD SCRIPT OUTPUT =====")
+                                        
+                                        rebuild_result = (return_code == 0)
+                                        
+                                        if rebuild_result:
+                                            logger.info("FAISS index rebuild completed successfully")
+                                        else:
+                                            logger.warning(f"FAISS index rebuild had issues, return code: {return_code}")
+                                    
+                                    except Exception as e:
+                                        logger.error(f"Error running rebuild script: {e}")
+                                        rebuild_result = False
+                                except Exception as rebuild_error:
+                                    logger.error(f"Error rebuilding FAISS indexes: {rebuild_error}")                                # API endpoint already generates questions, no need for separate call
+                            questions_result = result.get("data", {}).get("questions", {})
+                            questions_generated = questions_result.get("questions_generated", 0)
+                            logger.info(f"Generated {questions_generated} questions during processing")
+                        elif result.get("status") == "skipped":
+                                logger.info(f"Knowledge processing skipped: {result.get('message')}")
                         else:
-                            logger.error(f"API request failed: {response.status_code} - {response.text}")
+                            logger.error("Knowledge processing returned no result")
                     
                     except Exception as e:
-                        logger.error(f"Error calling knowledge processing API: {e}")
+                        logger.error(f"Error calling knowledge processing function: {e}")
                         processing_active = False  # Ensure flag is reset even on error
                 else:
                     logger.info("No new data detected and all resources analyzed, skipping knowledge processing")

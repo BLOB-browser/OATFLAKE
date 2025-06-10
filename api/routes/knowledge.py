@@ -1,25 +1,13 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pathlib import Path
 import pandas as pd
 import json
 import logging
 import os
-import glob
 from datetime import datetime
 from typing import Optional
-from scripts.data.data_processor import DataProcessor
-from scripts.data.markdown_processor import MarkdownProcessor
-from scripts.services.data_analyser import DataAnalyser
-from scripts.services.question_generator import generate_questions, save_questions, get_config_path
 from scripts.analysis.goal_extractor import GoalExtractor
 from utils.config import BACKEND_CONFIG, get_data_path
-
-# Import check_for_file_changes from stats file to maintain compatibility
-from .stats import check_for_file_changes
-
-# Fix imports from storage module - this is already correct but the error suggests
-# there might be another direct import somewhere else in the code
-from scripts.services.storage import DataSaver  # Import DataSaver directly instead of individual methods
 
 # Add imports for process cancellation
 import threading
@@ -86,7 +74,7 @@ async def process_knowledge_base(
     check_unanalyzed: bool = True,  # New parameter to check for unanalyzed resources
     skip_questions: bool = False,   # Skip question generation (useful when time is limited)
     skip_goals: bool = False,       # Skip goal extraction (useful when time is limited)
-    max_depth: int = 4,             # Maximum depth for crawling (higher = deeper crawling)
+    max_depth: int = 5,             # Maximum depth for crawling - increased to 5 for full discovery
     force_url_fetch: bool = False,  # Only discover new URLs, don't reprocess already processed URLs (set to False to skip already processed URLs)
     process_level: Optional[int] = None,  # If specified, only process URLs at this level
     auto_advance_level: bool = False,     # If True, automatically advance to next level after completion
@@ -140,7 +128,50 @@ async def process_knowledge_base(
     _processor_cancel_event.clear()
     _processing_active = True
     
+    # Load config to get the proper max_depth and validate process_level
+    config_data = None
+    config_path = None
+    try:
+        config_path = Path(__file__).parents[2] / "config.json"
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config_data = json.load(f)
+                
+            # Get max_depth from crawl_config, default to 4 if not specified
+            crawl_config = config_data.get("crawl_config", {})
+            config_max_depth = crawl_config.get("max_depth", 4)
+            
+            # ALWAYS use the config max_depth, regardless of whether it's higher or lower than the parameter
+            if config_max_depth != max_depth:
+                logger.info(f"Overriding max_depth={max_depth} with config value of {config_max_depth}")
+                max_depth = config_max_depth
+                
+            # If no process_level specified, get from config but ensure it's valid
+            if process_level is None:
+                config_level = config_data.get("current_process_level", 1)
+                # Only use config level if it's valid (>= 1)
+                if config_level >= 1:
+                    process_level = config_level
+                    logger.info(f"Using process_level={process_level} from config")
+                else:
+                    logger.warning(f"Invalid current_process_level={config_level} in config, using level 1")
+                    process_level = 1
+            
+            # Validate process_level is not 0
+            if process_level is not None and process_level < 1:
+                logger.warning(f"Invalid process_level={process_level}, must be >= 1. Using level 1.")
+                process_level = 1
+                
+    except Exception as e:
+        logger.error(f"Error reading config: {e}")
+        # Use safe defaults
+        if max_depth < 4:
+            max_depth = 4  # Default to 4 if config reading fails
+        if process_level is not None and process_level < 1:
+            process_level = 1
+    
     logger.info(f"Starting comprehensive knowledge base processing... group_id={group_id}, force_update={force_update}")
+    logger.info(f"Using max_depth={max_depth}, process_level={process_level}")
     
     try:
         # Get data path from config
@@ -151,14 +182,89 @@ async def process_knowledge_base(
         
         # Process based on specified level
         if process_level is not None:
-            logger.info(f"Processing only URLs at level {process_level}")
-            
-            # Check if we should process pending URLs directly
+            logger.info(f"Processing URLs at level {process_level}")
+              # Check if we should process pending URLs directly
             from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
-            orchestrator = KnowledgeOrchestrator(data_path)
+            from scripts.analysis.url_storage import URLStorageManager
             
-            # Process URLs at this specific level - removed force_fetch parameter
-            result = orchestrator.process_urls_at_level(
+            orchestrator = KnowledgeOrchestrator()
+            
+            # Check for pending URLs at the specified level first
+            processed_urls_file = os.path.join(data_path, "processed_urls.csv")
+            url_storage = URLStorageManager(processed_urls_file)
+            
+            # Get pending URLs at the specified level
+            pending_urls = url_storage.get_pending_urls(depth=process_level)
+            
+            # If no pending URLs at the specified level, find the next level with pending URLs
+            if not pending_urls:
+                logger.warning(f"No pending URLs found at level {process_level}, checking other levels...")
+                
+                # Check pending URLs at each level and find the first level with pending URLs
+                pending_by_level = {}
+                selected_level = None
+                
+                for level in range(1, max_depth + 1):
+                    level_urls = url_storage.get_pending_urls(depth=level)
+                    pending_count = len(level_urls) if level_urls else 0
+                    pending_by_level[level] = pending_count
+                    
+                    # Save the first level that has pending URLs
+                    if pending_count > 0 and selected_level is None:
+                        selected_level = level
+                
+                # Log the counts at each level
+                level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items()) if c > 0])
+                if level_info:
+                    logger.info(f"Found pending URLs: {level_info}")
+                else:
+                    logger.warning("No pending URLs found at any level")
+                
+                # If we found a level with pending URLs, use that instead
+                if selected_level:
+                    logger.info(f"Redirecting to process level {selected_level} which has {pending_by_level[selected_level]} pending URLs")
+                    process_level = selected_level
+                else:
+                    # No pending URLs at any level - increment process_level in config.json and try that level
+                    if config_data and config_path:
+                        next_level = process_level + 1
+                        if next_level > max_depth:
+                            logger.warning(f"Reached maximum depth ({max_depth}), resetting to level 1")
+                            next_level = 1
+                        
+                        # Update the config file with the new level
+                        logger.info(f"No URLs at level {process_level}. Incrementing to level {next_level} in config.json")
+                        config_data["current_process_level"] = next_level
+                        with open(config_path, 'w') as f:
+                            json.dump(config_data, f, indent=2)
+                        
+                        # Update the process_level for this run
+                        process_level = next_level
+                        
+                        # Update crawl_config level_completion status if it exists
+                        if 'crawl_config' in config_data and 'level_completion' in config_data['crawl_config']:
+                            level_key = f"level_{process_level - 1}"
+                            if level_key in config_data['crawl_config']['level_completion']:
+                                config_data['crawl_config']['level_completion'][level_key]['is_complete'] = True
+                                config_data['crawl_config']['level_completion'][level_key]['last_processed'] = datetime.now().isoformat()
+                            
+                            # Update the current max level
+                            config_data['crawl_config']['current_max_level'] = process_level
+                            
+                            # Write back the updated config
+                            with open(config_path, 'w') as f:
+                                json.dump(config_data, f, indent=2)
+                        
+                        logger.info(f"Now processing at new level {process_level}")
+                        
+                        # Check for URLs at the new level
+                        pending_urls = url_storage.get_pending_urls(depth=process_level)
+                        if not pending_urls:
+                            logger.info(f"No pending URLs found at level {process_level} either, proceeding with URL discovery")
+                            # Discovery will happen in process_urls_at_level
+            
+            # Process URLs at the selected level
+            result = await orchestrator.process_urls_at_level(
                 level=process_level,
                 batch_size=batch_size
             )
@@ -179,7 +285,8 @@ async def process_knowledge_base(
                         auto_advance_level=True,
                         continue_until_end=True,
                         force_url_fetch=force_url_fetch,
-                        batch_size=batch_size
+                        batch_size=batch_size,
+                        max_depth=max_depth  # Pass the correct max_depth
                     ))
                     result["next_level_processing"] = "started"
             

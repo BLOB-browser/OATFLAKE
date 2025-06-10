@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from scripts.llm.rag_handler import RAGHandler
 from scripts.llm.ollama_client import OllamaClient
 from scripts.llm.open_router_client import OpenRouterClient
+from scripts.services.simple_search_cache import get_search_cache
 
 logger = logging.getLogger(__name__)
 
@@ -59,53 +60,85 @@ class RAGService:
             },
             'response': '',
             'error': None
-        }
-        
+        }        
         try:
-            # 1. RETRIEVAL PHASE
+            # 1. RETRIEVAL PHASE - Check cache first to avoid duplicate searches
             retrieval_start = datetime.now()
             processing_info['stages']['retrieval']['status'] = 'in_progress'
             processing_info['stages']['retrieval']['start_time'] = retrieval_start.isoformat()
             
-            # Run query through RAG handler to get context
-            try:
-                # Use run_query for detailed metrics
-                query_results = await self.rag_handler.run_query(
-                    query=query, 
-                    k=context_k, 
-                    include_metadata=True
-                )
+            search_cache = get_search_cache()
+            cached_search_results = search_cache.get(query, context_k)
+            
+            if cached_search_results:
+                logger.info(f"Using cached search results for query: '{query[:50]}...'")
+                # Use cached results to skip retrieval phase
+                context = cached_search_results.get('context', '')
+                references = cached_search_results.get('references', [])
+                content = cached_search_results.get('content', [])
                 
-                # Record timing info from retrieval
+                # Fast-track retrieval phase with cached data
                 retrieval_end = datetime.now()
                 retrieval_duration = (retrieval_end - retrieval_start).total_seconds() * 1000
                 processing_info['stages']['retrieval']['status'] = 'complete'
                 processing_info['stages']['retrieval']['end_time'] = retrieval_end.isoformat()
                 processing_info['stages']['retrieval']['duration_ms'] = retrieval_duration
                 
-                # Add retrieval metrics
+                # Add retrieval metrics from cache
                 processing_info['retrieval_info'] = {
-                    'reference_count': len(query_results['reference_results']),
-                    'content_count': len(query_results['content_results']),
-                    'timing': query_results['timing']
+                    'reference_count': len(references),
+                    'content_count': len(content),
+                    'timing': {'total_ms': retrieval_duration, 'source': 'cache'}
                 }
                 
-                # Get context from query results
-                context = self._format_context_from_results(query_results)
-                
-                # Format context into the expected structure
                 context_info = {
                     'context': context,
                     'context_word_count': len(context.split()) if context else 0
                 }
                 processing_info['context_info'] = context_info
                 
-            except Exception as e:
-                logger.error(f"Error in retrieval phase: {e}")
-                processing_info['stages']['retrieval']['status'] = 'error'
-                processing_info['stages']['retrieval']['error'] = str(e)
-                # Use empty context if retrieval fails
-                context = "No specific information found about this topic."
+            else:
+                # No cache, perform search
+                logger.info(f"No cached results found, performing search for query: '{query[:50]}...'")
+                
+                try:
+                    # Use run_query for detailed metrics
+                    query_results = await self.rag_handler.run_query(
+                        query=query, 
+                        k=context_k, 
+                        include_metadata=True
+                    )
+                    
+                    # Record timing info from retrieval
+                    retrieval_end = datetime.now()
+                    retrieval_duration = (retrieval_end - retrieval_start).total_seconds() * 1000
+                    processing_info['stages']['retrieval']['status'] = 'complete'
+                    processing_info['stages']['retrieval']['end_time'] = retrieval_end.isoformat()
+                    processing_info['stages']['retrieval']['duration_ms'] = retrieval_duration
+                    
+                    # Add retrieval metrics
+                    processing_info['retrieval_info'] = {
+                        'reference_count': len(query_results['reference_results']),
+                        'content_count': len(query_results['content_results']),
+                        'timing': query_results['timing']
+                    }
+                    
+                    # Get context from query results
+                    context = self._format_context_from_results(query_results)
+                    
+                    # Format context into the expected structure
+                    context_info = {
+                        'context': context,
+                        'context_word_count': len(context.split()) if context else 0
+                    }
+                    processing_info['context_info'] = context_info
+                    
+                except Exception as e:
+                    logger.error(f"Error in retrieval phase: {e}")
+                    processing_info['stages']['retrieval']['status'] = 'error'
+                    processing_info['stages']['retrieval']['error'] = str(e)
+                    # Use empty context if retrieval fails
+                    context = "No specific information found about this topic."
             
             # 2. GENERATION PHASE
             generation_start = datetime.now()

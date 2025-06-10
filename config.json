@@ -1,10 +1,42 @@
 {
-  "data_path": "/Users/mars/Documents/MDEF_data",
+  "data_path": "C:\\Users\\mscha\\Dokumente\\data\\fablab-data-deep-structured-test",
   "version": "0.1.0",
   "training_schedule": {
-    "start_hour": 0,
+    "start_hour": 8,
     "start_minute": 0,
-    "stop_hour": 2,
+    "stop_hour": 6,
     "stop_minute": 0
-  }
+  },
+  "crawl_config": {
+    "current_max_level": 2,
+    "max_depth": 4,
+    "level_completion": {
+      "level_1": {
+        "is_complete": true,
+        "last_processed": "2025-06-03T13:03:24.847510",
+        "urls_processed": 0
+      },
+      "level_2": {
+        "is_complete": false,
+        "last_processed": "2025-05-30T22:15:46.985819",
+        "urls_processed": 0
+      },
+      "level_3": {
+        "is_complete": false,
+        "last_processed": "2025-05-27T23:53:05.099099",
+        "urls_processed": 0
+      },
+      "level_4": {
+        "is_complete": false,
+        "last_processed": "2025-05-21T23:23:38.506267",
+        "urls_processed": 0
+      },
+      "level_5": {
+        "is_complete": false,
+        "last_processed": "",
+        "urls_processed": 0
+      }
+    }
+  },
+  "current_process_level": 2
 }

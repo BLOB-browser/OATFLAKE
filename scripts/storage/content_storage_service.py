@@ -81,7 +81,7 @@ class ContentStorageService:
                         page_content=chunk,
                         metadata={
                             "source_type": "resource_content",
-                            "resource_title": title,
+                            "resource_id": title,
                             "url": url,
                             "chunk_index": i,
                             "total_chunks": len(content_chunks),
@@ -97,7 +97,7 @@ class ContentStorageService:
                     page_content=content,
                     metadata={
                         "source_type": "resource_content",
-                        "resource_title": title,
+                        "resource_id": title,
                         "url": url,
                         "processed_at": datetime.now().isoformat(),
                         "content_type": "original_scraped",
@@ -193,7 +193,7 @@ class ContentStorageService:
             # Create metadata with all needed information
             metadata = {
                 "source_type": "enriched_resource",
-                "resource_title": title,
+                "resource_id": title,
                 "url": url,
                 "resource_id": title.replace(" ", "_").lower(),
                 "resource_url": url,
@@ -317,7 +317,7 @@ class ContentStorageService:
             # Create complete metadata 
             metadata = {
                 "source_type": "enriched_resource",
-                "resource_title": title,
+                "resource_id": title,
                 "url": url,
                 "resource_id": title.replace(" ", "_").lower(),
                 "resource_url": url,

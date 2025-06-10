@@ -1,0 +1,14 @@
+{
+    "provider": "ollama",
+    "model_name": "mistral:7b-instruct-v0.2-q4_0",
+    "openrouter_model": "meta-llama/llama-3.3-8b-instruct:free",
+    "system_prompt": "You are an AI assistant helping with content analysis and knowledge extraction.",
+    "temperature": 0.3,
+    "max_tokens": 2000,
+    "top_p": 0.9,
+    "top_k": 40,
+    "num_ctx": 256,
+    "num_thread": 4,
+    "stop_sequences": null,
+    "custom_parameters": null
+}

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routes import stats, knowledge  # Import the knowledge router
 from .routes import ngrok  # Import the ngrok router
 from .routes import data  # Import the data router which includes resources
+from .routes import search  # Import the search router for /api/web and /api/references
 import logging
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ app.include_router(ollama.router)
 # Include the data router (which contains the resources router)
 logger.info("Including data router with prefix: " + data.router.prefix)
 app.include_router(data.router)
+
+# Include the search router for /api/web and /api/references endpoints
+logger.info("Including search router with prefix: " + search.router.prefix)
+app.include_router(search.router)
 
 # Import the goals router with better logging
 from api.routes.goals import router as goals_router

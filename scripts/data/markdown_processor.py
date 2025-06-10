@@ -2,11 +2,8 @@ from pathlib import Path
 import logging
 import json
 from typing import Dict, Any, List, Optional
-import pandas as pd
 from datetime import datetime
-from .data_processor import DataProcessor
 from .markdown_scraper import MarkdownScraper
-from scripts.services.data_analyser import DataAnalyser
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +21,12 @@ class MarkdownProcessor:
         self.markdown_path = self.data_path / "markdown"
         self.markdown_path.mkdir(parents=True, exist_ok=True)
         
-    async def process_markdown_files(self, skip_scraping: bool = False, analyze_resources: bool = True) -> Dict[str, Any]:
+    async def process_markdown_files(self, skip_scraping: bool = False) -> Dict[str, Any]:
         """
-        Process markdown files and update the knowledge base.
+        Process markdown files and extract resources to CSV.
         
         Args:
             skip_scraping: If True, only extract links without web scraping
-            analyze_resources: If True, analyze extracted resources with LLM
         """
         try:
             logger.info(f"Starting markdown processing from {self.markdown_path}")
@@ -83,17 +79,11 @@ class MarkdownProcessor:
                 except Exception as e:
                     logger.error(f"Error saving markdown processed status: {e}")
                 
-                # First save the extracted resources to CSV
+                # Save the extracted resources to CSV
                 logger.info(f"Saving extracted resources to CSV: {len(scraper.resources)} resources")
                 scraper._save_to_csv()
                 
-                # For the markdown processor, we just save the resources without analyzing
-                # This avoids duplicating the analysis work and allows for separate analysis command
-                logger.info(f"Resource analysis during markdown processing is now handled separately")
-                logger.info(f"Use the /api/data/stats/knowledge/analyze-resources endpoint to analyze resources")
-                
-                # Initialize analysis metrics (since we're not analyzing in this path)
-                resources_analyzed = 0
+                logger.info(f"Markdown processing complete - resources saved to CSV")
                 
                 results = {
                     "status": "success",
@@ -103,44 +93,15 @@ class MarkdownProcessor:
                     "urls_scraped": 0,
                     "data_extracted": {
                         "resources": len(scraper.resources),
-                    },
-                    "analysis": {
-                        "resources_analyzed": resources_analyzed,
                     }
                 }
             else:
                 # Full process with web scraping
                 results = await scraper.process_directory()
                 
-                # Analyze resources after web scraping
-                if analyze_resources:
-                    resources_path = self.data_path / "resources.csv"
-                    if resources_path.exists():
-                        try:
-                            logger.info(f"Analyzing resources after web scraping")
-                            analyzer = DataAnalyser()
-                            updated_resources, new_projects = analyzer.analyze_resources(
-                                csv_path=str(resources_path)
-                            )
-                            
-                            # Save the analyzed resources and projects
-                            analyzer.save_updated_resources(updated_resources)
-                            analyzer.save_projects_csv(new_projects)
-                            
-                            results["analysis"] = {
-                                "resources_analyzed": len(updated_resources),
-                                "projects_identified": len(new_projects),
-                                "definitions_extracted": len(analyzer._get_definitions_from_resources(updated_resources))
-                            }
-                        except Exception as analyze_error:
-                            logger.error(f"Error analyzing resources after scraping: {analyze_error}")
-            
-            # In the unified processing flow, we don't want to trigger a separate vector update
-            # because the calling function (stats.py) will handle that immediately after
-            # This prevents duplicate processing
-            
-            # Simply note that vector processing is deferred to the calling function
-            results["note"] = "Vector processing deferred to calling function (knowledge/process endpoint)"
+                # Save the extracted resources to CSV
+                logger.info(f"Saving extracted resources to CSV after web scraping")
+                scraper._save_to_csv()
             
             return results
             

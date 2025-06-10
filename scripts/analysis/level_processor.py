@@ -27,14 +27,14 @@ class LevelBasedProcessor:
         self.data_folder = data_folder
         
         # Import required components
-        from scripts.analysis.single_resource_processor import SingleResourceProcessor
+        from scripts.analysis.single_resource_processor_universal import SingleResourceProcessorUniversal
         from scripts.analysis.cleanup_manager import CleanupManager
         from scripts.analysis.vector_generator import VectorGenerator
         from scripts.analysis.url_storage import URLStorageManager
         from utils.config import get_data_path
         
         # Initialize components
-        self.single_processor = SingleResourceProcessor(data_folder)
+        self.single_processor = SingleResourceProcessorUniversal(data_folder)
         self.cleanup_manager = CleanupManager(data_folder)
         self.vector_generator = VectorGenerator(data_folder)
         
@@ -209,8 +209,7 @@ class LevelBasedProcessor:
                 if max_urls is not None and url_idx >= max_urls:
                     logger.info(f"Reached maximum URL limit of {max_urls}")
                     break
-                
-                # Check for cancellation
+                  # Check for cancellation
                 if self.check_cancellation():
                     logger.info("URL processing cancelled by external request")
                     break
@@ -219,6 +218,7 @@ class LevelBasedProcessor:
                 origin = url_info["origin"]
                 depth = url_info["depth"]
                 attempt_count = url_info.get("attempt_count", 0)
+                resource_id = url_info.get("resource_id", "")  # Get existing resource ID
                 
                 # Skip if this URL is already processed (either from storage or current session)
                 if url in processed_urls or url in current_session_processed:
@@ -242,14 +242,25 @@ class LevelBasedProcessor:
                 current_session_processed.add(url)
                 
                 logger.info(f"Processing level {depth} URL {url_idx+1}/{len(pending_urls)}: {url}")
-                
-                # Find the resource this URL belongs to
-                resource_row = resources_df[resources_df['url'] == origin]
+                  # Find the resource this URL belongs to
+                # Try to find the resource by either origin_url or url field
+                # Origin_url is the preferred field for the universal schema
+                if 'origin_url' in resources_df.columns:
+                    resource_row = resources_df[resources_df['origin_url'] == origin]
+                    if resource_row.empty:
+                        # Fall back to url field if origin_url match fails
+                        resource_row = resources_df[resources_df['url'] == origin]
+                else:
+                    resource_row = resources_df[resources_df['url'] == origin]
+                    
                 if resource_row.empty:
                     logger.warning(f"Could not find origin resource for URL: {url} (origin: {origin})")
                     continue
                 
                 origin_resource = resource_row.iloc[0].to_dict()
+                # Ensure resource works with new field names
+                if 'url' in origin_resource and 'origin_url' not in origin_resource:
+                    origin_resource['origin_url'] = origin_resource['url']
                 
                 try:
                     # Process just this specific URL with detailed logging
@@ -293,8 +304,7 @@ class LevelBasedProcessor:
                         stats["definitions_found"] += definitions_count
                         stats["projects_found"] += projects_count
                         stats["methods_found"] += methods_count
-                        
-                        # Check if we got any meaningful data
+                          # Check if we got any meaningful data
                         data_extracted = (definitions_count > 0 or projects_count > 0 or methods_count > 0)
                         
                         # If no data was extracted, and we haven't reached max attempts yet
@@ -304,8 +314,8 @@ class LevelBasedProcessor:
                             logger.info(f"LEVEL PROCESSOR: No data extracted (attempt {next_attempt}), saving back to pending queue: {url}")
                             # Remove from pending first to avoid duplicate entries
                             self.url_storage.remove_pending_url(url)
-                            # Add back with incremented attempt count
-                            self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt)
+                            # Add back with incremented attempt count, preserving resource ID
+                            self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt, resource_id=resource_id)
                             # Mark this URL as unsuccessful despite "success" flag
                             stats["empty_results_count"] = stats.get("empty_results_count", 0) + 1
                         else:
@@ -334,14 +344,13 @@ class LevelBasedProcessor:
                             self.url_storage.remove_pending_url(url)
                             # Track these forced completions
                             stats["forced_completions"] = stats.get("forced_completions", 0) + 1
-                        else:
-                            # Increment attempt count and put back in queue
+                        else:                            # Increment attempt count and put back in queue
                             next_attempt = attempt_count + 1
                             logger.info(f"LEVEL PROCESSOR: URL processing failed (attempt {next_attempt}), saving back to pending queue: {url}")
                             # Remove from pending first to avoid duplicate entries
                             self.url_storage.remove_pending_url(url)
-                            # Add back with incremented attempt count
-                            self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt)
+                            # Add back with incremented attempt count, preserving resource ID
+                            self.url_storage.save_pending_url(url, depth=depth, origin=origin, attempt_count=next_attempt, resource_id=resource_id)
                     
                     # Check if vector generation is needed
                     if self.single_processor.vector_generation_needed:

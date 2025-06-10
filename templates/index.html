@@ -12,6 +12,19 @@
         // Add immediate console log to verify script loading
         console.log('HTML loaded, waiting for DOM...');
         
+        // Add global error handler to catch any JavaScript errors
+        window.addEventListener('error', function(e) {
+            console.error('❌ Global JavaScript Error:', e.error);
+            console.error('❌ Error message:', e.message);
+            console.error('❌ Error filename:', e.filename);
+            console.error('❌ Error line:', e.lineno);
+            console.error('❌ Error column:', e.colno);
+        });
+        
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('❌ Unhandled Promise Rejection:', e.reason);
+        });
+        
         // Define global switchToTab function that will be available immediately
         window.switchToTab = function(tab) {
             console.log('Global switchToTab called for', tab);
@@ -224,9 +237,9 @@
         <div id="manage_dataViewContainer" class="view-container hidden">
             <div id="dataContainer"></div>
         </div>
-        
-        <!-- Settings is now a modal only, rendered in a separate div -->
+          <!-- Settings is now a modal only, rendered in a separate div -->
         <div id="settingsContainer"></div>
+  
     </div>
         
         <!-- Widget scripts -->
@@ -242,12 +255,11 @@
         <script src="/static/js/slides/search.js"></script>
         <script src="/static/js/slides/data.js"></script>
         <script src="/static/js/slides/settings.js"></script>
-        
-        <!-- Components that depend on slides -->
+          <!-- Components that depend on slides -->
         <script src="/static/js/components/switch.js"></script>
         <script src="/static/js/components/action-bar.js"></script>
         <script src="/static/js/components/response-box.js"></script>
-        <script src="/static/js/components/search-box.js"></script>
+        <!-- search-box.js is loaded dynamically by search.js -->
         <script src="/static/js/components/system-settings.js"></script>
         
         <!-- Core application (load last) -->
@@ -336,11 +348,8 @@
         function wireUpEventListeners() {
             // Event listeners for other widgets
             // (Ollama, OpenRouter, and Tunnel event listeners are now handled by their respective modules)
-        }
-
-        // Call this when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize the status update
+        }        // Call this when page loads
+        document.addEventListener('DOMContentLoaded', function() {            // Initialize the status update
             updateAllStatus();
             
             // Set up event listeners

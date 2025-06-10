@@ -13,7 +13,7 @@ from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator, proce
 from scripts.analysis.change_detector import ChangeDetector, check_for_processing_needs
 from scripts.analysis.critical_content_processor import CriticalContentProcessor, process_critical_content
 from scripts.analysis.markdown_processor_step import MarkdownProcessingStep, process_markdown_files
-from scripts.analysis.resource_analyzer_step import ResourceAnalyzerStep, analyze_resources
+# from scripts.analysis.resource_analyzer_step import ResourceAnalyzerStep, analyze_resources  # File not found
 from scripts.analysis.knowledge_base_processor import KnowledgeBaseProcessor, process_remaining_knowledge
 from scripts.analysis.url_processor_step import URLProcessorStep, process_pending_urls
 from scripts.analysis.vector_store_generator import VectorStoreGenerator, generate_vector_stores
