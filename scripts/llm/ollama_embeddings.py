@@ -8,7 +8,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-class OllamaEmbeddings(Embeddings):
+class OllamaEmbeddings(Embeddings):    
     def __init__(
         self, 
         base_url: str = "http://localhost:11434",
@@ -23,6 +23,7 @@ class OllamaEmbeddings(Embeddings):
         self.dimension = dimension
         self.timeout = timeout  # Store timeout as instance variable
         self._http_client = httpx.AsyncClient(timeout=timeout)
+        self.cache = {}  # Initialize cache for embeddings
         logger.info(f"Initialized OllamaEmbeddings with model: {model_name}, batch_size: {batch_size}, timeout: {timeout}s")
 
     async def aembeddings(self, texts: List[str]) -> List[List[float]]:
@@ -112,11 +113,10 @@ class OllamaEmbeddings(Embeddings):
                                     generated_embeddings.append([0.0] * self.dimension)
                             else:
                                 logger.error(f"Embedding failed: {response.text}")
-                                generated_embeddings.append([0.0] * self.dimension)
-                          # Update cache with new embeddings
+                                generated_embeddings.append([0.0] * self.dimension)                          # Update cache with new embeddings
                         non_none_texts = [text for text in texts_to_actually_embed if text is not None]
                         for idx, (text, embedding) in enumerate(zip(non_none_texts, generated_embeddings)):
-                            self.cache.set(text, embedding)
+                            self.cache[text] = embedding
                         
                         # Merge generated embeddings with cached ones
                         generated_idx = 0
@@ -156,10 +156,9 @@ class OllamaEmbeddings(Embeddings):
                     logger.info(f"Processed batch of {len(batch)} texts ({i + len(batch)}/{total_texts}) - {((i + len(batch))/total_texts*100):.1f}% complete")
                     logger.info(f"Batch stats: {time_per_item:.2f}s/item, {chars_per_second:.1f} chars/sec, ETA: {eta}")
                     logger.info(f"Cache performance: {cache_hits} hits, {cache_misses} misses, est. {saved_time:.2f}s saved")
-                
-            # Log overall stats
-            cache_stats = self.cache.stats()
-            logger.info(f"Embedding generation complete - Cache stats: {cache_stats['hits']} hits, {cache_stats['misses']} misses, {cache_stats['size']}/{cache_stats['max_size']} entries")
+                  # Log overall stats
+            cache_size = len(self.cache)
+            logger.info(f"Embedding generation complete - Cache stats: {cache_hits} hits, {cache_misses} misses, {cache_size} entries")
             logger.info(f"Successfully generated {len(embeddings)} embeddings (dimension: {len(embeddings[0]) if embeddings else self.dimension})")
             return embeddings
             

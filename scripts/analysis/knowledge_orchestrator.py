@@ -135,14 +135,24 @@ class KnowledgeOrchestrator:
                     "message": "Knowledge processing cancelled before starting",
                     "data": result
                 }
-            
-            # STEP 1: GET PENDING URLS AND DETERMINE IF DISCOVERY IS NEEDED
+              # STEP 1: GET PENDING URLS AND DETERMINE IF DISCOVERY IS NEEDED
             # This is the single decision point for URL discovery
             from scripts.analysis.url_storage import URLStorageManager
             processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
             url_storage = URLStorageManager(processed_urls_file)
             
-            # Get counts of pending URLs by level
+            # CRITICAL FIX: Check URLs in discovery mode to see actual pending URLs
+            # The analysis mode filters out processed URLs, but we need to see all URLs that need analysis
+            url_storage.set_discovery_mode(True)
+            discovery_pending_count = 0
+            discovery_pending_by_level = {}
+            for level in range(1, max_depth + 1):
+                pending_urls = url_storage.get_pending_urls(depth=level)
+                discovery_pending_by_level[level] = len(pending_urls) if pending_urls else 0
+                discovery_pending_count += discovery_pending_by_level[level]
+            
+            # Also check analysis mode counts for comparison
+            url_storage.set_discovery_mode(False)
             pending_urls_count = 0
             pending_by_level = {}
             for level in range(1, max_depth + 1):  # Start from level 1, not 0
@@ -150,15 +160,22 @@ class KnowledgeOrchestrator:
                 pending_by_level[level] = len(pending_urls) if pending_urls else 0
                 pending_urls_count += pending_by_level[level]
             
-            if pending_urls_count > 0:
-                level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items()) if c > 0])
-                logger.info(f"Found {pending_urls_count} total pending URLs: {level_info}")
+            # Use discovery mode counts for decision making, but log both
+            logger.info(f"Analysis mode pending URLs: {pending_urls_count} total")
+            logger.info(f"Discovery mode pending URLs: {discovery_pending_count} total")
+            
+            # Use discovery mode counts to make decisions
+            actual_pending_count = discovery_pending_count
+            actual_pending_by_level = discovery_pending_by_level            
+            if actual_pending_count > 0:
+                level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(actual_pending_by_level.items()) if c > 0])
+                logger.info(f"Found {actual_pending_count} total pending URLs (discovery mode): {level_info}")
             else:
                 logger.info("No pending URLs found. Discovery phase needed.")
             
             # STEP 2: DISCOVERY PHASE - Only if needed (no pending URLs)
-            # The simple check - if no pending URLs, run discovery; otherwise skip it
-            if pending_urls_count == 0:
+            # Use discovery mode counts for this decision
+            if actual_pending_count == 0:
                 logger.info("==================================================")
                 logger.info("STARTING DISCOVERY PHASE")
                 logger.info("==================================================")
@@ -233,16 +250,16 @@ class KnowledgeOrchestrator:
                 
                 # Update result with content processing results
                 result["content_processing"] = content_result
-            
-            # STEP 4: URL ANALYSIS PHASE 
+              # STEP 4: URL ANALYSIS PHASE 
             # Now process URLs at the specified level or by priority
-            if not self.cancel_requested and pending_urls_count > 0:
+            # Use discovery mode counts to make the decision
+            if not self.cancel_requested and actual_pending_count > 0:
                 # Determine which level to process
                 current_level = process_level
 
                 if current_level is None:
-                    # If no level specified, determine the level with the most pending URLs
-                    current_level = max(pending_by_level, key=pending_by_level.get) if pending_by_level else 1
+                    # If no level specified, determine the level with the most pending URLs (using discovery counts)
+                    current_level = max(actual_pending_by_level, key=actual_pending_by_level.get) if actual_pending_by_level else 1
                     logger.info(f"No level specified. Using level {current_level} which has the most pending URLs")
                 
                 logger.info("==================================================")
@@ -260,30 +277,83 @@ class KnowledgeOrchestrator:
                 
             elif not self.cancel_requested:
                 logger.info("Skipping URL analysis phase - no pending URLs found")
-                result["url_analysis"] = {"status": "skipped", "reason": "no_pending_urls"}
+                result["url_analysis"] = {"status": "skipped", "reason": "no_pending_urls"}# STEP 5: VECTOR GENERATION
+            # Only generate vectors if:
+            # 1. We successfully processed URLs and created content, OR
+            # 2. This is a rebuild/continuation with existing content, OR  
+            # 3. Force update is enabled
+            should_generate_vectors = False
+            vector_generation_reason = ""
             
-            # STEP 5: VECTOR GENERATION
-            if not skip_vector_generation and not self.cancel_requested:
+            if skip_vector_generation:
+                vector_generation_reason = "skip_vector_generation=True"
+            elif self.cancel_requested:
+                vector_generation_reason = "processing_cancelled"
+            else:
+                # Check if URL analysis created new content
+                url_analysis_successful = result.get("url_analysis", {}).get("status") == "success"
+                url_analysis_processed_urls = result.get("url_analysis", {}).get("success_count", 0) > 0
+                
+                # Check if there's existing content to vectorize
+                from scripts.storage.content_storage_service import ContentStorageService
+                content_storage = ContentStorageService(self.data_folder)
+                content_paths = list(content_storage.temp_storage_path.glob("*.jsonl"))
+                has_existing_content = len(content_paths) > 0
+                
+                if url_analysis_successful and url_analysis_processed_urls:
+                    should_generate_vectors = True
+                    vector_generation_reason = "new_content_from_url_analysis"
+                elif has_existing_content and force_update:
+                    should_generate_vectors = True  
+                    vector_generation_reason = "existing_content_with_force_update"
+                elif has_existing_content and process_all_steps:
+                    should_generate_vectors = True
+                    vector_generation_reason = "existing_content_with_process_all_steps"
+                else:
+                    vector_generation_reason = "no_new_content_to_vectorize"
+                    
+            if should_generate_vectors:
                 logger.info("==================================================")
                 logger.info("STARTING VECTOR GENERATION PHASE")
+                logger.info(f"Reason: {vector_generation_reason}")
                 logger.info("==================================================")
                 
-                # Generate vectors
+                # STEP 5.1: Fix any broken FAISS indexes before generating new content
+                logger.info("🔧 Checking and fixing FAISS vector stores...")
+                try:
+                    from scripts.storage.faiss_fixer import fix_all_faiss_stores
+                    fix_result = fix_all_faiss_stores(self.data_folder)
+                    
+                    if fix_result.get("success"):
+                        fixed_count = fix_result.get("fixed_stores", 0)
+                        if fixed_count > 0:
+                            logger.info(f"✅ Fixed {fixed_count} FAISS vector stores")
+                        else:
+                            logger.info("✅ All FAISS vector stores are already in good condition")
+                    else:
+                        logger.warning(f"⚠️ FAISS fix completed with warnings: {fix_result.get('message', 'Unknown issue')}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Error during FAISS fix: {e}")
+                    # Continue anyway - this shouldn't block vector generation
+                    
+                # STEP 5.2: Generate vectors
+                from scripts.analysis.vector_generator import VectorGenerator
                 vector_generator = VectorGenerator(self.data_folder)
-                vector_result = await vector_generator.generate_vectors(
-                    request_app_state=request_app_state,
-                    generate_questions=not skip_questions
-                )
+                
+                # Get content paths from the content storage service
+                content_paths = list(content_storage.temp_storage_path.glob("*.jsonl"))
+                
+                vector_result = await vector_generator.generate_vector_stores(content_paths)
                 
                 # Update result with vector generation results
                 result["vector_generation"] = vector_result
-                
-            elif self.cancel_requested:
-                logger.info("Skipping vector generation phase - processing cancelled")
-                result["vector_generation"] = {"status": "skipped", "reason": "processing_cancelled"}
             else:
-                logger.info("Skipping vector generation phase - skip_vector_generation=True")
-                result["vector_generation"] = {"status": "skipped", "reason": "skip_vector_generation"}
+                logger.info("==================================================")
+                logger.info("SKIPPING VECTOR GENERATION PHASE")
+                logger.info(f"Reason: {vector_generation_reason}")
+                logger.info("==================================================")
+                result["vector_generation"] = {"status": "skipped", "reason": vector_generation_reason}
             
             # STEP 6: GOAL EXTRACTION
             if skip_goals or self.cancel_requested:
@@ -291,14 +361,14 @@ class KnowledgeOrchestrator:
                 result["goal_extraction"] = {"status": "skipped", "reason": "skip_goals_or_cancelled"}
             else:
                 logger.info("==================================================")
-                logger.info("STARTING GOAL EXTRACTION PHASE")
+                logger.info("STARTING GOAL EXTRACTION PHASE")                
                 logger.info("==================================================")
                 
                 from scripts.analysis.goal_extractor import GoalExtractor
                 goal_extractor = GoalExtractor(self.data_folder)
                 
-                # Extract goals
-                goal_extraction_result = await goal_extractor.extract_goals(request_app_state=request_app_state)
+                # Extract goals with the correct parameter name
+                goal_extraction_result = await goal_extractor.extract_goals(ollama_client=request_app_state)
                 
                 # Update result with goal extraction results
                 result["goal_extraction"] = goal_extraction_result
@@ -311,12 +381,11 @@ class KnowledgeOrchestrator:
                 logger.info("==================================================")
                 logger.info("STARTING QUESTION GENERATION PHASE")
                 logger.info("==================================================")
-                
                 from scripts.analysis.question_generator_step import QuestionGeneratorStep
                 question_generator = QuestionGeneratorStep(self.data_folder)
                 
                 # Generate questions
-                question_generation_result = await question_generator.generate_questions(request_app_state=request_app_state)
+                question_generation_result = await question_generator.generate_questions(num_questions=15)
                 
                 # Update result with question generation results
                 result["question_generation"] = question_generation_result
@@ -514,67 +583,126 @@ class KnowledgeOrchestrator:
         single_processor = SingleResourceProcessorUniversal(self.data_folder)
         resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
         processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
-        url_storage = URLStorageManager(processed_urls_file)
-        
-        # Get all pending URLs at this level
+        url_storage = URLStorageManager(processed_urls_file)        # Get all pending URLs at this level
+        # CRITICAL FIX: Use discovery mode to see ALL URLs at this level, not just unprocessed ones
+        url_storage.set_discovery_mode(True)
         pending_urls = url_storage.get_pending_urls(depth=level)
-        
-        # If no pending URLs at this level, trigger URL discovery
+        url_storage.set_discovery_mode(False)  # Switch back to analysis mode for processing
+          # If no pending URLs at this level, check if we should trigger discovery
         if not pending_urls:
-            logger.info(f"No pending URLs found at level {level}, checking if URL discovery is needed")
+            # Check if there are pending URLs at ANY level before triggering discovery
+            total_pending_count = 0
+            for check_level in range(1, 6):  # Check levels 1-5
+                check_pending = url_storage.get_pending_urls(depth=check_level)
+                total_pending_count += len(check_pending) if check_pending else 0
             
-            # Check if resources.csv exists for discovery
-            if not os.path.exists(resources_csv_path):
-                logger.error(f"Resources file not found: {resources_csv_path}")
+            # Also check if URLs at this level have been processed (level complete)
+            # Switch to discovery mode temporarily to see ALL URLs at this level
+            url_storage.set_discovery_mode(True)
+            url_storage.load_pending_urls_cache()
+            urls_at_level_in_discovery = url_storage.get_pending_urls(depth=level)
+            total_urls_at_level = len(urls_at_level_in_discovery) if urls_at_level_in_discovery else 0
+            
+            # Switch back to analysis mode
+            url_storage.set_discovery_mode(False)
+            url_storage.load_pending_urls_cache()
+            
+            # If there are URLs at this level in discovery mode but none in analysis mode,
+            # it means they've all been processed
+            if total_urls_at_level > 0:
+                logger.info(f"Level {level} appears to be complete: {total_urls_at_level} URLs exist but all have been processed")
                 return {
-                    "status": "error", 
-                    "reason": "no_resources_file",
-                    "message": f"Resources file not found: {resources_csv_path}"
+                    "status": "completed",
+                    "level": level,
+                    "reason": "level_completed_all_urls_processed",
+                    "message": f"Level {level} is complete: all {total_urls_at_level} URLs have been processed",
+                    "total_urls_at_level": total_urls_at_level,
+                    "total_pending_other_levels": total_pending_count
                 }
-              # Load resources with URLs for discovery
-            resources_df = pd.read_csv(resources_csv_path)
-            # Use origin_url instead of url for compatibility with universal schema
-            resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
             
-            if len(resources_with_url) > 0:
-                logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
+            # Only trigger discovery if there are NO pending URLs anywhere AND no URLs at this level
+            if total_pending_count == 0 and total_urls_at_level == 0:
+                logger.info(f"No pending URLs found at level {level}, and no pending URLs at any other level. Triggering URL discovery.")
                 
-                # Initialize URL discovery manager
-                url_discovery = URLDiscoveryManager(self.data_folder)
-                  # Trigger discovery starting at the current level
-                logger.info(f"Starting URL discovery at level {level}")
-                # FIXED: Use the full max_depth from config instead of limiting to level+1
-                # Get max_depth from config
-                from utils.config import load_config
-                config = load_config()
-                config_max_depth = config.get("crawl_config", {}).get("max_depth", 2)                # Use the config value - this method IS async, so await it
-                discovery_result = await url_discovery.discover_urls_from_resources(level=level, max_depth=config_max_depth)
-                
-                # Log discovery results
-                if discovery_result.get("status") == "success":
-                    logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
-                else:
-                    logger.warning(f"Discovery status: {discovery_result.get('status')}, reason: {discovery_result.get('reason')}")
-                
-                # Check again for pending URLs after discovery
-                pending_urls = url_storage.get_pending_urls(depth=level)
-                
-                if not pending_urls:
-                    logger.warning(f"Still no pending URLs after discovery at level {level}")
+                # Check if resources.csv exists for discovery
+                if not os.path.exists(resources_csv_path):
+                    logger.error(f"Resources file not found: {resources_csv_path}")
                     return {
-                        "status": "warning",
-                        "level": level,
-                        "reason": "no_pending_urls_after_discovery",
-                        "discovery_result": discovery_result
+                        "status": "error", 
+                        "reason": "no_resources_file",
+                        "message": f"Resources file not found: {resources_csv_path}"
                     }
                 
-                logger.info(f"After discovery: found {len(pending_urls)} pending URLs at level {level}")
+                # Load resources with URLs for discovery
+                resources_df = pd.read_csv(resources_csv_path)
+                # Use origin_url instead of url for compatibility with universal schema
+                resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
+                
+                if len(resources_with_url) > 0:
+                    logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
+                    
+                    # Initialize URL discovery manager
+                    url_discovery = URLDiscoveryManager(self.data_folder)
+                      # Trigger discovery starting at the current level
+                    logger.info(f"Starting URL discovery at level {level}")
+                    # FIXED: Use the full max_depth from config instead of limiting to level+1
+                    # Get max_depth from config
+                    from utils.config import load_config
+                    config = load_config()
+                    config_max_depth = config.get("crawl_config", {}).get("max_depth", 2)                    # Use the config value - this method IS async, so await it
+                    discovery_result = await url_discovery.discover_urls_from_resources(level=level, max_depth=config_max_depth)
+                    
+                    # Log discovery results
+                    if discovery_result.get("status") == "success":
+                        logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
+                    else:
+                        logger.warning(f"Discovery status: {discovery_result.get('status')}, reason: {discovery_result.get('reason')}")
+                      # Check again for pending URLs after discovery at the requested level
+                    pending_urls = url_storage.get_pending_urls(depth=level)
+                    
+                    # If no URLs at the requested level, check other levels before giving up
+                    if not pending_urls:
+                        # Check if there are pending URLs at any other level
+                        total_pending_after_discovery = 0
+                        for check_level in range(1, 6):  # Check levels 1-5
+                            check_pending = url_storage.get_pending_urls(depth=check_level)
+                            total_pending_after_discovery += len(check_pending) if check_pending else 0
+                        
+                        if total_pending_after_discovery == 0:
+                            logger.warning(f"No pending URLs found at any level after discovery")
+                            return {
+                                "status": "warning",
+                                "level": level,
+                                "reason": "no_pending_urls_after_discovery",
+                                "discovery_result": discovery_result
+                            }
+                        else:
+                            logger.info(f"No pending URLs at level {level} after discovery, but found {total_pending_after_discovery} pending URLs at other levels")
+                            return {
+                                "status": "skipped",
+                                "level": level,
+                                "reason": "no_pending_urls_at_this_level_but_pending_at_others_after_discovery",
+                                "message": f"No pending URLs at level {level} after discovery, but {total_pending_after_discovery} pending URLs exist at other levels",
+                                "total_pending_other_levels": total_pending_after_discovery
+                            }
+                    
+                    logger.info(f"After discovery: found {len(pending_urls)} pending URLs at level {level}")
+                else:
+                    logger.warning(f"No resources with URLs found for discovery at level {level}")
+                    return {
+                        "status": "warning", 
+                        "reason": "no_resources_with_url",
+                        "message": "No resources with URLs found for discovery"
+                    }
             else:
-                logger.warning(f"No resources with URLs found for discovery at level {level}")
+                # There are pending URLs at other levels, so don't trigger discovery
+                logger.info(f"No pending URLs at level {level}, but found {total_pending_count} pending URLs at other levels. Skipping discovery.")
                 return {
-                    "status": "warning", 
-                    "reason": "no_resources_with_url",
-                    "message": "No resources with URLs found for discovery"
+                    "status": "skipped",
+                    "level": level, 
+                    "reason": "no_pending_urls_at_this_level_but_pending_at_others",
+                    "message": f"No pending URLs at level {level}, but {total_pending_count} pending URLs exist at other levels",
+                    "total_pending_other_levels": total_pending_count
                 }
         
         # Initialize counters
@@ -1056,82 +1184,126 @@ class KnowledgeOrchestrator:
 
     def advance_to_next_level(self, current_level: int, max_depth: int) -> Dict[str, Any]:
         """
-        Advance to the next crawl level, marking all URLs from the current level as processed.
-        This ensures that we properly move forward in the crawling process and don't
-        get stuck processing the same level over and over.
+        Advance to the next level after completing the current level.
         
         Args:
-            current_level: The current crawl level
-            max_depth: Maximum depth to crawl
+            current_level: The level that was just completed
+            max_depth: Maximum depth to process
             
         Returns:
             Dictionary with advancement results
         """
-        logger.info(f"Advancing from level {current_level} to level {current_level + 1}")
-        
-        # Mark all pending URLs from the current level as processed
-        from scripts.analysis.url_storage import URLStorageManager
-        processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
-        url_storage = URLStorageManager(processed_urls_file)
-        
-        # Make sure to correctly mark the current level as processed
-        mark_result = url_storage.mark_level_as_processed(current_level)
-        logger.info(f"Marked {mark_result.get('urls_processed', 0)} URLs at level {current_level} as processed")
-        
-        # Calculate next level
-        next_level = current_level + 1
-        
-        # If we've reached max depth, reset to level 1 to restart the process
-        if next_level > max_depth:
-            next_level = 1
-            logger.info(f"Reached maximum depth ({max_depth}), resetting to level {next_level}")
-        
-        # Update the config file with the new level
         try:
-            from scripts.services.training_scheduler import update_process_level
-            if update_process_level(next_level):
-                logger.info(f"Updated current_process_level in config.json to {next_level}")
-            else:
-                logger.error(f"Failed to update current_process_level in config.json")
+            # Check if current level is actually complete
+            from scripts.analysis.url_storage import URLStorageManager
+            processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
+            url_storage = URLStorageManager(processed_urls_file)
+            
+            # Use discovery mode to see actual pending URLs
+            url_storage.set_discovery_mode(True)
+            pending_urls = url_storage.get_pending_urls(depth=current_level)
+            url_storage.set_discovery_mode(False)
+            
+            pending_count = len(pending_urls) if pending_urls else 0
+            
+            if pending_count > 0:
+                logger.warning(f"Level {current_level} is not complete yet - {pending_count} URLs still pending")
+                return {
+                    "status": "not_complete",
+                    "current_level": current_level,
+                    "next_level": current_level,
+                    "pending_urls": pending_count,
+                    "message": f"Level {current_level} still has {pending_count} pending URLs"
+                }
+            
+            # Determine next level
+            if current_level >= max_depth:
+                logger.info(f"Reached maximum depth {max_depth}, processing complete")
+                return {
+                    "status": "completed",
+                    "current_level": current_level,
+                    "next_level": None,
+                    "message": f"Processing complete at maximum depth {max_depth}"
+                }
+            
+            next_level = current_level + 1
+            
+            # Check if next level has URLs to process
+            url_storage.set_discovery_mode(True)
+            next_level_urls = url_storage.get_pending_urls(depth=next_level)
+            url_storage.set_discovery_mode(False)
+            
+            next_level_count = len(next_level_urls) if next_level_urls else 0
+            
+            if next_level_count == 0:
+                logger.info(f"No URLs found at level {next_level}, skipping to find next available level")
+                
+                # Find the next level with URLs
+                for check_level in range(next_level + 1, max_depth + 1):
+                    url_storage.set_discovery_mode(True)
+                    check_urls = url_storage.get_pending_urls(depth=check_level)
+                    url_storage.set_discovery_mode(False)
+                    
+                    if len(check_urls) > 0:
+                        next_level = check_level
+                        next_level_count = len(check_urls)
+                        logger.info(f"Found {next_level_count} URLs at level {next_level}")
+                        break
+                else:
+                    logger.info("No more URLs found at any level, processing complete")
+                    return {
+                        "status": "completed",
+                        "current_level": current_level,
+                        "next_level": None,
+                        "message": "No more URLs to process at any level"
+                    }
+            
+            # Update config with new level
+            self.update_config_level(next_level)
+            
+            logger.info(f"Advanced from level {current_level} to level {next_level} ({next_level_count} URLs)")
+            
+            return {
+                "status": "advanced",
+                "current_level": current_level,
+                "next_level": next_level,
+                "next_level_urls": next_level_count,
+                "message": f"Advanced to level {next_level} with {next_level_count} URLs to process"
+            }
+            
         except Exception as e:
-            logger.error(f"Error updating current_process_level in config.json: {e}")
+            logger.error(f"Error advancing to next level: {e}")
+            return {
+                "status": "error",
+                "current_level": current_level,
+                "next_level": current_level,
+                "error": str(e)
+            }
+    
+    def update_config_level(self, new_level: int) -> bool:
+        """
+        Update the current_process_level in config.json.
         
-        # Update level completion status in config.json
+        Args:
+            new_level: The new level to set in config
+            
+        Returns:
+            Success flag
+        """
         try:
-            # Load the current config
-            config_path = Path(__file__).parents[2] / "config.json"
-            if config_path.exists():
-                # Fix: Using self.force_url_fetch instead of undefined force_fetch
-                with open(config_path, 'r') as f:
-                    config_data = json.loads(f.read())
-                    
-                # Update the level completion data
-                if 'crawl_config' in config_data and 'level_completion' in config_data['crawl_config']:
-                    level_key = f"level_{current_level}"
-                    if level_key in config_data['crawl_config']['level_completion']:
-                        # Mark this level as completed
-                        config_data['crawl_config']['level_completion'][level_key]['is_complete'] = True
-                        config_data['crawl_config']['level_completion'][level_key]['last_processed'] = datetime.now().isoformat()
-                        
-                    # Update the current max level
-                    config_data['crawl_config']['current_max_level'] = next_level
-                    
-                    # Write back the updated config
-                    with open(config_path, 'w') as f:
-                        json.dump(config_data, f, indent=2)
-                        
-                    logger.info(f"Updated level completion status for level {current_level} in config.json")
-            else:
-                logger.warning(f"Config file not found at {config_path}")
+            from utils.config import load_config, save_config
+            
+            config = load_config()
+            old_level = config.get("current_process_level", 1)
+            config["current_process_level"] = new_level
+            save_config(config)
+            
+            logger.info(f"Updated config.json: current_process_level {old_level} -> {new_level}")
+            return True
+            
         except Exception as e:
-            logger.error(f"Error updating level completion in config.json: {e}")
-        
-        return {
-            "previous_level": current_level,
-            "next_level": next_level,
-            "urls_processed": mark_result.get('urls_processed', 0),
-            "max_depth": max_depth
-        }
+            logger.error(f"Error updating config level: {e}")
+            return False
 
 # Standalone function for easy import
 async def process_knowledge_base(data_folder=None, request_app_state=None, **kwargs):

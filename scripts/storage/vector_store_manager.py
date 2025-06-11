@@ -554,10 +554,18 @@ class VectorStoreManager:
                             detected_topics = ["general"]
                         
                         topics = detected_topics
-                
-                # Add document to each topic collection
-                for topic in topics:                    # Normalize topic name (lowercase, replace spaces with hyphens)
-                    normalized_topic = topic.lower().strip().replace(' ', '-')
+                  # Add document to each topic collection
+                for topic in topics:
+                    # Sanitize topic name for Windows file systems
+                    # Remove invalid characters: [ ] " ' , and other problematic characters
+                    import re
+                    sanitized_topic = re.sub(r'[^\w\s-]', '', str(topic))  # Remove non-alphanumeric chars except spaces and hyphens
+                    normalized_topic = sanitized_topic.lower().strip().replace(' ', '-')
+                    # Remove multiple consecutive hyphens
+                    normalized_topic = re.sub(r'-+', '-', normalized_topic)
+                    # Remove leading/trailing hyphens
+                    normalized_topic = normalized_topic.strip('-')
+                    
                     if not normalized_topic:
                         normalized_topic = "general"
                         
@@ -636,12 +644,11 @@ class VectorStoreManager:
                 store_path = Path(store_info["path"])
                 if not (store_path / "index.faiss").exists():
                     continue
-                    
-                # Load vector store
+                      # Load vector store
                 vector_store = FAISS.load_local(
                     str(store_path),
                     self.embeddings,
-                    "index.faiss"
+                    allow_dangerous_deserialization=True
                 )
                 
                 # Search
