@@ -193,9 +193,13 @@ class DataSaver:
                         'last_updated_at': item_copy.get('last_updated_at', current_time),
                         'related_url': item_copy.get('related_url', '')
                     }
-                    
-                    # Update item_copy with required fields to ensure consistency
+                      # Update item_copy with required fields to ensure consistency
                     item_copy.update(required_fields)
+                    
+                    print(f"\n📝 DataSaver processed item:")
+                    print(f"  - title: {item_copy.get('title', 'NO TITLE')}")
+                    print(f"  - location FINAL: '{item_copy.get('location', 'NO LOCATION')}'")
+                    print(f"  - content_type: {item_copy.get('content_type', 'NO CONTENT_TYPE')}")
                     
                     processed_items.append(item_copy)
                     logger.debug(f"Successfully processed {content_type}: {item_copy.get('title')}")

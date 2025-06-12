@@ -255,32 +255,19 @@ class UniversalAnalysisLLM:
         
         # Add formatting guidance for Mistral model
         if format_type == "json":                    
-            prompt = f"""<s>[INST] You are an expert JSON formatter with perfect accuracy.
-When asked to generate JSON, you ONLY output valid, parseable JSON without any explanation or markdown formatting.
-
-IMPORTANT LIMITS:
-- Generate MAXIMUM 5 items per analysis to ensure quality and relevance
-- Focus on the most important and distinct content items
-- Avoid repetition or similar items
-
-UNIVERSAL TABLE STRUCTURE REQUIREMENTS:
-All content types must follow EXACTLY the same simplified schema with ONLY these fields:
-- title: Clear and concise title
-- description: Detailed explanation of the content
-- purpose: Why this content exists or what problem it solves
-- tags: Array of relevant keywords or categories (lowercase)
-- location: Physical or geographical location related to this content (empty string if not applicable)
-
-DO NOT include any other fields like steps, goals, term, etc. regardless of content type.
-The following fields will be added automatically (don't include them): 
-id, content_type, origin_url, creator_id, group_id, created_at, status, visibility
+            # Use system prompt from config with JSON-specific formatting for Mistral
+            base_system_prompt = self.settings.get("system_prompt", "You are an expert content analyzer.")
+            prompt = f"""<s>[INST] {base_system_prompt}
 
 {prompt.strip()}
 
 Output ONLY the JSON with no additional text. [/INST]</s>"""
         else:
-            # For non-JSON responses, still use the Mistral instruction format
-            prompt = f"""<s>[INST] {prompt.strip()} [/INST]</s>"""
+            # For non-JSON responses, still use the Mistral instruction format with config system prompt
+            base_system_prompt = self.settings.get("system_prompt", "You are an expert content analyzer.")
+            prompt = f"""<s>[INST] {base_system_prompt}
+
+{prompt.strip()} [/INST]</s>"""
         
         # Make API call to generate response
         try:
@@ -334,7 +321,27 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 try:
                     # Extract JSON from response using robust parsing
                     json_str = result["response"].strip()
+                    print(f"\n🤖 RAW LLM RESPONSE:")
+                    print("=" * 60)
+                    print(f"Response length: {len(json_str)} characters")
+                    print(f"First 500 chars: {json_str[:500]}")
+                    print("=" * 60)
+                    
                     structured_response = self._parse_json_response(json_str)
+                    
+                    print(f"\n📊 PARSED JSON RESPONSE:")
+                    print("=" * 60)
+                    if structured_response is not None:
+                        print(f"Type: {type(structured_response)}")
+                        if isinstance(structured_response, list):
+                            print(f"Number of items: {len(structured_response)}")
+                            for i, item in enumerate(structured_response):
+                                print(f"Item {i+1}: {json.dumps(item, indent=2)}")
+                        else:
+                            print(f"Single item: {json.dumps(structured_response, indent=2)}")
+                    else:
+                        print("❌ PARSING FAILED - structured_response is None")
+                    print("=" * 60)
                     
                     # Check if parsing failed
                     if structured_response is None:
@@ -353,6 +360,19 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                         # Add universal table schema defaults
                         for item in structured_response:
                             item["location"] = item.get("location", "")
+                            
+                    print(f"\n🔧 AFTER PROCESSING:")
+                    print("=" * 60)
+                    if isinstance(structured_response, list):
+                        print(f"Final number of items: {len(structured_response)}")
+                        for i, item in enumerate(structured_response):
+                            print(f"Final Item {i+1}:")
+                            print(f"  - title: {item.get('title', 'NO TITLE')}")
+                            print(f"  - description: {item.get('description', 'NO DESCRIPTION')[:100]}...")
+                            print(f"  - location: '{item.get('location', 'NO LOCATION')}'")
+                            print(f"  - tags: {item.get('tags', 'NO TAGS')}")
+                            print(f"  - purpose: {item.get('purpose', 'NO PURPOSE')[:50]}...")
+                    print("=" * 60)
                             
                     logger.info(f"Successfully parsed JSON response with {len(structured_response) if isinstance(structured_response, list) else 1} items")
                     return structured_response
@@ -377,20 +397,10 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
         
         openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
         if format_type == "json":
-            system_prompt = """You are an expert JSON formatter with perfect accuracy. Output ONLY valid, parseable JSON without any explanation or markdown formatting.
-    
-UNIVERSAL TABLE STRUCTURE REQUIREMENTS:
-All content types must follow EXACTLY the same simplified schema with ONLY these fields:
-- title: Clear and concise title
-- description: Detailed explanation of the content
-- purpose: Why this content exists or what problem it solves
-- tags: Array of relevant keywords or categories (lowercase)
-- location: Physical or geographical location related to this content (empty string if not applicable)
-
-DO NOT include any other fields like steps, goals, term, etc. regardless of content type.
-The following fields will be added automatically (don't include them): 
-id, content_type, origin_url, creator_id, group_id, created_at, status, visibility"""
+            # Use comprehensive system prompt from config for JSON responses
+            system_prompt = self.settings.get("system_prompt", "You are an expert content analyzer and JSON formatter.")
         else:
+            # Use system prompt from config for non-JSON responses  
             system_prompt = self.settings.get("system_prompt", "You are an AI assistant helping with content analysis and knowledge extraction.")
         
         messages = [
@@ -432,7 +442,12 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
                     try:
                         error_details = response.json()
                         if 'error' in error_details:
-                            error_message += f", Details: {error_details['error'].get('message', '')}"
+                            error_detail = error_details['error']
+                            if isinstance(error_detail, dict):
+                                error_message += f", Details: {error_detail.get('message', error_detail)}"
+                            else:
+                                error_message += f", Details: {error_detail}"
+                        logger.error(f"Full error response: {error_details}")
                     except:
                         if response.text:
                             error_message += f", Response: {response.text[:200]}"
@@ -522,8 +537,18 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
                 logger.warning(f"Unexpected response type for {title}: {type(response)}")
                 return []
             
+            # Check if response is essentially empty before processing
+            if self._is_response_essentially_empty(items, title):
+                logger.warning(f"LLM returned essentially empty response for {title} ({content_type})")
+                return []
+            
             # Validate and enrich items
             validated_items = self._validate_items(items, title, url, content_type)
+            
+            # Double-check that we have meaningful results after validation
+            if not validated_items:
+                logger.warning(f"No valid items extracted from {title} ({content_type}) after validation")
+                return []
             
             logger.info(f"Extracted {len(validated_items)} {content_type} items from {title}")
             return validated_items
@@ -686,6 +711,11 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
             if not isinstance(item, dict):
                 logger.warning(f"Skipping non-dict item: {item}")
                 continue
+            
+            # Check if this is essentially an empty response from LLM
+            if self._is_empty_response(item):
+                logger.warning(f"Skipping empty/meaningless LLM response for {title}: {item}")
+                continue
                 
             # Ensure required fields exist
             validated_item = {
@@ -713,6 +743,133 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
             
         return validated_items
     
+    def _is_empty_response(self, item: Dict) -> bool:
+        """
+        Check if an LLM response item is essentially empty or meaningless.
+        
+        Args:
+            item: Dictionary representing an extracted item
+            
+        Returns:
+            True if the response is considered empty/meaningless, False otherwise
+        """
+        # Get the main content fields
+        title = item.get("title", "").strip()
+        description = item.get("description", "").strip()
+        purpose = item.get("purpose", "").strip()
+        tags = item.get("tags", [])
+        
+        # Check if all main content fields are empty or trivial
+        has_meaningful_title = title and len(title) > 3
+        has_meaningful_description = description and len(description) > 10
+        has_meaningful_purpose = purpose and len(purpose) > 5
+        has_meaningful_tags = isinstance(tags, list) and len(tags) > 0 and any(tag.strip() for tag in tags)
+        
+        # If none of the main fields have meaningful content, it's an empty response
+        if not (has_meaningful_title or has_meaningful_description or has_meaningful_purpose or has_meaningful_tags):
+            logger.debug(f"Detected empty response - no meaningful content in title/description/purpose/tags")
+            return True
+        
+        # Check for responses that only contain location (common LLM failure pattern)
+        non_location_fields = [k for k in item.keys() if k not in ['location', 'origin_url', 'content_type', 'created_at']]
+        meaningful_fields = []
+        
+        for field in non_location_fields:
+            value = item.get(field, "")
+            if isinstance(value, str) and value.strip() and len(value.strip()) > 2:
+                meaningful_fields.append(field)
+            elif isinstance(value, list) and len(value) > 0 and any(str(v).strip() for v in value):
+                meaningful_fields.append(field)
+        
+        if len(meaningful_fields) == 0:
+            logger.debug(f"Detected empty response - only location/metadata fields present")
+            return True
+            
+        return False
+    
+    def _is_response_essentially_empty(self, items: List[Dict], title: str) -> bool:
+        """
+        Check if the entire LLM response is essentially empty or meaningless.
+        
+        Args:
+            items: List of extracted items from LLM response
+            title: Original title for context
+            
+        Returns:
+            True if the entire response is considered empty/meaningless
+        """
+        if not items:
+            return True
+        
+        # Check if all items are empty
+        meaningful_items = [item for item in items if not self._is_empty_response(item)]
+        
+        if not meaningful_items:
+            logger.debug(f"All {len(items)} response items are empty for {title}")
+            return True
+        
+        # Check for single item responses that are just location/metadata
+        if len(items) == 1:
+            item = items[0]
+            # Count non-empty fields excluding metadata
+            content_fields = ['title', 'description', 'purpose', 'tags']
+            non_empty_fields = []
+            
+            for field in content_fields:
+                value = item.get(field, "")
+                if isinstance(value, str) and value.strip():
+                    non_empty_fields.append(field)
+                elif isinstance(value, list) and len(value) > 0:
+                    non_empty_fields.append(field)
+            
+            # If only location or no meaningful content fields
+            if len(non_empty_fields) == 0:
+                logger.debug(f"Single item response has no meaningful content fields for {title}")
+                return True
+                
+        return False
+    
+    def _is_item_worth_saving(self, item: Dict) -> bool:
+        """
+        Check if an item has enough meaningful content to be worth saving to CSV.
+        
+        Args:
+            item: Dictionary representing an item to potentially save
+            
+        Returns:
+            True if the item is worth saving, False otherwise
+        """
+        # Check if it's an empty response
+        if self._is_empty_response(item):
+            return False
+        
+        # Check for auto-generated fallback content that indicates failed analysis
+        title = item.get("title", "").strip()
+        description = item.get("description", "").strip()
+        
+        # Don't save items with only auto-generated descriptions
+        auto_generated_patterns = [
+            "Auto-generated reference from content analysis",
+            "Auto-generated",
+            "NO DESCRIPTION",
+            "NO TITLE"
+        ]
+        
+        for pattern in auto_generated_patterns:
+            if pattern.lower() in description.lower() or pattern.lower() in title.lower():
+                logger.debug(f"Filtering out item with auto-generated content: {title}")
+                return False
+        
+        # Check if we have at least one meaningful field
+        has_meaningful_content = (
+            (title and len(title) > 3) or
+            (description and len(description) > 20) or
+            (item.get("purpose", "").strip() and len(item.get("purpose", "").strip()) > 10) or
+            (isinstance(item.get("tags", []), list) and len(item.get("tags", [])) > 0)
+        )
+        
+        return has_meaningful_content
+    
     def save_to_universal_csv(self, items: List[Dict], content_type: str = None) -> None:
         """
         Save analyzed items to appropriate CSV files based on content type.
@@ -727,18 +884,43 @@ id, content_type, origin_url, creator_id, group_id, created_at, status, visibili
         if not items:
             logger.info("No items to save to CSV")
             return
+        
+        # Filter out empty items before saving
+        meaningful_items = [item for item in items if self._is_item_worth_saving(item)]
+        
+        if not meaningful_items:
+            logger.warning(f"All {len(items)} items were filtered out as empty/meaningless - not saving to CSV")
+            return
+        
+        if len(meaningful_items) < len(items):
+            logger.info(f"Filtered out {len(items) - len(meaningful_items)} empty items, saving {len(meaningful_items)} meaningful items")
+            
+        print(f"\n💾 SAVING TO CSV:")
+        print("=" * 60)
+        print(f"Number of items to save: {len(meaningful_items)}")
+        print(f"Content type: {content_type}")
+        
+        for i, item in enumerate(meaningful_items):
+            print(f"\nItem {i+1} being saved:")
+            print(f"  - title: {item.get('title', 'NO TITLE')}")
+            print(f"  - description: {item.get('description', 'NO DESCRIPTION')[:100]}...")
+            print(f"  - location: '{item.get('location', 'NO LOCATION')}'")
+            print(f"  - tags: {item.get('tags', 'NO TAGS')}")
+            print(f"  - purpose: {item.get('purpose', 'NO PURPOSE')[:50]}...")
+            print(f"  - content_type: {item.get('content_type', 'NO CONTENT_TYPE')}")
+        print("=" * 60)
             
         try:
             # Group items by content type if not explicitly provided
             if content_type:
                 # All items are the same type
-                self._save_items_by_type(items, content_type)
+                self._save_items_by_type(meaningful_items, content_type)
             else:
                 # Group by content_type field in each item
                 from collections import defaultdict
                 grouped_items = defaultdict(list)
                 
-                for item in items:
+                for item in meaningful_items:
                     item_type = item.get('content_type', 'resource')
                     grouped_items[item_type].append(item)
                 

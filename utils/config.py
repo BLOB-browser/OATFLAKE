@@ -86,6 +86,19 @@ def save_to_env(key, value):
     except Exception as e:
         print(f"Error saving to .env: {e}")
 
+def save_config(config_data):
+    """Save config data to the main project config.json."""
+    project_root = Path(__file__).parent.parent
+    project_config_path = project_root / 'config.json'
+    
+    try:
+        with open(project_config_path, 'w') as f:
+            json.dump(config_data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving config.json: {e}")
+        return False
+
 # Basic configuration
 BACKEND_CONFIG = {
     'PORT': int(os.getenv('PORT', '8999')),
