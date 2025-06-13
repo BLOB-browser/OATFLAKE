@@ -193,75 +193,77 @@ async def process_knowledge_base(
             processed_urls_file = os.path.join(data_path, "processed_urls.csv")
             url_storage = URLStorageManager(processed_urls_file)
             
-            # Get pending URLs at the specified level
-            pending_urls = url_storage.get_pending_urls(depth=process_level)
+            # ALWAYS START FROM LOWEST AVAILABLE LEVEL
+            # Check all levels to find the lowest level with pending URLs
+            logger.info(f"Scanning all levels to find lowest available level with pending URLs...")
             
-            # If no pending URLs at the specified level, find the next level with pending URLs
-            if not pending_urls:
-                logger.warning(f"No pending URLs found at level {process_level}, checking other levels...")
+            pending_by_level = {}
+            selected_level = None
+            
+            for level in range(1, max_depth + 1):
+                level_urls = url_storage.get_pending_urls(depth=level)
+                pending_count = len(level_urls) if level_urls else 0
+                pending_by_level[level] = pending_count
                 
-                # Check pending URLs at each level and find the first level with pending URLs
-                pending_by_level = {}
-                selected_level = None
+                # Save the FIRST (lowest) level that has pending URLs
+                if pending_count > 0 and selected_level is None:
+                    selected_level = level
+            
+            # If we found a level with pending URLs and it's different from process_level, use the lowest
+            if selected_level and selected_level != process_level:
+                logger.info(f"Found pending URLs at lower level {selected_level}, using that instead of {process_level}")
+                process_level = selected_level
+            elif selected_level:
+                logger.info(f"Confirmed level {process_level} has pending URLs, proceeding")
+            
+            # If no pending URLs at any level, advance to next level in config
+            if not selected_level:
+                logger.warning("No pending URLs found at any level")
                 
-                for level in range(1, max_depth + 1):
-                    level_urls = url_storage.get_pending_urls(depth=level)
-                    pending_count = len(level_urls) if level_urls else 0
-                    pending_by_level[level] = pending_count
-                    
-                    # Save the first level that has pending URLs
-                    if pending_count > 0 and selected_level is None:
-                        selected_level = level
-                
-                # Log the counts at each level
+                # Log the counts at each level for debugging
                 level_info = ", ".join([f"level {l}: {c}" for l, c in sorted(pending_by_level.items()) if c > 0])
                 if level_info:
                     logger.info(f"Found pending URLs: {level_info}")
                 else:
                     logger.warning("No pending URLs found at any level")
                 
-                # If we found a level with pending URLs, use that instead
-                if selected_level:
-                    logger.info(f"Redirecting to process level {selected_level} which has {pending_by_level[selected_level]} pending URLs")
-                    process_level = selected_level
-                else:
-                    # No pending URLs at any level - increment process_level in config.json and try that level
-                    if config_data and config_path:
-                        next_level = process_level + 1
-                        if next_level > max_depth:
-                            logger.warning(f"Reached maximum depth ({max_depth}), resetting to level 1")
-                            next_level = 1
+                # No pending URLs at any level - increment process_level in config.json and try that level
+                if config_data and config_path:
+                    next_level = process_level + 1
+                    if next_level > max_depth:
+                        logger.warning(f"Reached maximum depth ({max_depth}), resetting to level 1")
+                        next_level = 1
+                    
+                    # Update the config file with the new level
+                    logger.info(f"No URLs at any level. Incrementing to level {next_level} in config.json")
+                    config_data["current_process_level"] = next_level
+                    with open(config_path, 'w') as f:
+                        json.dump(config_data, f, indent=2)
+                    
+                    # Update the process_level for this run
+                    process_level = next_level
+                    
+                    # Update crawl_config level_completion status if it exists
+                    if 'crawl_config' in config_data and 'level_completion' in config_data['crawl_config']:
+                        level_key = f"level_{process_level - 1}"
+                        if level_key in config_data['crawl_config']['level_completion']:
+                            config_data['crawl_config']['level_completion'][level_key]['is_complete'] = True
+                            config_data['crawl_config']['level_completion'][level_key]['last_processed'] = datetime.now().isoformat()
                         
-                        # Update the config file with the new level
-                        logger.info(f"No URLs at level {process_level}. Incrementing to level {next_level} in config.json")
-                        config_data["current_process_level"] = next_level
+                        # Update the current max level
+                        config_data['crawl_config']['current_max_level'] = process_level
+                        
+                        # Write back the updated config
                         with open(config_path, 'w') as f:
                             json.dump(config_data, f, indent=2)
-                        
-                        # Update the process_level for this run
-                        process_level = next_level
-                        
-                        # Update crawl_config level_completion status if it exists
-                        if 'crawl_config' in config_data and 'level_completion' in config_data['crawl_config']:
-                            level_key = f"level_{process_level - 1}"
-                            if level_key in config_data['crawl_config']['level_completion']:
-                                config_data['crawl_config']['level_completion'][level_key]['is_complete'] = True
-                                config_data['crawl_config']['level_completion'][level_key]['last_processed'] = datetime.now().isoformat()
-                            
-                            # Update the current max level
-                            config_data['crawl_config']['current_max_level'] = process_level
-                            
-                            # Write back the updated config
-                            with open(config_path, 'w') as f:
-                                json.dump(config_data, f, indent=2)
-                        
-                        logger.info(f"Now processing at new level {process_level}")
-                        
-                        # Check for URLs at the new level
-                        pending_urls = url_storage.get_pending_urls(depth=process_level)
-                        if not pending_urls:
-                            logger.info(f"No pending URLs found at level {process_level} either, proceeding with URL discovery")
-                            # Discovery will happen in process_urls_at_level
+                    
+                    logger.info(f"Now processing at new level {process_level}")
+                    
+                    # Check for URLs at the new level
+                    pending_urls = url_storage.get_pending_urls(depth=process_level)
+                    if not pending_urls:
+                        logger.info(f"No pending URLs found at level {process_level} either, proceeding with URL discovery")
+                        # Discovery will happen in process_urls_at_level
             
             # Process URLs at the selected level
             result = await orchestrator.process_urls_at_level(

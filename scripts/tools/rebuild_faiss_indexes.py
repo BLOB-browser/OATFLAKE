@@ -90,12 +90,8 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
             total_docs = await add_document_types(data_path, force_all=True)
             logger.info(f"Added {total_docs} total documents to reference store")
             
-            # Rebuild the FAISS index for the reference store
-            reference_store = await vector_store_manager.get_vector_store("reference_store")
-            if reference_store:
-                logger.info("Rebuilding reference_store FAISS index")
-                await vector_store_manager.rebuild_store("reference_store")
-                logger.info("Reference store FAISS index rebuilt successfully")
+            # The FAISS index is automatically built when documents are added
+            logger.info("Reference store FAISS index has been rebuilt successfully")
         
         # First rebuild all existing stores (or if --rebuild-reference isn't specified)
         if use_new_modules:
@@ -197,6 +193,52 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
         logger.error(traceback.format_exc())
         return False
 
+def sanitize_value(value):
+    """Sanitize a value to ensure it's JSON-serializable and handles all types of NaN/null values."""
+    import pandas as pd
+    import numpy as np
+    import math
+    
+    # Handle pandas/numpy NaN values
+    if pd.isna(value):
+        return ""
+    
+    # Handle numpy NaN specifically
+    if isinstance(value, (np.floating, float)) and (math.isnan(value) if isinstance(value, (int, float, np.number)) else False):
+        return ""
+    
+    # Handle None
+    if value is None:
+        return ""
+    
+    # Handle string representations of null
+    if isinstance(value, str) and value.lower() in ['nan', 'null', 'none', '']:
+        return ""
+    
+    # Convert pandas/numpy types to native Python types
+    if hasattr(value, 'item'):
+        try:
+            value = value.item()
+        except (ValueError, TypeError):
+            pass
+    
+    # Handle numpy bool
+    if isinstance(value, (np.bool_, np.bool8)):
+        return bool(value)
+    
+    # Handle numpy integers
+    if isinstance(value, (np.integer, np.int_, np.int8, np.int16, np.int32, np.int64)):
+        return int(value)
+    
+    # Handle numpy floats
+    if isinstance(value, (np.floating, np.float_, np.float16, np.float32, np.float64)):
+        if math.isnan(value):
+            return ""
+        return float(value)
+    
+    # Return the value as-is if it's already a basic Python type
+    return value
+
 async def add_document_types(data_path, force_all=False, check_existing=False):
     """Add document types (definitions, projects, methods) to reference_store.
     
@@ -210,6 +252,8 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
     """
     try:
         import pandas as pd
+        import numpy as np
+        import math
         from scripts.storage.vector_store_manager import VectorStoreManager
         from langchain.schema import Document
         
@@ -314,29 +358,99 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
                     
                     logger.info(f"Definition columns: title={has_title}, term={has_term}, description={has_description}, definition={has_definition}")
                     
-                    # Convert to documents
+                    # Convert to documents using universal schema with backward compatibility
                     documents = []
                     for _, row in df.iterrows():
-                        # First check for title/description fields, fall back to term/definition if not found
-                        title = row.get('title', row.get('term', ''))
-                        description = row.get('description', row.get('definition', ''))
-                        content = f"TITLE: {title}\nDESCRIPTION: {description}"
+                        # Universal schema mapping with backward compatibility
+                        # Priority: new universal schema -> old CSV schema -> fallbacks
+                        title = (row.get('title') or 
+                                row.get('term') or 
+                                'Untitled')
                         
-                        # Create metadata from row data
+                        description = (row.get('description') or 
+                                     row.get('definition') or 
+                                     '')
+                        
+                        # Handle content_type from universal schema or infer from context
+                        content_type = (row.get('content_type') or 
+                                      'definition')  # Default for definitions
+                        
+                        # Create rich content that preserves structure
+                        content_parts = []
+                        content_parts.append(f"TITLE: {title}")
+                        if description:
+                            content_parts.append(f"DESCRIPTION: {description}")
+                        
+                        # Add purpose if available (universal schema)
+                        purpose = row.get('purpose', '')
+                        if purpose:
+                            content_parts.append(f"PURPOSE: {purpose}")
+                            
+                        # Add location if available (universal schema)
+                        location = row.get('location', '')
+                        if location:
+                            content_parts.append(f"LOCATION: {location}")
+                        
+                        content = '\n'.join(content_parts)
+                        
+                        # Create comprehensive metadata using universal schema
                         metadata = {
-                            "source_type": "definitions",
-                            "type": "definitions",  # Explicitly set type to match source_type
+                            # Core fields (always present)
+                            "source_type": content_type,
+                            "type": content_type,
+                            "title": title,  # Always store title in metadata
+                            "description": description,  # Always store description in metadata
                             "processed_at": datetime.now().isoformat(),
+                            
+                            # Universal schema fields (primary) - sanitize all values
+                            "id": sanitize_value(row.get('id', '')),
+                            "content_type": content_type,
+                            "origin_url": sanitize_value(row.get('origin_url', '')),
+                            "tags": sanitize_value(row.get('tags', [])),
+                            "purpose": sanitize_value(purpose),
+                            "location": sanitize_value(location),
+                            "related_url": sanitize_value(row.get('related_url', '')),
+                            "status": sanitize_value(row.get('status', '')),
+                            "creator_id": sanitize_value(row.get('creator_id', '')),
+                            "collaborators": sanitize_value(row.get('collaborators', '')),
+                            "group_id": sanitize_value(row.get('group_id', '')),
+                            "created_at": sanitize_value(row.get('created_at', '')),
+                            "last_updated_at": sanitize_value(row.get('last_updated_at', '')),
+                            "analysis_completed": sanitize_value(row.get('analysis_completed', '')),
+                            "visibility": sanitize_value(row.get('visibility', '')),
                         }
                         
-                        # Add scalar values from row to metadata
+                        # Add backward compatibility fields (old CSV schema)
+                        legacy_fields = {
+                            'term': row.get('term', ''),
+                            'definition': row.get('definition', ''),
+                            'resource_url': row.get('resource_url', ''),
+                            'source_text': row.get('source_text', ''),
+                            'category': row.get('category', ''),
+                            'source': row.get('source', ''),
+                        }
+                        
+                        # Only add legacy fields if they have values
+                        for key, value in legacy_fields.items():
+                            sanitized_value = sanitize_value(value)
+                            if sanitized_value:  # Only add if not empty after sanitization
+                                metadata[key] = sanitized_value
+                        
+                        # Add any additional columns not covered above
+                        excluded_cols = {
+                            'title', 'description', 'term', 'definition', 'id', 'content_type',
+                            'origin_url', 'tags', 'purpose', 'location', 'related_url', 'status',
+                            'creator_id', 'collaborators', 'group_id', 'created_at', 
+                            'last_updated_at', 'analysis_completed', 'visibility', 'resource_url',
+                            'source_text', 'category', 'source'
+                        }
+                        
                         for col in df.columns:
-                            if col in ["title", "description", "term", "definition"]:
-                                continue
-                                
-                            value = row.get(col)
-                            if pd.notna(value) and isinstance(value, (str, int, float, bool)):
-                                metadata[col] = value
+                            if col not in excluded_cols:
+                                value = row.get(col)
+                                sanitized_value = sanitize_value(value)
+                                if sanitized_value:  # Only add if not empty after sanitization
+                                    metadata[col] = sanitized_value
                         
                         # Create document
                         documents.append(Document(page_content=content, metadata=metadata))
@@ -396,26 +510,117 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
                     df = pd.read_csv(projects_path)
                     logger.info(f"Found {len(df)} projects to add")
                     
-                    # Convert to documents
+                    # Convert to documents using universal schema with backward compatibility
                     documents = []
                     for _, row in df.iterrows():
-                        content = f"PROJECT: {row.get('title', '')}\nDESCRIPTION: {row.get('description', '')}\nGOALS: {row.get('goals', '')}"
+                        # Universal schema mapping with backward compatibility
+                        title = (row.get('title') or 
+                                row.get('project_name') or 
+                                'Untitled Project')
                         
-                        # Create metadata from row data
+                        description = (row.get('description') or 
+                                     row.get('project_description') or 
+                                     '')
+                        
+                        goals = row.get('goals', '')
+                        
+                        # Handle content_type from universal schema or infer from context
+                        content_type = (row.get('content_type') or 
+                                      'project')  # Default for projects
+                        
+                        # Create rich content that preserves structure
+                        content_parts = []
+                        content_parts.append(f"TITLE: {title}")
+                        if description:
+                            content_parts.append(f"DESCRIPTION: {description}")
+                        if goals:
+                            content_parts.append(f"GOALS: {goals}")
+                        
+                        # Add purpose if available (universal schema)
+                        purpose = row.get('purpose', '')
+                        if purpose:
+                            content_parts.append(f"PURPOSE: {purpose}")
+                            
+                        # Add location if available (universal schema)
+                        location = row.get('location', '')
+                        if location:
+                            content_parts.append(f"LOCATION: {location}")
+                        
+                        content = '\n'.join(content_parts)
+                        
+                        # Create comprehensive metadata using universal schema
                         metadata = {
-                            "source_type": "projects",
-                            "type": "projects",  # Explicitly set type to match source_type
+                            # Core fields (always present)
+                            "source_type": content_type,
+                            "type": content_type,
+                            "title": title,  # Always store title in metadata
+                            "description": description,  # Always store description in metadata
                             "processed_at": datetime.now().isoformat(),
+                            
+                            # Universal schema fields (primary) - sanitize all values
+                            "id": sanitize_value(row.get('id', '')),
+                            "content_type": content_type,
+                            "origin_url": sanitize_value(row.get('origin_url', '')),
+                            "tags": sanitize_value(row.get('tags', [])),
+                            "purpose": sanitize_value(purpose),
+                            "location": sanitize_value(location),
+                            "related_url": sanitize_value(row.get('related_url', '')),
+                            "status": sanitize_value(row.get('status', '')),
+                            "creator_id": sanitize_value(row.get('creator_id', '')),
+                            "collaborators": sanitize_value(row.get('collaborators', '')),
+                            "group_id": sanitize_value(row.get('group_id', '')),
+                            "created_at": sanitize_value(row.get('created_at', '')),
+                            "last_updated_at": sanitize_value(row.get('last_updated_at', '')),
+                            "analysis_completed": sanitize_value(row.get('analysis_completed', '')),
+                            "visibility": sanitize_value(row.get('visibility', '')),
                         }
                         
-                        # Add scalar values from row to metadata
+                        # Add backward compatibility fields (old CSV schema)
+                        legacy_fields = {
+                            'goals': goals,
+                            'project_name': row.get('project_name', ''),
+                            'project_description': row.get('project_description', ''),
+                            'resource_url': row.get('resource_url', ''),
+                            'source_text': row.get('source_text', ''),
+                            'category': row.get('category', ''),
+                            'source': row.get('source', ''),
+                        }
+                        
+                        # Only add legacy fields if they have values
+                        for key, value in legacy_fields.items():
+                            if value and pd.notna(value):
+                                # Convert numpy/pandas types to native Python types and handle NaN
+                                if isinstance(value, (pd.Series, pd.DataFrame)):
+                                    continue
+                                if pd.isna(value):
+                                    continue
+                                # Convert numpy types to Python native types
+                                if hasattr(value, 'item'):
+                                    value = value.item()
+                                metadata[key] = value
+                        
+                        # Add any additional columns not covered above
+                        excluded_cols = {
+                            'title', 'description', 'goals', 'project_name', 'project_description',
+                            'id', 'content_type', 'origin_url', 'tags', 'purpose', 'location', 
+                            'related_url', 'status', 'creator_id', 'collaborators', 'group_id', 
+                            'created_at', 'last_updated_at', 'analysis_completed', 'visibility', 
+                            'resource_url', 'source_text', 'category', 'source'
+                        }
+                        
                         for col in df.columns:
-                            if col in ["title", "description", "goals"]:
-                                continue
-                                
-                            value = row.get(col)
-                            if pd.notna(value) and isinstance(value, (str, int, float, bool)):
-                                metadata[col] = value
+                            if col not in excluded_cols:
+                                value = row.get(col)
+                                if pd.notna(value) and isinstance(value, (str, int, float, bool)):
+                                    # Convert numpy/pandas types to native Python types and handle NaN
+                                    if isinstance(value, (pd.Series, pd.DataFrame)):
+                                        continue
+                                    if pd.isna(value):
+                                        continue
+                                    # Convert numpy types to Python native types
+                                    if hasattr(value, 'item'):
+                                        value = value.item()
+                                    metadata[col] = value
                         
                         # Create document
                         documents.append(Document(page_content=content, metadata=metadata))
@@ -475,35 +680,119 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
                     df = pd.read_csv(methods_path)
                     logger.info(f"Found {len(df)} methods to add")
                     
-                    # Convert to documents
+                    # Convert to documents using universal schema with backward compatibility
                     documents = []
                     for _, row in df.iterrows():
-                        # Create content based on available fields
-                        content_parts = []
-                        if 'name' in df.columns and pd.notna(row.get('name')):
-                            content_parts.append(f"METHOD: {row.get('name')}")
-                        if 'description' in df.columns and pd.notna(row.get('description')):
-                            content_parts.append(f"DESCRIPTION: {row.get('description')}")
-                        if 'steps' in df.columns and pd.notna(row.get('steps')):
-                            content_parts.append(f"STEPS: {row.get('steps')}")
-                            
-                        content = "\n".join(content_parts)
+                        # Universal schema mapping with backward compatibility
+                        title = (row.get('title') or 
+                                row.get('name') or 
+                                row.get('method_name') or 
+                                'Untitled Method')
                         
-                        # Create metadata
+                        description = (row.get('description') or 
+                                     row.get('method_description') or 
+                                     '')
+                        
+                        steps = row.get('steps', '')
+                        
+                        # Handle content_type from universal schema or infer from context
+                        content_type = (row.get('content_type') or 
+                                      'method')  # Default for methods
+                        
+                        # Create rich content that preserves structure
+                        content_parts = []
+                        content_parts.append(f"TITLE: {title}")
+                        if description:
+                            content_parts.append(f"DESCRIPTION: {description}")
+                        if steps:
+                            content_parts.append(f"STEPS: {steps}")
+                        
+                        # Add purpose if available (universal schema)
+                        purpose = row.get('purpose', '')
+                        if purpose:
+                            content_parts.append(f"PURPOSE: {purpose}")
+                            
+                        # Add location if available (universal schema)
+                        location = row.get('location', '')
+                        if location:
+                            content_parts.append(f"LOCATION: {location}")
+                        
+                        content = '\n'.join(content_parts)
+                        
+                        # Create comprehensive metadata using universal schema
                         metadata = {
-                            "source_type": "methods",
-                            "type": "methods",  # Explicitly set type to match source_type
+                            # Core fields (always present)
+                            "source_type": content_type,
+                            "type": content_type,
+                            "title": title,  # Always store title in metadata
+                            "description": description,  # Always store description in metadata
                             "processed_at": datetime.now().isoformat(),
+                            
+                            # Universal schema fields (primary) - sanitize all values
+                            "id": sanitize_value(row.get('id', '')),
+                            "content_type": content_type,
+                            "origin_url": sanitize_value(row.get('origin_url', '')),
+                            "tags": sanitize_value(row.get('tags', [])),
+                            "purpose": sanitize_value(purpose),
+                            "location": sanitize_value(location),
+                            "related_url": sanitize_value(row.get('related_url', '')),
+                            "status": sanitize_value(row.get('status', '')),
+                            "creator_id": sanitize_value(row.get('creator_id', '')),
+                            "collaborators": sanitize_value(row.get('collaborators', '')),
+                            "group_id": sanitize_value(row.get('group_id', '')),
+                            "created_at": sanitize_value(row.get('created_at', '')),
+                            "last_updated_at": sanitize_value(row.get('last_updated_at', '')),
+                            "analysis_completed": sanitize_value(row.get('analysis_completed', '')),
+                            "visibility": sanitize_value(row.get('visibility', '')),
                         }
                         
-                        # Add scalar values from row to metadata
+                        # Add backward compatibility fields (old CSV schema)
+                        legacy_fields = {
+                            'steps': steps,
+                            'name': row.get('name', ''),
+                            'method_name': row.get('method_name', ''),
+                            'method_description': row.get('method_description', ''),
+                            'resource_url': row.get('resource_url', ''),
+                            'source_text': row.get('source_text', ''),
+                            'category': row.get('category', ''),
+                            'source': row.get('source', ''),
+                        }
+                        
+                        # Only add legacy fields if they have values
+                        for key, value in legacy_fields.items():
+                            if value and pd.notna(value):
+                                # Convert numpy/pandas types to native Python types and handle NaN
+                                if isinstance(value, (pd.Series, pd.DataFrame)):
+                                    continue
+                                if pd.isna(value):
+                                    continue
+                                # Convert numpy types to Python native types
+                                if hasattr(value, 'item'):
+                                    value = value.item()
+                                metadata[key] = value
+                        
+                        # Add any additional columns not covered above
+                        excluded_cols = {
+                            'title', 'description', 'steps', 'name', 'method_name', 'method_description',
+                            'id', 'content_type', 'origin_url', 'tags', 'purpose', 'location', 
+                            'related_url', 'status', 'creator_id', 'collaborators', 'group_id', 
+                            'created_at', 'last_updated_at', 'analysis_completed', 'visibility', 
+                            'resource_url', 'source_text', 'category', 'source'
+                        }
+                        
                         for col in df.columns:
-                            if col in ["name", "description", "steps"]:
-                                continue
-                                
-                            value = row.get(col)
-                            if pd.notna(value) and isinstance(value, (str, int, float, bool)):
-                                metadata[col] = value
+                            if col not in excluded_cols:
+                                value = row.get(col)
+                                if pd.notna(value) and isinstance(value, (str, int, float, bool)):
+                                    # Convert numpy/pandas types to native Python types and handle NaN
+                                    if isinstance(value, (pd.Series, pd.DataFrame)):
+                                        continue
+                                    if pd.isna(value):
+                                        continue
+                                    # Convert numpy types to Python native types
+                                    if hasattr(value, 'item'):
+                                        value = value.item()
+                                    metadata[col] = value
                             
                         # Create document
                         documents.append(Document(page_content=content, metadata=metadata))

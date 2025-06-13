@@ -38,20 +38,20 @@ class ExtractionUtils:
         # If no ResourceLLM was provided, create one with default settings
         if self.resource_llm is None:
             try:
-                from scripts.analysis.resource_llm import ResourceLLM
+                from scripts.analysis.universal_analysis_llm import UniversalAnalysisLLM
                 from scripts.llm.processor_config_utils import get_adaptive_model_config, get_best_available_model
                 
                 # Get optimal configuration and model
                 model = get_best_available_model()
                 config = get_adaptive_model_config()
-                
-                # Create ResourceLLM instance with optimal settings
-                self.resource_llm = ResourceLLM(model=model)
+
+                # Create UniversalAnalysisLLM instance with optimal settings
+                self.resource_llm = UniversalAnalysisLLM(model=model)
                 self.resource_llm.model_config = config
-                
-                logger.info(f"Created ResourceLLM with model {model} for extraction utils")
+
+                logger.info(f"Created UniversalAnalysisLLM with model {model} for extraction utils")
             except Exception as e:
-                logger.error(f"Error creating ResourceLLM instance: {e}")
+                logger.error(f"Error creating UniversalAnalysisLLM instance: {e}")
                 raise
     
     def extract_definitions(self, title: str, url: str, content: str) -> List[Dict]:

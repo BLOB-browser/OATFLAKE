@@ -993,7 +993,7 @@ Output ONLY the JSON array with no additional text. [/INST]</s>"""
     
     def _save_items_by_type(self, items: List[Dict], content_type: str) -> None:
         """
-        Save items of a specific content type using the appropriate DataSaver method.
+        Save items of a specific content type using the universal schema.
         
         Args:
             items: List of items to save
@@ -1002,106 +1002,12 @@ Output ONLY the JSON array with no additional text. [/INST]</s>"""
         if not items:
             return
             
-        logger.info(f"Saving {len(items)} items of type '{content_type}' to CSV")
+        logger.info(f"Saving {len(items)} items of type '{content_type}' to CSV using universal schema")
         
         try:
-            # Map content types to appropriate save methods
-            if content_type == "definition":
-                # Transform items to match definition schema
-                definitions = []
-                for item in items:
-                    definition = {
-                        'term': item.get('title', ''),
-                        'definition': item.get('description', ''),
-                        'tags': item.get('tags', []),
-                        'source': item.get('origin_url', ''),
-                        'created_at': item.get('created_at'),
-                    }
-                    definitions.append(definition)
-                self.data_saver.save_definitions(definitions)
-                
-            elif content_type == "project":
-                # Transform items to match project schema
-                projects = []
-                for item in items:
-                    project = {
-                        'title': item.get('title', ''),
-                        'description': item.get('description', ''),
-                        'goal': item.get('purpose', ''),  # Map purpose to goal
-                        'tags': item.get('tags', []),
-                        'origin_url': item.get('origin_url', ''),
-                        'created_at': item.get('created_at'),
-                    }
-                    projects.append(project)
-                self.data_saver.save_projects(projects)
-                
-            elif content_type == "method":
-                # Transform items to match method schema
-                methods = []
-                for item in items:
-                    method = {
-                        'title': item.get('title', ''),
-                        'description': item.get('description', ''),
-                        'steps': item.get('steps', []),  # Assume steps are extracted elsewhere
-                        'tags': item.get('tags', []),
-                        'source': item.get('origin_url', ''),
-                        'created_at': item.get('created_at'),
-                    }
-                    methods.append(method)
-                self.data_saver.save_methods(methods)
-                
-            elif content_type == "reference":
-                # Save references to their own CSV file
-                references = []
-                for item in items:
-                    reference = {
-                        'title': item.get('title', ''),
-                        'description': item.get('description', ''),
-                        'tags': item.get('tags', []),
-                        'purpose': item.get('purpose', ''),
-                        'location': item.get('location', ''),
-                        'origin_url': item.get('origin_url', ''),
-                        'content_type': content_type,
-                        'created_at': item.get('created_at'),
-                        'analysis_completed': True,  # These items have been analyzed
-                    }
-                    references.append(reference)
-                self.data_saver.save_references(references)
-                
-            elif content_type in ["resource", "material"]:
-                # Save as resources (default case)
-                resources = []
-                for item in items:
-                    resource = {
-                        'title': item.get('title', ''),
-                        'description': item.get('description', ''),
-                        'tags': item.get('tags', []),
-                        'origin_url': item.get('origin_url', ''),
-                        'content_type': content_type,
-                        'created_at': item.get('created_at'),
-                        'analysis_completed': True,  # These items have been analyzed
-                    }
-                    resources.append(resource)
-                self.data_saver.save_resources(resources)
-                
-            else:
-                # Unknown content type, save as resources with type annotation
-                logger.warning(f"Unknown content type '{content_type}', saving as resources")
-                resources = []
-                for item in items:
-                    resource = {
-                        'title': item.get('title', ''),
-                        'description': item.get('description', ''),
-                        'tags': item.get('tags', []),
-                        'origin_url': item.get('origin_url', ''),
-                        'content_type': content_type,
-                        'created_at': item.get('created_at'),
-                        'analysis_completed': True,
-                    }
-                    resources.append(resource)
-                self.data_saver.save_resources(resources)
-                
-            logger.info(f"Successfully saved {len(items)} {content_type} items to CSV")
+            # Use universal save method for all content types
+            # This ensures consistent schema and preserves all fields including URL and resource_id
+            self.data_saver.save_universal_content(items, content_type)
             
         except Exception as e:
             logger.error(f"Error saving {content_type} items: {e}", exc_info=True)

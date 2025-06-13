@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Dict, Any, List
 from datetime import datetime
 
@@ -139,7 +140,8 @@ class SingleResourceProcessorUniversal:
                     url=main_url,
                     content=main_page_text,
                     content_type=content_type,
-                    origin_url=None  # Main pages have no parent URL
+                    origin_url=None,  # Main pages have no parent URL
+                    resource_id=resource_id
                 )
                 
                 # If we have results, ensure required fields and save them
@@ -266,6 +268,53 @@ class SingleResourceProcessorUniversal:
             except Exception as e:
                 logger.error(f"[Resource: {logging_resource_id}] Error getting attempt count for URL {url}: {e}")
                 attempt_count = 0
+
+            # Check if URL is a PDF before content fetching
+            from scripts.tools.pdf_utils import is_pdf_url, download_pdf_to_materials
+            
+            if is_pdf_url(url):
+                logger.info(f"[Resource: {logging_resource_id}] PDF detected: {url}")
+                
+                # Download PDF to materials folder instead of analyzing
+                pdf_result = download_pdf_to_materials(
+                    url=url,
+                    data_folder=self.data_folder,
+                    resource_id=final_resource_id,
+                    logging_resource_id=logging_resource_id
+                )
+                
+                if pdf_result["success"]:
+                    logger.info(f"[Resource: {logging_resource_id}] PDF downloaded successfully, marking URL as processed")
+                    
+                    # Mark URL as successfully processed (downloaded)
+                    self.url_storage.save_processed_url(url, resource_id=final_resource_id)
+                    self.url_storage.remove_pending_url(url)
+                    
+                    result["success"] = True
+                    result["status"] = "pdf_downloaded"
+                    result["pdf_path"] = pdf_result["filepath"]
+                    result["message"] = f"PDF downloaded to {pdf_result['filepath']}"
+                    
+                    return result
+                else:
+                    logger.error(f"[Resource: {logging_resource_id}] PDF download failed: {pdf_result['error']}")
+                    result["error"] = f"PDF download failed: {pdf_result['error']}"
+                    
+                    # Handle PDF download failure with retry logic
+                    if attempt_count >= 2:  # After 3 attempts, mark as processed with error
+                        logger.warning(f"[Resource: {logging_resource_id}] PDF {url} failed to download after {attempt_count+1} attempts, marking as processed with error")
+                        self.url_storage.save_processed_url(url, error=True, resource_id=final_resource_id)
+                        self.url_storage.remove_pending_url(url)
+                        result["success"] = False
+                        result["status"] = "pdf_download_failed"
+                        return result
+                    else:
+                        # Update attempt count and keep in pending
+                        logger.info(f"[Resource: {logging_resource_id}] PDF {url} download failed, attempt {attempt_count+1}, will retry later")
+                        self.url_storage.increment_attempt_count(url)
+                        result["success"] = False
+                        result["status"] = "pdf_download_retry"
+                        return result
 
             # Fetch content without discovering additional URLs
             logger.info(f"[Resource: {logging_resource_id}] Fetching content from URL: {url}")
@@ -448,7 +497,7 @@ class SingleResourceProcessorUniversal:
                 content_type=content_type
             )
             
-            # Ensure all items have correct URL relationship mapping
+            # Ensure all items have correct URL relationship mapping and resource_id
             if items:
                 for item in items:
                     # Set origin_url to the actual URL being analyzed (url parameter)
@@ -458,11 +507,7 @@ class SingleResourceProcessorUniversal:
                     if origin_url and origin_url != url:
                         item['related_url'] = origin_url
                     else:
-                        item['related_url'] = None  # Main pages have no parent URL
-                    
-                    # Ensure both fields are present for backward compatibility
-                    if 'url' not in item:
-                        item['url'] = item['origin_url']
+                        item['related_url'] = ''  # Main pages have no parent URL
             
             # Mark that vector generation will be needed if we found items
             if items:
@@ -522,3 +567,4 @@ class SingleResourceProcessorUniversal:
             enriched_items.append(item)
             
         return enriched_items
+    

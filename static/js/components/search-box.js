@@ -379,16 +379,43 @@ class SearchBox extends HTMLElement {    constructor() {
             card.style.setProperty('--float-y', floatY);
             card.style.animationDuration = (2 + Math.random() * 3) + 's';
             
-            // Card content
+            // Card content with richer metadata display
             const title = item.title || item.term || item.name || 'Reference';
             const content = item.content || item.description || item.text || '';
             const type = item.type || item.source_category || '';
+            const category = item.category || '';
+            const tags = item.tags || [];
+            const origin_url = item.origin_url || item.resource_url || '';
+            
+            // Build additional info sections
+            let additionalInfo = '';
+            
+            // Add category if available
+            if (category) {
+                additionalInfo += `<div class="text-xs text-amber-400 mb-1">Category: ${category}</div>`;
+            }
+            
+            // Add tags if available
+            if (tags && tags.length > 0) {
+                const tagList = Array.isArray(tags) ? tags : (typeof tags === 'string' ? JSON.parse(tags) : []);
+                if (tagList.length > 0) {
+                    const tagDisplay = tagList.slice(0, 3).map(tag => `<span class="px-1 py-0.5 bg-gray-700 rounded text-xs">${tag}</span>`).join(' ');
+                    additionalInfo += `<div class="mb-1">${tagDisplay}</div>`;
+                }
+            }
+            
+            // Add origin URL if available
+            if (origin_url) {
+                const shortUrl = origin_url.length > 30 ? origin_url.substring(0, 30) + '...' : origin_url;
+                additionalInfo += `<div class="text-xs text-blue-400 mb-1">Source: ${shortUrl}</div>`;
+            }
             
             card.innerHTML = `
                 <div class="font-medium mb-2 text-white">${title}</div>
                 ${type ? `<div class="text-xs text-indigo-400 mb-2">${type}</div>` : ''}
-                <div class="text-sm text-gray-300">${content.substring(0, 150)}${content.length > 150 ? '...' : ''}</div>
-                <div class="text-xs text-indigo-400 mt-2">Relevance: ${Math.round(score * 100)}%</div>
+                ${additionalInfo}
+                <div class="text-sm text-gray-300 mb-2">${content.substring(0, 120)}${content.length > 120 ? '...' : ''}</div>
+                <div class="text-xs text-indigo-400">Relevance: ${Math.round(score * 100)}%</div>
             `;
             
             container.appendChild(card);
@@ -402,12 +429,39 @@ class SearchBox extends HTMLElement {    constructor() {
         try {
             this.showLoadingState('Processing with local LLM...');
             
-            // Format the references into a good prompt for the LLM
+            // Format the references into a rich prompt for the LLM
             const formattedReferences = references.map(ref => {
                 const title = ref.title || ref.term || ref.name || 'Reference';
                 const content = ref.content || ref.description || ref.text || '';
                 const type = ref.type || ref.source_category || '';
-                return `${type ? `[${type}] ` : ''}${title}:\n${content}\n`;
+                const category = ref.category || '';
+                const tags = ref.tags || [];
+                const source = ref.origin_url || ref.resource_url || ref.source || '';
+                
+                // Build a rich reference entry
+                let refEntry = `${type ? `[${type}] ` : ''}${title}`;
+                
+                // Add category if available
+                if (category) {
+                    refEntry += ` (Category: ${category})`;
+                }
+                
+                // Add tags if available  
+                if (tags && tags.length > 0) {
+                    const tagList = Array.isArray(tags) ? tags : (typeof tags === 'string' ? JSON.parse(tags) : []);
+                    if (tagList.length > 0) {
+                        refEntry += ` [Tags: ${tagList.slice(0, 3).join(', ')}]`;
+                    }
+                }
+                
+                refEntry += `:\n${content}`;
+                
+                // Add source if available
+                if (source) {
+                    refEntry += `\nSource: ${source}`;
+                }
+                
+                return refEntry + '\n';
             }).join('\n\n');
             
             // Create the full prompt with references and query
