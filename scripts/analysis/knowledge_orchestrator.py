@@ -251,29 +251,143 @@ class KnowledgeOrchestrator:
                 # Update result with content processing results
                 result["content_processing"] = content_result
               # STEP 4: URL ANALYSIS PHASE 
-            # Now process URLs at the specified level or by priority
+            # Process URLs until all levels are complete or cancelled
             # Use discovery mode counts to make the decision
             if not self.cancel_requested and actual_pending_count > 0:
-                # Determine which level to process
-                current_level = process_level
-
-                if current_level is None:
-                    # If no level specified, determine the level with the most pending URLs (using discovery counts)
-                    current_level = max(actual_pending_by_level, key=actual_pending_by_level.get) if actual_pending_by_level else 1
-                    logger.info(f"No level specified. Using level {current_level} which has the most pending URLs")
-                
                 logger.info("==================================================")
-                logger.info(f"STARTING URL ANALYSIS PHASE AT LEVEL {current_level}")
+                logger.info("STARTING URL ANALYSIS PHASE - PROCESSING ALL LEVELS")
                 logger.info("==================================================")
                 
-                # Process URLs at the selected level
-                url_analysis_result = await self.process_urls_at_level(
-                    level=current_level,
-                    batch_size=batch_size
-                )
+                # Initialize combined result for all level processing
+                combined_url_analysis = {
+                    "status": "success",
+                    "levels_processed": {},
+                    "total_urls_processed": 0,
+                    "total_success_count": 0,
+                    "total_error_count": 0,
+                    "processing_order": []
+                }
                 
-                # Update result with URL analysis results
-                result["url_analysis"] = url_analysis_result
+                # Continue processing until no pending URLs remain at any level
+                iteration = 0
+                max_iterations = 10  # Prevent infinite loops
+                
+                while iteration < max_iterations and not self.cancel_requested:
+                    iteration += 1
+                    
+                    # Check current pending URLs at all levels (using discovery mode for accurate counts)
+                    url_storage.set_discovery_mode(True)
+                    current_pending_by_level = {}
+                    total_current_pending = 0
+                    
+                    for level in range(1, max_depth + 1):
+                        pending_urls = url_storage.get_pending_urls(depth=level)
+                        count = len(pending_urls) if pending_urls else 0
+                        current_pending_by_level[level] = count
+                        total_current_pending += count
+                    
+                    url_storage.set_discovery_mode(False)  # Switch back to analysis mode
+                    
+                    # If no pending URLs remain, we're done
+                    if total_current_pending == 0:
+                        logger.info(f"✅ All levels complete! No pending URLs remain after {iteration-1} iterations")
+                        break
+                    
+                    # Find the level with pending URLs (prioritize lowest level first)
+                    level_to_process = None
+                    for level in range(1, max_depth + 1):
+                        if current_pending_by_level[level] > 0:
+                            level_to_process = level
+                            break
+                    
+                    # If a specific process_level was requested and has URLs, use that instead
+                    if process_level is not None and current_pending_by_level.get(process_level, 0) > 0:
+                        level_to_process = process_level
+                    
+                    if level_to_process is None:
+                        logger.warning("No level with pending URLs found, but total count > 0. Breaking.")
+                        break
+                    
+                    level_pending_info = ", ".join([f"L{l}:{c}" for l, c in current_pending_by_level.items() if c > 0])
+                    logger.info(f"Iteration {iteration}: Processing level {level_to_process} ({level_pending_info} pending)")
+                    combined_url_analysis["processing_order"].append({
+                        "iteration": iteration,
+                        "level": level_to_process,
+                        "pending_before": dict(current_pending_by_level)
+                    })
+                    
+                    # Process URLs at the selected level
+                    level_result = await self.process_urls_at_level(
+                        level=level_to_process,
+                        batch_size=batch_size
+                    )
+                    
+                    # Store results for this level
+                    combined_url_analysis["levels_processed"][level_to_process] = level_result
+                    combined_url_analysis["total_urls_processed"] += level_result.get("processed_urls", 0)
+                    combined_url_analysis["total_success_count"] += level_result.get("success_count", 0)
+                    combined_url_analysis["total_error_count"] += level_result.get("error_count", 0)
+                    
+                    # Check if this level is now complete and mark it in config
+                    if level_result.get("status") in ["success", "completed"]:
+                        # Check if there are any remaining pending URLs at this level
+                        url_storage.set_discovery_mode(True)
+                        remaining_urls = url_storage.get_pending_urls(depth=level_to_process)
+                        url_storage.set_discovery_mode(False)
+                        
+                        if not remaining_urls:  # No pending URLs left at this level
+                            urls_processed_count = level_result.get("processed_urls", 0)
+                            success_marked = self._mark_level_complete_in_config(level_to_process, urls_processed_count)
+                            if success_marked:
+                                level_result["marked_complete_in_config"] = True
+                                logger.info(f"🎉 Level {level_to_process} is now COMPLETE! No pending URLs remain.")
+                            else:
+                                logger.warning(f"⚠️ Level {level_to_process} appears complete but failed to update config")
+                        else:
+                            logger.info(f"📊 Level {level_to_process} processed {level_result.get('processed_urls', 0)} URLs, but {len(remaining_urls)} URLs still pending")
+                    
+                    # If this level processing failed, log but continue with other levels
+                    if level_result.get("status") not in ["success", "completed", "skipped"]:
+                        logger.warning(f"Level {level_to_process} processing had issues: {level_result.get('status')}")
+                        # Don't break - continue with other levels that might have URLs
+                    
+                    # Reset process_level after first iteration to allow processing other levels
+                    if iteration == 1:
+                        process_level = None
+                
+                # Final status determination
+                if iteration >= max_iterations:
+                    combined_url_analysis["status"] = "warning"
+                    combined_url_analysis["message"] = f"Reached maximum iterations ({max_iterations})"
+                    logger.warning(f"⚠️ Reached maximum iterations ({max_iterations}) in URL analysis phase")
+                elif self.cancel_requested:
+                    combined_url_analysis["status"] = "cancelled"
+                    combined_url_analysis["message"] = "Processing was cancelled"
+                    logger.info("🛑 URL analysis phase cancelled")
+                elif combined_url_analysis["total_success_count"] > 0:
+                    combined_url_analysis["status"] = "success"
+                    combined_url_analysis["message"] = f"Successfully processed URLs across {len(combined_url_analysis['levels_processed'])} levels"
+                    logger.info(f"✅ URL analysis phase complete: {combined_url_analysis['total_success_count']} URLs processed successfully")
+                else:
+                    combined_url_analysis["status"] = "warning"
+                    combined_url_analysis["message"] = "No URLs were successfully processed"
+                
+                # Generate completion summary
+                completed_levels = []
+                for level, level_result in combined_url_analysis["levels_processed"].items():
+                    if level_result.get("marked_complete_in_config", False):
+                        completed_levels.append(level)
+                
+                if completed_levels:
+                    completed_levels_str = ", ".join(map(str, sorted(completed_levels)))
+                    combined_url_analysis["completed_levels"] = completed_levels
+                    logger.info(f"🎊 LEVEL COMPLETION SUMMARY: Levels {completed_levels_str} are now marked as COMPLETE in config.json")
+                else:
+                    combined_url_analysis["completed_levels"] = []
+                    logger.info("📊 No levels were fully completed in this processing run")
+                
+                # Update result with combined URL analysis results
+                result["url_analysis"] = combined_url_analysis
                 
             elif not self.cancel_requested:
                 logger.info("Skipping URL analysis phase - no pending URLs found")
@@ -1303,6 +1417,80 @@ class KnowledgeOrchestrator:
             
         except Exception as e:
             logger.error(f"Error updating config level: {e}")
+            return False
+        
+    def _mark_level_complete_in_config(self, level: int, urls_processed: int = 0) -> bool:
+        """
+        Mark a specific level as complete in the config.json file.
+        
+        Args:
+            level: The level to mark as complete
+            urls_processed: Number of URLs processed at this level
+            
+        Returns:
+            True if successfully updated, False otherwise
+        """
+        try:
+            from utils.config import load_config, get_config_path
+            from datetime import datetime
+            import json
+            
+            config_path = get_config_path()
+            config = load_config()
+            
+            # Ensure crawl_config exists
+            if 'crawl_config' not in config:
+                config['crawl_config'] = {}
+            
+            # Ensure level_completion exists
+            if 'level_completion' not in config['crawl_config']:
+                config['crawl_config']['level_completion'] = {}
+            
+            # Update the specific level
+            level_key = f"level_{level}"
+            config['crawl_config']['level_completion'][level_key] = {
+                "is_complete": True,
+                "last_processed": datetime.now().isoformat(),
+                "urls_processed": urls_processed
+            }
+            
+            # Save the updated config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            logger.info(f"✅ Marked level {level} as complete in config.json with {urls_processed} URLs processed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error marking level {level} as complete in config: {e}")
+            return False
+
+    def _check_level_completion_status(self, level: int) -> bool:
+        """
+        Check if a specific level is marked as complete in config.json.
+        
+        Args:
+            level: The level to check
+            
+        Returns:
+            True if level is marked complete, False otherwise
+        """
+        try:
+            from utils.config import load_config
+            
+            config = load_config()
+            level_key = f"level_{level}"
+            
+            if ('crawl_config' in config and 
+                'level_completion' in config['crawl_config'] and
+                level_key in config['crawl_config']['level_completion']):
+                
+                return config['crawl_config']['level_completion'][level_key].get('is_complete', False)
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking level completion status for level {level}: {e}")
             return False
 
 # Standalone function for easy import
