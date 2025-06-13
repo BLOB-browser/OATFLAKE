@@ -261,7 +261,9 @@ class UniversalAnalysisLLM:
 
 {prompt.strip()}
 
-Output ONLY the JSON with no additional text. [/INST]</s>"""
+CRITICAL: Your response MUST be a JSON array starting with [ and ending with ]. Never return a single object. Always return an array format like: [{{...}}]
+
+Output ONLY the JSON array with no additional text. [/INST]</s>"""
         else:
             # For non-JSON responses, still use the Mistral instruction format with config system prompt
             base_system_prompt = self.settings.get("system_prompt", "You are an expert content analyzer.")
@@ -272,6 +274,17 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
         # Make API call to generate response
         try:
             logger.info(f"Generating structured response for content analysis using Ollama: {self.model}")
+            
+            # Debug: Print the full prompt being sent to the LLM
+            print(f"\n📋 DEBUG - FULL PROMPT SENT TO LLM:")
+            print("=" * 80)
+            print(f"Length: {len(prompt)} characters")
+            print("First 1000 chars:")
+            print(prompt[:1000])
+            print("...")
+            print("Last 1000 chars:")
+            print(prompt[-1000:])
+            print("=" * 80)
             
             start_time = time.time()
             
@@ -290,8 +303,8 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 }
             }
             
-            # Use standard timeout
-            timeout_seconds = 120
+            # Use increased timeout for content analysis (5 minutes)
+            timeout_seconds = 300
             
             # Use standard requests with timeout
             response = requests.post(
@@ -409,7 +422,13 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
         ]
         try:
             logger.info(f"Generating structured response using OpenRouter: {self.openrouter_model}")
-            setup_interrupt_handling()
+            
+            # Only setup interrupt handling if we're in the main thread
+            import threading
+            is_main_thread = threading.current_thread() is threading.main_thread()
+            if is_main_thread:
+                setup_interrupt_handling()
+            
             try:
                 start_time = time.time()
                 headers = {
@@ -476,7 +495,9 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             logger.error(f"Error generating structured response with OpenRouter: {e}")
             return None
         finally:
-            restore_interrupt_handling()
+            # Only restore interrupt handling if we set it up (i.e., if we're in main thread)
+            if is_main_thread:
+                restore_interrupt_handling()
     
     def analyze_content(self, title: str, url: str, content: str, content_type: str = "resource") -> List[Dict]:
         """
@@ -492,32 +513,26 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             List of dictionaries containing structured data (varies based on content type)
         """
         try:
-            # Validate content type
+            # Validate content type - fall back to generic resource extraction if unknown
             if content_type not in self.task_config:
-                logger.warning(f"Unknown content type: {content_type}, falling back to resource")
+                logger.warning(f"Unknown content type: {content_type}, using generic resource extraction")
                 content_type = "resource"
             
-            # Get prompt template for this content type
-            prompt_template = self.task_config[content_type].get("prompt_template", "")
-            if not prompt_template:
-                logger.error(f"No prompt template found for content type: {content_type}")
-                return []
+            # Get task prompt for this content type
+            task_prompt = self.task_config.get(content_type, "")
+            if not task_prompt:
+                # Create a generic prompt for resource extraction
+                task_prompt = "TASK: Extract key information from the content below.\nFind: important concepts, tools, methods, or resources mentioned.\nContent to analyze:"
+                logger.warning(f"No task prompt found for content type: {content_type}, using generic prompt")
             
             # Use a large enough content size for analysis
             max_content_length = 6000
             truncated_content = content[:max_content_length] if content else ""
             
-            # Format prompt with content and content_type explicitly included
-            prompt = prompt_template.format(
-                title=title,
-                url=url,
-                content=truncated_content.replace('{', '{{').replace('}', '}}'),
-                content_type=content_type  # Pass content_type explicitly
-            )
+            # Build the complete prompt with task instruction and content
+            prompt = f"{task_prompt}\n\nTitle: {title}\nURL: {url}\n\n{truncated_content}"
             
-            # Add specific field requirements for this content type to prompt
-            field_requirements = self._get_field_requirements(content_type)
-            prompt = f"Content Type: {content_type}\nRequired fields: {field_requirements}\n\n{prompt}"
+            # The system prompt already contains the JSON schema and formatting instructions
             
             # Use JSON format for structured data
             response = self.generate_structured_response(prompt, format_type="json")
@@ -723,7 +738,7 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 "description": item.get("description", ""),
                 "tags": item.get("tags", []) if isinstance(item.get("tags"), list) else [],
                 "purpose": item.get("purpose", ""),
-                "location": item.get("location", ""),
+                "location": self._clean_location_field(item.get("location", "")),
                 "origin_url": url,
                 "content_type": content_type
             }
@@ -742,6 +757,41 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             validated_items.append(validated_item)
             
         return validated_items
+    
+    def _clean_location_field(self, location) -> str:
+        """
+        Clean location field to ensure it's a simple string.
+        Handle cases where LLM returns complex objects instead of simple strings.
+        
+        Args:
+            location: Location data from LLM (could be string, dict, or other)
+            
+        Returns:
+            Clean location string
+        """
+        if not location:
+            return ""
+        
+        if isinstance(location, str):
+            return location.strip()
+        
+        if isinstance(location, dict):
+            # Try to extract meaningful location information from dict
+            location_parts = []
+            
+            # Common location field names to check
+            for field in ['name', 'address', 'street_address', 'city', 'state', 'country']:
+                if field in location and location[field]:
+                    location_parts.append(str(location[field]).strip())
+            
+            if location_parts:
+                return ", ".join(location_parts)
+            else:
+                # If no recognizable fields, convert dict to string
+                return str(location)
+        
+        # For other types, convert to string
+        return str(location).strip() if location else ""
     
     def _is_empty_response(self, item: Dict) -> bool:
         """

@@ -39,7 +39,7 @@ class SingleResourceProcessorUniversal:
           self.universal_llm = UniversalAnalysisLLM(data_folder=self.data_folder)
       else:
           # Load settings and explicitly pass the model
-          with open(settings_path, 'r') as f:
+          with open(settings_path, 'r', encoding='utf-8') as f:
               analysis_settings = json.load(f)
           
           # Get the correct model based on provider
@@ -117,11 +117,18 @@ class SingleResourceProcessorUniversal:
                 result["errors"].append("No content fetched")
                 return result
             
-            main_page_text = main_page_result[1].get('main', '') if main_page_result[1] else ''
+            # Extract text from HTML content using html_extractor
+            html_content = main_page_result[1].get('main', '') if main_page_result[1] else ''
+            if html_content:
+                from scripts.analysis.html_extractor import extract_text
+                main_page_text = extract_text(html_content, size_limit=4000)
+                logger.info(f"[{resource_id}] Extracted {len(main_page_text)} chars of text from {len(html_content)} chars of HTML")
+            else:
+                main_page_text = ""
             
             if not main_page_text:
-                logger.warning(f"[{resource_id}] Empty content fetched for {main_url}")
-                result["errors"].append("Empty content fetched")
+                logger.warning(f"[{resource_id}] Empty text content extracted for {main_url}")
+                result["errors"].append("Empty text content extracted")
                 return result
 
             # Universal extraction for all configured content types
@@ -284,9 +291,36 @@ class SingleResourceProcessorUniversal:
                         result["success"] = False
                     
                     return result
-                page_text = page_data.get("main", "")
+                
+                # Extract text from HTML content using html_extractor
+                html_content = page_data.get("main", "")
+                if html_content:
+                    from scripts.analysis.html_extractor import extract_text
+                    page_text = extract_text(html_content, size_limit=4000)
+                    logger.info(f"[Resource: {logging_resource_id}] Extracted {len(page_text)} chars of text from {len(html_content)} chars of HTML")
+                    
+                    # Debug: Print first 500 chars of extracted text
+                    print(f"\n🔍 DEBUG - EXTRACTED TEXT FOR {url}:")
+                    print("=" * 60)
+                    print(f"First 500 chars: {page_text[:500]}")
+                    print("=" * 60)
+                else:
+                    page_text = ""
             elif isinstance(content_result, dict):
-                page_text = content_result.get("main", "")
+                # Extract text from HTML content using html_extractor
+                html_content = content_result.get("main", "")
+                if html_content:
+                    from scripts.analysis.html_extractor import extract_text
+                    page_text = extract_text(html_content, size_limit=4000)
+                    logger.info(f"[Resource: {logging_resource_id}] Extracted {len(page_text)} chars of text from {len(html_content)} chars of HTML")
+                    
+                    # Debug: Print first 500 chars of extracted text
+                    print(f"\n🔍 DEBUG - EXTRACTED TEXT FOR {url}:")
+                    print("=" * 60)
+                    print(f"First 500 chars: {page_text[:500]}")
+                    print("=" * 60)
+                else:
+                    page_text = ""
             else:
                 page_text = content_result
             

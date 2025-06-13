@@ -13,10 +13,9 @@ def get_data_path():
     
     # Default path if no config is found
     default_path = str(Path.home() / 'blob' / 'data')
-    
     if project_config_path.exists():
         try:
-            with open(project_config_path, 'r') as f:
+            with open(project_config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             return config.get('data_path', default_path)
         except Exception as e:
@@ -27,7 +26,7 @@ def get_data_path():
     user_config_path = Path.home() / '.blob' / 'config.json'
     if user_config_path.exists():
         try:
-            with open(user_config_path, 'r') as f:
+            with open(user_config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             return config.get('data_path', default_path)
         except:
@@ -43,7 +42,7 @@ def load_config():
 
     if project_config_path.exists():
         try:
-            with open(project_config_path, 'r') as f:
+            with open(project_config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             print(f"Error reading config.json: {e}")
@@ -51,7 +50,7 @@ def load_config():
 
     if user_config_path.exists():
         try:
-            with open(user_config_path, 'r') as f:
+            with open(user_config_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             print(f"Error reading user config.json: {e}")

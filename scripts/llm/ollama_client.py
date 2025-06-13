@@ -69,15 +69,14 @@ class OllamaClient:
         with open(local_config, 'w') as f:
             default_config = {"data_path": str(Path.cwd() / "data")}
             json.dump(default_config, f, indent=2)
-        
-        logger.info(f"Created new config file at {local_config}")
+            logger.info(f"Created new config file at {local_config}")
         return local_config
 
     def load_vector_stores(self):
         """Load both vector stores if they exist"""
         try:
             config_path = self.get_config_path()
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 
             data_path = Path(config.get('data_path', ''))
@@ -704,7 +703,7 @@ DETAILED ANSWER:
                             "top_p": 0.9,
                             "repeat_penalty": 1.1
                         },
-                        timeout=90.0  # Increased timeout for longer, more detailed responses
+                        timeout=300.0  # Increased timeout to 5 minutes for content analysis
                     )
                     
                     if response.status_code != 200:
@@ -786,7 +785,6 @@ DETAILED ANSWER:
             # For synchronous operation, create a new event loop
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
             async def _send_chat():
                 try:
                     async with httpx.AsyncClient() as client:
@@ -795,7 +793,7 @@ DETAILED ANSWER:
                         for msg in messages:
                             if msg["role"] == "user":
                                 prompt += f"{msg['content']}\n"
-                            
+                        
                         response = await client.post(
                             f"{self.base_url}/api/generate",
                             json={
@@ -804,7 +802,7 @@ DETAILED ANSWER:
                                 "stream": False,
                                 "temperature": 0.7,
                             },
-                            timeout=60.0
+                            timeout=300.0  # Increased timeout to 5 minutes
                         )
                         
                         if response.status_code != 200:
