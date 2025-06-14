@@ -9,7 +9,18 @@ import glob
 from datetime import datetime, time as dt_time, timedelta
 from utils.config import get_data_path
 
+# Configure logging to ensure scheduler logs appear in main output
 logger = logging.getLogger(__name__)
+# Ensure scheduler logs use the same level as root logger
+logger.setLevel(logging.INFO)
+
+# Add a console handler if not already present to ensure visibility
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 # Initial state
 _scheduler_thread = None
@@ -405,8 +416,9 @@ def _training_loop():
     global _running
     
     _running = True
-    logger.info("Training scheduler started")
+    logger.info("🚀 Training scheduler thread started and running")
     last_check_time = None
+    last_status_log = None  # Track when we last logged status
     
     # Set up interruption handling flag
     processing_active = False
@@ -466,6 +478,9 @@ def _training_loop():
             
             # Execute training tasks if within time window and haven't run recently
             if is_training_time and (last_check_time is None or (now - last_check_time).seconds >= 3600):
+                # Log that we're starting a check
+                logger.info(f"🔍 Training window active - starting processing check (time remaining: {time_to_end_minutes:.1f} min)")
+                
                 # Check again for stop event before heavy processing
                 if _stop_event.is_set():
                     logger.info("Stop event detected before data check")
@@ -485,7 +500,10 @@ def _training_loop():
                 # This ensures we process any resources that were interrupted or not fully analyzed
                 should_process = has_new_data
                 
-                # If no new data detected, check for unanalyzed resources anyway
+                # CRITICAL FIX: Also check for pending URLs that need processing
+                pending_urls_exist = False
+                
+                # If no new data detected, check for unanalyzed resources AND pending URLs
                 if not has_new_data:
                     try:
                         import requests
@@ -518,13 +536,43 @@ def _training_loop():
                                     logger.info("All resources have been analyzed")
                             except Exception as e:
                                 logger.error(f"Error checking for unanalyzed resources: {e}")
+                        
+                        # CRITICAL FIX: Check for pending URLs across all levels
+                        try:
+                            from scripts.analysis.url_storage import URLStorageManager
+                            processed_urls_file = os.path.join(data_path, "processed_urls.csv")
+                            url_storage = URLStorageManager(processed_urls_file)
+                            
+                            # Use discovery mode to see all pending URLs
+                            url_storage.set_discovery_mode(True)
+                            total_pending_urls = 0
+                            max_depth = get_max_level_from_config()
+                            
+                            for level in range(1, max_depth + 1):
+                                level_urls = url_storage.get_pending_urls(depth=level)
+                                level_count = len(level_urls) if level_urls else 0
+                                total_pending_urls += level_count
+                            
+                            url_storage.set_discovery_mode(False)
+                            
+                            if total_pending_urls > 0:
+                                logger.info(f"Found {total_pending_urls} pending URLs across all levels")
+                                should_process = True
+                                pending_urls_exist = True
+                            else:
+                                logger.info("No pending URLs found at any level")
+                                
+                        except Exception as e:
+                            logger.warning(f"Error checking for pending URLs: {e}")
                     except Exception as e:
                         logger.warning(f"Could not check for unanalyzed resources: {e}")
                 
-                # Now decide whether to process based on has_new_data OR unanalyzed resources
+                # Now decide whether to process based on has_new_data OR unanalyzed resources OR pending URLs
                 if should_process:
                     if has_new_data:
                         logger.info("New data detected, starting knowledge processing")
+                    elif pending_urls_exist:
+                        logger.info("No file changes, but found pending URLs - starting processing")
                     else:
                         logger.info("No file changes, but found unanalyzed resources - starting processing")
                       # Call knowledge processing function directly instead of using HTTP API
@@ -532,8 +580,8 @@ def _training_loop():
                     try:
                         # Mark that we're in processing mode
                         processing_active = True
-                          # Import the knowledge orchestrator directly
-                        from scripts.analysis.knowledge_orchestrator import process_knowledge_base as orchestrator_process
+                          # Import the knowledge processing function from the correct location
+                        from api.routes.knowledge import process_knowledge_base as orchestrator_process
                         
                         # Set parameters for scheduled processing
                         skip_markdown_scraping = False   # Process markdown files
@@ -558,15 +606,27 @@ def _training_loop():
                         
                         logger.info(f"Calling knowledge processing function directly with process_level={process_level}")
                           # Call the function directly instead of making HTTP request
-                        data_path = get_data_path()
+                        # Create a mock request object since the API function expects one
+                        class MockRequest:
+                            def __init__(self):
+                                self.app = MockApp()
+                        
+                        class MockApp:
+                            def __init__(self):
+                                self.state = MockAppState()
+                        
+                        class MockAppState:
+                            def __init__(self):
+                                pass
+                        
+                        mock_request = MockRequest()
                         
                         # Run the async function in a new event loop since we're in a thread
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         try:
                             result = loop.run_until_complete(orchestrator_process(
-                                data_folder=data_path,
-                                request_app_state=None,  # No app state needed for scheduler
+                                request=mock_request,
                                 skip_markdown_scraping=skip_markdown_scraping,
                                 analyze_resources=analyze_resources,
                                 analyze_all_resources=analyze_all_resources,
@@ -665,10 +725,22 @@ def _training_loop():
                         logger.error(f"Error calling knowledge processing function: {e}")
                         processing_active = False  # Ensure flag is reset even on error
                 else:
-                    logger.info("No new data detected and all resources analyzed, skipping knowledge processing")
+                    logger.info("No new data, unanalyzed resources, or pending URLs detected - skipping knowledge processing")
                 
                 # Update last check time regardless of whether we ran processing
                 last_check_time = now
+                
+            # Log status periodically even when not in training time (every 30 minutes)
+            elif last_status_log is None or (now - last_status_log).total_seconds() >= 1800:  # 30 minutes
+                if not is_training_time:
+                    next_window_start = now.replace(hour=_training_start_hour, minute=_training_start_minute, second=0, microsecond=0)
+                    if next_window_start <= now:
+                        next_window_start = next_window_start.replace(day=now.day + 1)
+                    time_until_start = (next_window_start - now).total_seconds() / 3600
+                    logger.info(f"💤 Scheduler active - waiting for training window (next: {time_until_start:.1f}h)")
+                else:
+                    logger.info(f"⏳ Training window active - waiting for next check cycle")
+                last_status_log = now
                 
             # Add specific handling for keyboard interrupts
             # If we're in the middle of processing, we want to catch Ctrl+C
@@ -717,9 +789,11 @@ def start():
     time.sleep(0.5)
     
     if _scheduler_thread.is_alive():
-        logger.info(f"Started training scheduler thread (id: {_scheduler_thread.ident})")
+        logger.info(f"🎯 TRAINING SCHEDULER STARTED successfully (thread id: {_scheduler_thread.ident})")
+        logger.info(f"📅 Schedule: {_training_start_hour:02d}:{_training_start_minute:02d} - {_training_stop_hour:02d}:{_training_stop_minute:02d}")
+        logger.info(f"📊 Current process level: {get_current_process_level()}")
     else:
-        logger.error("Failed to start training scheduler thread")
+        logger.error("❌ Failed to start training scheduler thread")
 
 def stop(timeout=None):
     """Stop the scheduler thread if running, with no forced timeout"""

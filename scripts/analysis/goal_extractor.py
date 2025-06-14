@@ -28,12 +28,13 @@ class GoalExtractor:
         """
         self.data_folder = Path(data_folder)
         
-    async def extract_goals(self, ollama_client=None) -> Dict[str, Any]:
+    async def extract_goals(self, ollama_client=None, max_goals: int = 50) -> Dict[str, Any]:
         """
         Extract goals from vector stores.
         
         Args:
             ollama_client: Optional OllamaClient instance
+            max_goals: Maximum number of goals to extract (default 50)
             
         Returns:
             Dictionary with statistics about the goal extraction process
@@ -69,9 +70,9 @@ class GoalExtractor:
                     "stats": stats
                 }
             
-            # 2. Extract goals from content samples
+            # 2. Extract goals from content samples (with configurable limit)
             # Goals are now saved incrementally during extraction, not just at the end
-            goals = await self._extract_goals_with_llm(content_samples, ollama_client)
+            goals = await self._extract_goals_with_llm(content_samples, ollama_client, max_goals)
             stats["goals_extracted"] = len(goals)
             
             if goals:
@@ -226,14 +227,17 @@ class GoalExtractor:
         
         return content_samples
             
-    async def _extract_goals_with_llm(self, content_samples: List[Dict[str, Any]], ollama_client) -> List[Dict[str, Any]]:
+    async def _extract_goals_with_llm(self, content_samples: List[Dict[str, Any]], ollama_client, max_goals: int = 50) -> List[Dict[str, Any]]:
         """
         Extract goals from content samples using Mistral LLM.
-        Limits to a maximum of 50 most important goals.
+        Limits to a configurable maximum number of most important goals.
         """
         goals = []
         extracted_goal_texts = set()  # To avoid duplicates
-        max_goals = 50  # Maximum number of goals to keep
+        max_goals_limit = max_goals  # Use the passed parameter instead of hardcoded value
+        
+        logger.info(f"🎯 GOAL EXTRACTION: Processing {len(content_samples)} content samples")
+        logger.info(f"🔢 PHASE LIMIT: Will extract maximum {max_goals_limit} goals")
         
         # Process content samples in batches
         batch_size = 3  # Process this many samples at once
@@ -271,20 +275,20 @@ class GoalExtractor:
                 logger.info(f"Saving batch of {len(batch_goals)} goals to CSV")
                 self._save_goals_to_csv(batch_goals)
                 
-            # If we've collected more than max_goals, keep only the most important ones
-            if len(goals) > max_goals:
-                logger.info(f"Collected {len(goals)} goals, keeping only the top {max_goals} by importance")
+            # If we've collected more than max_goals_limit, keep only the most important ones
+            if len(goals) > max_goals_limit:
+                logger.info(f"Collected {len(goals)} goals, keeping only the top {max_goals_limit} by importance")
                 # Sort goals by importance (high to low)
                 goals.sort(key=lambda g: g["importance"], reverse=True)
-                # Keep only the top max_goals
-                goals = goals[:max_goals]
+                # Keep only the top max_goals_limit
+                goals = goals[:max_goals_limit]
                 # Update the extracted_goal_texts set to match the current goals
                 extracted_goal_texts = {goal["goal_text"] for goal in goals}
         
         # After the for loop completes, ALL batches have been processed
         # The function returns goals, indicating the process is complete
         goals.sort(key=lambda g: g["importance"], reverse=True)
-        logger.info(f"Final goal count: {len(goals)} (limited to maximum of {max_goals})")
+        logger.info(f"🎯 GOAL EXTRACTION COMPLETE: {len(goals)} goals extracted (limited to maximum of {max_goals_limit})")
         return goals
 
     async def _process_content_sample(self, sample: Dict[str, Any], ollama_client) -> List[Dict[str, Any]]:

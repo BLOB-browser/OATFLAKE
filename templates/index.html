@@ -228,14 +228,14 @@
     </div>
 
     <!-- Main content (initially hidden) -->
-    <div id="mainContent" class="px-4 pt-48 pb-8 hidden">
+    <div id="mainContent" class="pt-48 pb-8 hidden h-screen flex flex-col">
         <!-- View containers - each will be loaded dynamically from their respective JS files -->
-        <div id="searchViewContainer" class="view-container">
-            <div id="searchContainer"></div>
+        <div id="searchViewContainer" class="view-container flex-1 h-full">
+            <div id="searchContainer" class="h-full"></div>
         </div>
         
-        <div id="manage_dataViewContainer" class="view-container hidden">
-            <div id="dataContainer"></div>
+        <div id="manage_dataViewContainer" class="view-container hidden px-4 flex-1 h-full">
+            <div id="dataContainer" class="h-full"></div>
         </div>
           <!-- Settings is now a modal only, rendered in a separate div -->
         <div id="settingsContainer"></div>

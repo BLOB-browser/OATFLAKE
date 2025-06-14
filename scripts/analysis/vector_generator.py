@@ -105,8 +105,12 @@ class VectorGenerator:
             if tagged_docs:
                 logger.info(f"Found {len(tagged_docs)} documents with tags for topic stores")
                 
-                # Use VectorStoreManager's built-in method to create topic stores
-                topic_results = await vector_store_manager.create_topic_stores(tagged_docs)
+                # Use VectorStoreManager's intelligent clustering method to create topic stores
+                topic_results = await vector_store_manager.create_topic_stores(
+                    tagged_docs, 
+                    use_clustering=True, 
+                    min_docs_per_topic=5  # Require at least 5 docs per cluster
+                )
                 
                 # Add topic stores to stats
                 for topic, success in topic_results.items():

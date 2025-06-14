@@ -13,6 +13,34 @@ from utils.config import BACKEND_CONFIG, get_data_path
 import threading
 import time
 
+# FLOW ANALYSIS AND RECOMMENDATIONS:
+# ===================================
+# 
+# CURRENT ISSUE: Goals function and topic store generation are out of flow
+# 
+# PROBLEMS IDENTIFIED:
+# 1. Goals extraction often skipped due to time constraints (skip_goals=True when <60min left)
+# 2. Topic stores generated embedded within vector rebuild, not as orchestrated step
+# 3. No dedicated time allocation for these critical components
+# 4. No fallback mechanisms if these steps fail
+#
+# RECOMMENDED IMPROVED FLOW:
+# 1. Change Detection → Check for file changes
+# 2. Discovery Phase → Find URLs from resources  
+# 3. Analysis Phase → Process URLs level by level
+# 4. Content Processing → Handle PDFs, markdown
+# 5. Vector Generation → Create basic embeddings
+# 6. Topic Store Generation → DEDICATED STEP with fallback
+# 7. Goal Extraction → DEDICATED STEP with priority
+# 8. Question Generation → DEDICATED STEP 
+#
+# SCHEDULER IMPROVEMENTS NEEDED:
+# - Allocate minimum 30 minutes for goals/topics even in short windows
+# - Make goals extraction higher priority than vector rebuilding
+# - Separate topic store generation from vector rebuilding
+# - Add retry mechanisms for failed goals/topic generation
+# - Track these steps separately in progress reporting
+
 # Global flag for cancellation
 _processing_active = False
 _processor_cancel_event = threading.Event()
@@ -67,7 +95,7 @@ async def process_knowledge_base(
     skip_markdown_scraping: bool = True, 
     analyze_resources: bool = True,
     analyze_all_resources: bool = False,
-    batch_size: int = 5,
+    batch_size: int = 1,
     resource_limit: Optional[int] = None,
     force_update: bool = False,
     skip_vector_generation: bool = False,
@@ -178,16 +206,14 @@ async def process_knowledge_base(
         data_path = get_data_path()
         
         # Use the knowledge orchestrator to handle the processing
-        from scripts.analysis.knowledge_orchestrator import process_knowledge_base as orchestrator_process
+        from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
+        orchestrator = KnowledgeOrchestrator(data_path)
         
-        # Process based on specified level
+        # Process based on specified level or use full iterative flow
         if process_level is not None:
-            logger.info(f"Processing URLs at level {process_level}")
-              # Check if we should process pending URLs directly
-            from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
+            logger.info(f"Processing URLs starting from level {process_level}")
+            # Check if we should process pending URLs directly
             from scripts.analysis.url_storage import URLStorageManager
-            
-            orchestrator = KnowledgeOrchestrator()
             
             # Check for pending URLs at the specified level first
             processed_urls_file = os.path.join(data_path, "processed_urls.csv")
@@ -216,7 +242,7 @@ async def process_knowledge_base(
             elif selected_level:
                 logger.info(f"Confirmed level {process_level} has pending URLs, proceeding")
             
-            # If no pending URLs at any level, advance to next level in config
+            # If no pending URLs at any level, let the orchestrator handle advancement
             if not selected_level:
                 logger.warning("No pending URLs found at any level")
                 
@@ -227,76 +253,33 @@ async def process_knowledge_base(
                 else:
                     logger.warning("No pending URLs found at any level")
                 
-                # No pending URLs at any level - increment process_level in config.json and try that level
-                if config_data and config_path:
-                    next_level = process_level + 1
-                    if next_level > max_depth:
-                        logger.warning(f"Reached maximum depth ({max_depth}), resetting to level 1")
-                        next_level = 1
-                    
-                    # Update the config file with the new level
-                    logger.info(f"No URLs at any level. Incrementing to level {next_level} in config.json")
-                    config_data["current_process_level"] = next_level
-                    with open(config_path, 'w') as f:
-                        json.dump(config_data, f, indent=2)
-                    
-                    # Update the process_level for this run
-                    process_level = next_level
-                    
-                    # Update crawl_config level_completion status if it exists
-                    if 'crawl_config' in config_data and 'level_completion' in config_data['crawl_config']:
-                        level_key = f"level_{process_level - 1}"
-                        if level_key in config_data['crawl_config']['level_completion']:
-                            config_data['crawl_config']['level_completion'][level_key]['is_complete'] = True
-                            config_data['crawl_config']['level_completion'][level_key]['last_processed'] = datetime.now().isoformat()
-                        
-                        # Update the current max level
-                        config_data['crawl_config']['current_max_level'] = process_level
-                        
-                        # Write back the updated config
-                        with open(config_path, 'w') as f:
-                            json.dump(config_data, f, indent=2)
-                    
-                    logger.info(f"Now processing at new level {process_level}")
-                    
-                    # Check for URLs at the new level
-                    pending_urls = url_storage.get_pending_urls(depth=process_level)
-                    if not pending_urls:
-                        logger.info(f"No pending URLs found at level {process_level} either, proceeding with URL discovery")
-                        # Discovery will happen in process_urls_at_level
+                # Let the orchestrator handle level advancement and discovery
+                logger.info("Proceeding with orchestrator to handle level advancement or URL discovery")
             
-            # Process URLs at the selected level
-            result = await orchestrator.process_urls_at_level(
-                level=process_level,
-                batch_size=batch_size
+            # Use the iterative approach from the orchestrator instead of individual level processing
+            result = await orchestrator.process_knowledge(
+                request_app_state=request.app.state,
+                skip_markdown_scraping=skip_markdown_scraping,
+                analyze_resources=analyze_resources,
+                analyze_all_resources=analyze_all_resources,
+                batch_size=batch_size,
+                resource_limit=resource_limit,
+                force_update=force_update,
+                skip_vector_generation=skip_vector_generation,
+                check_unanalyzed=check_unanalyzed,
+                skip_questions=skip_questions,
+                skip_goals=skip_goals,
+                max_depth=max_depth,
+                force_url_fetch=force_url_fetch,
+                process_level=process_level,
+                auto_advance_level=auto_advance_level,
+                continue_until_end=continue_until_end
             )
-            
-            # If auto-advance is enabled, check completion and move to next level
-            if auto_advance_level and result.get("status") == "success":
-                advance_result = orchestrator.advance_to_next_level(process_level, max_depth)
-                result["level_advanced"] = advance_result
-                
-                # If continue_until_end is True, trigger processing at the next level
-                if continue_until_end and advance_result.get("next_level"):
-                    # Process next level in a non-blocking way
-                    import asyncio
-                    asyncio.create_task(process_knowledge_base(
-                        request=request,
-                        group_id=group_id,
-                        process_level=advance_result["next_level"],
-                        auto_advance_level=True,
-                        continue_until_end=True,
-                        force_url_fetch=force_url_fetch,
-                        batch_size=batch_size,
-                        max_depth=max_depth  # Pass the correct max_depth
-                    ))
-                    result["next_level_processing"] = "started"
             
             return result
         else:
             # Process in phases with the orchestrator
-            result = await orchestrator_process(
-                data_folder=data_path,
+            result = await orchestrator.process_knowledge(
                 request_app_state=request.app.state,
                 skip_markdown_scraping=skip_markdown_scraping,
                 analyze_resources=analyze_resources,

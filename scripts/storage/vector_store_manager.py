@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import numpy as np
 import faiss  # Add this import
+from collections import Counter, defaultdict
 
 from langchain_community.vectorstores import FAISS
 from langchain.schema import Document
@@ -499,8 +500,18 @@ class VectorStoreManager:
             logger.error(f"Error adding documents to topic stores: {e}", exc_info=True)
             return {}
 
-    async def create_topic_stores(self, documents: List[Document], group_id: str = "default") -> Dict:
-        """Create separate vector stores by topic"""
+    async def create_topic_stores(self, documents: List[Document], group_id: str = "default", use_clustering: bool = True, min_docs_per_topic: int = 5) -> Dict:
+        """Create separate vector stores by topic (with optional clustering)"""
+        if use_clustering:
+            logger.info("Using intelligent topic clustering to create meaningful topic stores")
+            return await self.create_topic_stores_with_clustering(documents, min_docs_per_topic=min_docs_per_topic)
+        else:
+            logger.info("Using legacy individual topic store creation")
+            # Original implementation for backwards compatibility
+            return await self._create_individual_topic_stores(documents, group_id)
+    
+    async def _create_individual_topic_stores(self, documents: List[Document], group_id: str = "default") -> Dict:
+        """Original topic store creation method (creates individual stores for each topic)"""
         try:
             # First, extract topics from document metadata
             topic_docs: Dict[str, List[Document]] = {}
@@ -600,6 +611,344 @@ class VectorStoreManager:
         except Exception as e:
             logger.error(f"Error creating topic stores: {e}", exc_info=True)
             return {}
+
+    async def create_topic_stores_with_clustering(self, documents: List[Document], min_docs_per_topic: int = 5) -> Dict:
+        """
+        Create topic stores using intelligent clustering based on tags, titles, and definitions.
+        Groups related topics together to avoid over-fragmentation.
+        
+        Args:
+            documents: List of documents to cluster into topics
+            min_docs_per_topic: Minimum documents required to create a topic store
+            
+        Returns:
+            Dictionary of topic names and success status
+        """
+        try:
+            import re
+            
+            logger.info(f"🧠 Creating topic stores using intelligent clustering (min {min_docs_per_topic} docs per topic)")
+            
+            # Step 1: Extract and analyze all available topics
+            all_topics = []
+            doc_topics_map = {}  # Maps doc index to list of topics
+            
+            for i, doc in enumerate(documents):
+                doc_topics = []
+                
+                # Extract topics from multiple sources
+                # Priority 1: Explicit topics field
+                topics = doc.metadata.get('topics', [])
+                if isinstance(topics, str):
+                    topics = [t.strip() for t in topics.split(',')]
+                doc_topics.extend(topics)
+                
+                # Priority 2: Tags field
+                tags = doc.metadata.get('tags', [])
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(',')]
+                doc_topics.extend(tags)
+                
+                # Priority 3: Use title as a topic if no other topics found
+                if not doc_topics:
+                    title = doc.metadata.get('title', '') or doc.metadata.get('resource_id', '')
+                    if title:
+                        # Simply use cleaned title as a topic
+                        clean_title = self._normalize_topic(title)
+                        if clean_title and len(clean_title) > 2:
+                            doc_topics.append(clean_title)
+                
+                # Clean and normalize topics
+                cleaned_topics = [self._normalize_topic(topic) for topic in doc_topics if topic.strip()]
+                cleaned_topics = [t for t in cleaned_topics if t and len(t) > 2]  # Remove empty and very short topics
+                
+                if not cleaned_topics:
+                    cleaned_topics = ['general']  # Fallback
+                
+                doc_topics_map[i] = cleaned_topics
+                all_topics.extend(cleaned_topics)
+            
+            # Step 2: Analyze topic frequency and relationships
+            topic_counts = Counter(all_topics)
+            logger.info(f"📊 Found {len(topic_counts)} unique topics from {len(documents)} documents")
+            
+            # Step 3: Create semantic clusters
+            topic_clusters = await self._create_semantic_clusters(topic_counts, min_docs_per_topic)
+            
+            # Step 4: Group documents by clusters
+            cluster_docs = defaultdict(list)
+            
+            for doc_idx, topics in doc_topics_map.items():
+                doc = documents[doc_idx]
+                
+                # Find which cluster(s) this document belongs to
+                assigned_clusters = set()
+                for topic in topics:
+                    for cluster_name, cluster_topics in topic_clusters.items():
+                        if topic in cluster_topics:
+                            assigned_clusters.add(cluster_name)
+                
+                # If no cluster assigned, put in general
+                if not assigned_clusters:
+                    assigned_clusters.add('general')
+                
+                # Add document to all relevant clusters
+                for cluster in assigned_clusters:
+                    cluster_docs[cluster].append(doc)
+            
+            # Step 5: Log cluster analysis
+            logger.info(f"🎯 Created {len(cluster_docs)} topic clusters:")
+            for cluster, docs in cluster_docs.items():
+                topics_in_cluster = topic_clusters.get(cluster, [cluster])
+                logger.info(f"  - Cluster '{cluster}': {len(docs)} documents (topics: {', '.join(topics_in_cluster[:5])}{'...' if len(topics_in_cluster) > 5 else ''})")
+            
+            # Step 6: Create vector stores for each cluster
+            results = {}
+            for cluster_name, docs in cluster_docs.items():
+                if len(docs) >= min_docs_per_topic:  # Only create if meets minimum threshold
+                    store_name = f"topic_{cluster_name}"
+                    
+                    # Add cluster metadata
+                    cluster_metadata = {
+                        "topic": cluster_name,
+                        "cluster_topics": topic_clusters.get(cluster_name, [cluster_name]),
+                        "document_count": len(docs)
+                    }
+                    
+                    success = await self.create_or_update_store(
+                        store_name=store_name,
+                        documents=docs,
+                        metadata=cluster_metadata,
+                        update_stats=True
+                    )
+                    results[cluster_name] = success
+                    
+                    if success:
+                        logger.info(f"✅ Created topic store: {store_name} with {len(docs)} documents")
+                    else:
+                        logger.warning(f"❌ Failed to create topic store: {store_name}")
+                else:
+                    logger.info(f"⏭️  Skipped cluster '{cluster_name}' - only {len(docs)} documents (min: {min_docs_per_topic})")
+            
+            logger.info(f"🎉 Topic clustering complete: Created {len(results)} meaningful topic stores")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in topic clustering: {e}", exc_info=True)
+            return {}
+    
+    def _extract_semantic_topics_from_title(self, title: str) -> List[str]:
+        """Extract meaningful topics from document titles using semantic analysis"""
+        import re
+        
+        # Common academic/technical domain keywords
+        domain_keywords = {
+            'programming': ['python', 'javascript', 'java', 'code', 'programming', 'development', 'software'],
+            'data-science': ['data', 'analysis', 'statistics', 'machine-learning', 'ai', 'analytics', 'visualization'],
+            'mathematics': ['math', 'calculus', 'algebra', 'geometry', 'statistics', 'probability'],
+            'web-development': ['html', 'css', 'web', 'frontend', 'backend', 'api', 'http'],
+            'databases': ['sql', 'database', 'mysql', 'postgresql', 'mongodb', 'data-storage'],
+            'algorithms': ['algorithm', 'sorting', 'search', 'complexity', 'optimization'],
+            'networks': ['network', 'tcp', 'http', 'internet', 'protocol', 'security']
+        }
+        
+        title_lower = title.lower()
+        topics = []
+        
+        # Extract domain-specific topics
+        for domain, keywords in domain_keywords.items():
+            if any(keyword in title_lower for keyword in keywords):
+                topics.append(domain)
+        
+        # Extract meaningful noun phrases (2-3 words)
+        # Remove common stop words
+        stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+        words = re.findall(r'\b\w+\b', title_lower)
+        filtered_words = [w for w in words if len(w) > 3 and w not in stop_words]
+        
+        # Add significant individual terms
+        topics.extend(filtered_words[:3])  # Take up to 3 most significant terms
+        
+        return topics
+    
+    def _extract_topics_from_definition(self, definition: str) -> List[str]:
+        """Extract topics from definition content"""
+        import re
+        
+        if not definition or len(definition) < 10:
+            return []
+        
+        # Look for key phrases that indicate topics
+        topic_patterns = [
+            r'is a (\w+)',  # "X is a concept"
+            r'refers to (\w+)',  # "X refers to method"
+            r'type of (\w+)',  # "X is a type of algorithm"
+            r'method for (\w+)',  # "X is a method for analysis"
+            r'used in (\w+)',  # "X is used in programming"
+        ]
+        
+        topics = []
+        definition_lower = definition.lower()
+        
+        for pattern in topic_patterns:
+            matches = re.findall(pattern, definition_lower)
+            topics.extend(matches)
+        
+        # Extract domain-specific terms
+        domain_terms = ['algorithm', 'method', 'technique', 'concept', 'theory', 'principle', 'approach']
+        for term in domain_terms:
+            if term in definition_lower:
+                topics.append(term)
+        
+        return topics[:2]  # Limit to avoid noise
+    
+    def _normalize_topic(self, topic: str) -> str:
+        """Normalize topic names for consistency"""
+        import re
+        
+        if not topic:
+            return ""
+        
+        # Convert to lowercase and clean
+        normalized = topic.lower().strip()
+        
+        # Remove special characters except hyphens and spaces
+        normalized = re.sub(r'[^\w\s-]', '', normalized)
+        
+        # Replace spaces with hyphens
+        normalized = normalized.replace(' ', '-')
+        
+        # Remove multiple consecutive hyphens
+        normalized = re.sub(r'-+', '-', normalized)
+        
+        # Remove leading/trailing hyphens
+        normalized = normalized.strip('-')
+        
+        return normalized
+    
+    async def _create_semantic_clusters(self, topic_counts: Counter, min_docs_per_topic: int) -> Dict[str, List[str]]:
+        """Create semantic clusters from topics using LLM analysis"""
+        try:
+            # Get topics that have enough frequency to be considered
+            significant_topics = [topic for topic, count in topic_counts.items() 
+                                if count >= max(1, min_docs_per_topic // 3)]  # Lower threshold for clustering input
+            
+            if len(significant_topics) <= 3:
+                # Too few topics to cluster meaningfully, return individual clusters
+                clusters = {}
+                for topic, count in topic_counts.most_common():
+                    if count >= min_docs_per_topic:
+                        clusters[topic] = [topic]
+                logger.info(f"  📁 Too few topics for LLM clustering, created {len(clusters)} individual clusters")
+                return clusters
+            
+            logger.info(f"🤖 Using LLM to cluster {len(significant_topics)} topics")
+            
+            # Load LLM settings for topic clustering
+            settings_path = Path(__file__).parent / ".." / "settings" / "topic-clustering-settings.json"
+            if not settings_path.exists():
+                logger.warning("Topic clustering settings not found, falling back to frequency-based clustering")
+                return await self._create_frequency_based_clusters(topic_counts, min_docs_per_topic)
+            
+            with open(settings_path, 'r') as f:
+                llm_settings = json.load(f)
+            
+            # Initialize LLM client based on provider
+            provider = llm_settings.get('provider', 'openrouter').lower()
+            
+            if provider == 'ollama':
+                from scripts.llm.ollama_client import OllamaClient
+                llm_client = OllamaClient()
+            else:  # Default to openrouter
+                from scripts.llm.open_router_client import OpenRouterClient
+                llm_client = OpenRouterClient()
+            
+            # Prepare topic list with frequencies for context
+            topic_info = []
+            for topic in significant_topics:
+                count = topic_counts[topic]
+                topic_info.append(f"{topic} ({count} docs)")
+            
+            # Create prompt for LLM
+            topics_text = ", ".join(topic_info)
+            prompt = f"""Analyze these topics and group them into meaningful clusters:
+
+{topics_text}
+
+Group semantically related topics together. Consider domain relationships and conceptual similarity. Create 3-8 clusters maximum to avoid fragmentation."""
+            
+            # Get LLM response
+            try:
+                logger.info(f"🤖 Sending prompt to LLM: {prompt[:200]}...")
+                if provider == 'ollama':
+                    response = await llm_client.generate_response(prompt)
+                else:  # OpenRouter
+                    model = llm_settings.get('openrouter_model', llm_settings.get('model_name', 'meta-llama/llama-3.3-8b-instruct:free'))
+                    response = await llm_client.generate_response(prompt, model=model)
+                
+                logger.info(f"🤖 LLM response: {response[:500]}...")
+                
+                if response and response.strip():
+                    # Parse JSON response
+                    import re
+                    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                    if json_match:
+                        clusters_json = json.loads(json_match.group())
+                        
+                        # Validate and clean the clusters
+                        validated_clusters = {}
+                        for cluster_name, topics in clusters_json.items():
+                            if isinstance(topics, list) and topics:
+                                # Clean cluster name
+                                clean_cluster_name = self._normalize_topic(cluster_name)
+                                if clean_cluster_name:
+                                    # Only include topics that exist in our original set
+                                    valid_topics = [t for t in topics if t in significant_topics]
+                                    if valid_topics:
+                                        validated_clusters[clean_cluster_name] = valid_topics
+                        
+                        if validated_clusters:
+                            logger.info(f"✅ LLM created {len(validated_clusters)} semantic clusters")
+                            for cluster, topics in validated_clusters.items():
+                                total_docs = sum(topic_counts[topic] for topic in topics)
+                                logger.info(f"  📁 Cluster '{cluster}': {len(topics)} topics, ~{total_docs} docs")
+                            return validated_clusters
+                        
+            except Exception as llm_error:
+                logger.error(f"LLM clustering failed: {llm_error}")
+                return {}  # Return empty clusters if LLM fails
+            
+            # No fallback - LLM-only clustering
+            logger.error("LLM clustering produced no valid clusters")
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Error in semantic clustering: {e}")
+            return {}  # Return empty clusters if any error occurs
+    
+    async def _create_frequency_based_clusters(self, topic_counts: Counter, min_docs_per_topic: int) -> Dict[str, List[str]]:
+        """Fallback clustering method based on topic frequency"""
+        clusters = {}
+        
+        # Group high-frequency topics individually
+        high_freq_topics = [(topic, count) for topic, count in topic_counts.most_common() 
+                          if count >= min_docs_per_topic]
+        
+        for topic, count in high_freq_topics:
+            clusters[topic] = [topic]
+            logger.info(f"  📁 Individual cluster '{topic}': {count} docs")
+        
+        # Group remaining low-frequency topics into 'general'
+        low_freq_topics = [topic for topic, count in topic_counts.items() 
+                         if count < min_docs_per_topic]
+        
+        if low_freq_topics:
+            total_remaining = sum(topic_counts[topic] for topic in low_freq_topics)
+            if total_remaining >= min_docs_per_topic:
+                clusters['general'] = low_freq_topics
+                logger.info(f"  📁 General cluster: {len(low_freq_topics)} topics, ~{total_remaining} docs")
+        
+        return clusters
 
     async def search(self, 
         query: str, 

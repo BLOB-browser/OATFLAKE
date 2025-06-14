@@ -488,6 +488,12 @@ class SingleResourceProcessorUniversal:
             List of extracted items of the specified content type
         """
         try:
+            # DEBUG LOGGING: Track URL relationship inputs
+            logger.info(f"🔍 PERFORM_UNIVERSAL_ANALYSIS - URL RELATIONSHIP INPUT:")
+            logger.info(f"   ↳ url (being analyzed): '{url}'")
+            logger.info(f"   ↳ origin_url (parent/discovery): '{origin_url}'")
+            logger.info(f"   ↳ content_type: '{content_type}'")
+            
             # Use direct analysis since content is already pre-limited by HTML extractor (2000-4000 chars)
             # This avoids unnecessary chunking overhead that creates many tiny chunks
             items = self.universal_llm.analyze_content(
@@ -499,15 +505,23 @@ class SingleResourceProcessorUniversal:
             
             # Ensure all items have correct URL relationship mapping and resource_id
             if items:
-                for item in items:
+                logger.info(f"🔗 URL RELATIONSHIP MAPPING for {len(items)} items:")
+                logger.info(f"   ↳ url (being analyzed): {url}")
+                logger.info(f"   ↳ origin_url (parent/discovery): {origin_url}")
+                
+                for i, item in enumerate(items):
                     # Set origin_url to the actual URL being analyzed (url parameter)
                     item['origin_url'] = url
                     
                     # Set related_url to the parent/discovery URL (origin_url parameter from pending_urls.csv)
                     if origin_url and origin_url != url:
                         item['related_url'] = origin_url
+                        logger.info(f"   ✅ Item {i+1} '{item.get('title', 'Untitled')}': origin_url='{url}', related_url='{origin_url}'")
                     else:
                         item['related_url'] = ''  # Main pages have no parent URL
+                        logger.info(f"   🏠 Item {i+1} '{item.get('title', 'Untitled')}': origin_url='{url}', related_url='' (main page)")
+            else:
+                logger.info(f"🔍 No items extracted for URL: {url}")
             
             # Mark that vector generation will be needed if we found items
             if items:
@@ -532,12 +546,17 @@ class SingleResourceProcessorUniversal:
         if not items:
             return []
             
+        logger.info(f"🔧 _ENSURE_REQUIRED_FIELDS - Processing {len(items)} items for {content_type}")
+        
         required_fields = ["title", "description", "purpose", "tags", "location", "origin_url"]
         enriched_items = []
         
-        for item in items:
+        for i, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
+                
+            # DEBUG: Log incoming URL fields
+            logger.debug(f"   📥 Item {i+1} input fields: origin_url='{item.get('origin_url', 'MISSING')}', related_url='{item.get('related_url', 'MISSING')}'")
                 
             # Add missing fields with default values
             if "title" not in item or not item["title"]:
@@ -563,8 +582,12 @@ class SingleResourceProcessorUniversal:
                 item["origin_url"] = item["url"]
             elif "url" not in item and "origin_url" in item:
                 item["url"] = item["origin_url"]
+            
+            # DEBUG: Log final URL fields after processing
+            logger.debug(f"   � Item {i+1} output fields: origin_url='{item.get('origin_url', 'MISSING')}', related_url='{item.get('related_url', 'MISSING')}'")
                 
             enriched_items.append(item)
             
+        logger.info(f"🔧 _ENSURE_REQUIRED_FIELDS - Completed processing {len(enriched_items)} items")
         return enriched_items
     

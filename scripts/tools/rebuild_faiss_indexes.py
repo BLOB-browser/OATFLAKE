@@ -165,8 +165,12 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
                     if rep_docs:
                         logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
                         
-                        # Try to create topic stores from these docs
-                        topic_results = await vector_store_manager.create_topic_stores(rep_docs)
+                        # Try to create topic stores from these docs using intelligent clustering
+                        topic_results = await vector_store_manager.create_topic_stores(
+                            rep_docs, 
+                            use_clustering=True, 
+                            min_docs_per_topic=3  # Lower threshold for rebuild process
+                        )
                         
                         if topic_results:
                             logger.info(f"Created {len(topic_results)} additional topic stores")

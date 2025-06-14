@@ -198,8 +198,17 @@ class DataSaver:
                     
                     print(f"\n📝 DataSaver processed item:")
                     print(f"  - title: {item_copy.get('title', 'NO TITLE')}")
+                    print(f"  - origin_url: '{item_copy.get('origin_url', 'NO ORIGIN_URL')}'")
+                    print(f"  - related_url: '{item_copy.get('related_url', 'NO RELATED_URL')}'")
                     print(f"  - location FINAL: '{item_copy.get('location', 'NO LOCATION')}'")
                     print(f"  - content_type: {item_copy.get('content_type', 'NO CONTENT_TYPE')}")
+                    
+                    # DEBUG: Enhanced URL relationship tracking
+                    logger.info(f"💾 DATA_SAVER - Item processed for CSV save:")
+                    logger.info(f"   ↳ title: '{item_copy.get('title', 'NO TITLE')}'")
+                    logger.info(f"   ↳ origin_url: '{item_copy.get('origin_url', 'NO ORIGIN_URL')}'")
+                    logger.info(f"   ↳ related_url: '{item_copy.get('related_url', 'NO RELATED_URL')}'")
+                    logger.info(f"   ↳ content_type: '{item_copy.get('content_type', 'NO CONTENT_TYPE')}'")
                     
                     processed_items.append(item_copy)
                     logger.debug(f"Successfully processed {content_type}: {item_copy.get('title')}")
@@ -237,6 +246,12 @@ class DataSaver:
             # Ensure column order matches universal schema
             existing_cols = [col for col in universal_columns if col in df.columns]
             df = df[existing_cols]
+            
+            # DEBUG: Show what we're about to save for URL fields
+            logger.info(f"💾 About to save {len(df)} {content_type} items to CSV")
+            if not df.empty and 'origin_url' in df.columns and 'related_url' in df.columns:
+                for idx, row in df.head(3).iterrows():  # Show first 3 rows
+                    logger.info(f"   Row {idx}: title='{row.get('title', 'NO TITLE')}', origin_url='{row.get('origin_url', '')}', related_url='{row.get('related_url', '')}'")
             
             # Handle merging with existing data if file exists
             file_exists = os.path.isfile(csv_path)

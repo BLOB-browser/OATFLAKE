@@ -316,10 +316,11 @@ class KnowledgeOrchestrator:
                         "pending_before": dict(current_pending_by_level)
                     })
                     
-                    # Process URLs at the selected level
+                    # Process URLs at the selected level (LIMITED TO 10 URLs PER PHASE)
                     level_result = await self.process_urls_at_level(
                         level=level_to_process,
-                        batch_size=batch_size
+                        batch_size=batch_size,
+                        max_urls_per_phase=10  # PHASE LIMITATION: Only 10 URLs per phase
                     )
                     
                     # Store results for this level
@@ -500,14 +501,17 @@ class KnowledgeOrchestrator:
                 result["goal_extraction"] = {"status": "skipped", "reason": "skip_goals_or_cancelled"}
             else:
                 logger.info("==================================================")
-                logger.info("STARTING GOAL EXTRACTION PHASE")                
+                logger.info("STARTING GOAL EXTRACTION PHASE (LIMITED TO 5 GOALS)")                
                 logger.info("==================================================")
                 
                 from scripts.analysis.goal_extractor import GoalExtractor
                 goal_extractor = GoalExtractor(self.data_folder)
                 
-                # Extract goals with the correct parameter name
-                goal_extraction_result = await goal_extractor.extract_goals(ollama_client=request_app_state)
+                # Extract goals with the correct parameter name and PHASE LIMITATION
+                goal_extraction_result = await goal_extractor.extract_goals(
+                    ollama_client=request_app_state,
+                    max_goals=5  # PHASE LIMITATION: Only 5 goals per phase
+                )
                 
                 # Update result with goal extraction results
                 result["goal_extraction"] = goal_extraction_result
@@ -579,6 +583,10 @@ class KnowledgeOrchestrator:
                     
                     # Add next level result to the overall result
                     result["next_level_result"] = next_result
+            
+            # CONTINUOUS CYCLE LOGIC - Check if flow should restart after completion
+            if not self.cancel_requested and continue_until_end:
+                await self._check_and_restart_flow(request_app_state, result)
             
             logger.info(f"Knowledge base processing completed successfully")
             
@@ -690,13 +698,16 @@ class KnowledgeOrchestrator:
                 "error": str(e)
             }
     
-    async def process_urls_at_level(self, level: int, batch_size: int = 50) -> Dict[str, Any]:
+    async def process_urls_at_level(self, level: int, batch_size: int = 1, delay_seconds: float = 2.0, max_urls_per_phase: int = 10) -> Dict[str, Any]:
         """
-        Process all pending URLs at a specific level.
+        Process all pending URLs at a specific level ONE AT A TIME for better observation.
+        LIMITED TO max_urls_per_phase URLs per processing cycle.
         
         Args:
             level: The depth level to process (1=first level, 2=second level, etc.)
-            batch_size: Maximum number of URLs to process in one batch
+            batch_size: Maximum number of URLs to process in one batch (default 1 for sequential processing)
+            delay_seconds: Delay between processing URLs to allow observation (default 2.0 seconds)
+            max_urls_per_phase: Maximum number of URLs to process in this phase (default 10)
             
         Returns:
             Dictionary with processing results
@@ -877,12 +888,14 @@ class KnowledgeOrchestrator:
             
             logger.info(f"Processing {total_urls} URLs at level {level} from {len(urls_by_origin)} origin URLs")
             
-            # Process URLs in batches, grouping by origin
+            # Process URLs ONE AT A TIME instead of in batches by origin
+            logger.info(f"Processing {total_urls} URLs at level {level} ONE AT A TIME with {delay_seconds}s delay between URLs")
+            logger.info(f"🔢 PHASE LIMIT: Will process maximum {max_urls_per_phase} URLs in this phase")
+            
+            # Flatten all URLs into a single list for sequential processing
+            all_urls_for_processing = []
             for origin_url, urls_for_origin in urls_by_origin.items():
-                # Check for cancellation
-                if self.cancel_requested:
-                    logger.info(f"URL processing at level {level} cancelled")
-                    break                # Find the resource this origin URL belongs to
+                # Find the resource this origin URL belongs to
                 resource_for_origin = None
                 for _, row in resources_with_url.iterrows():
                     # Check origin_url first, then url as fallback
@@ -902,84 +915,124 @@ class KnowledgeOrchestrator:
                                 resource_for_origin = row.to_dict()
                                 logger.info(f"Found resource for URL {origin_url} via resource_urls mapping: {resource_id_from_map}")
                                 break
-                  # If we still don't have resource context, create a minimal one
-                if resource_for_origin is None:                    # During discovery phase, just use origin URL without generating a title
+                
+                # If we still don't have resource context, create a minimal one
+                if resource_for_origin is None:
+                    # During discovery phase, just use origin URL without generating a title
                     resource_for_origin = {
                         'origin_url': origin_url,  # Use origin_url as the primary URL field
                         'url': origin_url,        # Keep url for backward compatibility
                         'title': resource_id_from_map or ""  # Use existing resource ID if available
                     }
                     logger.info(f"No resource found for origin URL: {origin_url}. Using existing resource ID: {resource_id_from_map or 'none'}")
-                    
-                logger.info(f"Processing {len(urls_for_origin)} URLs at level {level} from origin: {origin_url}")
-                origin_resource_id = resource_for_origin.get('title', 'Unnamed')
                 
-                # Process each URL using the specific_url_processor
-                for idx, pending_url_data in enumerate(urls_for_origin):
-                    # Check for cancellation
-                    if self.cancel_requested:
-                        logger.info(f"URL processing at level {level} cancelled")
-                        break
+                # Add each URL with its resource context to the processing list
+                for pending_url_data in urls_for_origin:
+                    all_urls_for_processing.append({
+                        'url_data': pending_url_data,
+                        'resource': resource_for_origin,
+                        'origin_url': origin_url
+                    })
+            
+            # APPLY PHASE LIMIT: Only process up to max_urls_per_phase URLs
+            if len(all_urls_for_processing) > max_urls_per_phase:
+                logger.info(f"🔢 PHASE LIMIT APPLIED: Limiting {len(all_urls_for_processing)} URLs to {max_urls_per_phase} for this phase")
+                all_urls_for_processing = all_urls_for_processing[:max_urls_per_phase]
+            
+            # Process each URL sequentially with delays
+            for url_index, url_info in enumerate(all_urls_for_processing):
+                # Check for cancellation
+                if self.cancel_requested:
+                    logger.info(f"URL processing at level {level} cancelled")
+                    break
+                
+                pending_url_data = url_info['url_data']
+                resource_for_origin = url_info['resource']
+                origin_url = url_info['origin_url']
+                
+                url_to_process = pending_url_data.get('url')
+                url_depth = pending_url_data.get('depth', level)
+                origin = pending_url_data.get('origin', '')
+                attempt_count = pending_url_data.get('attempt_count', 0)
+                
+                # Check if max attempts reached, but DON'T mark as processed if not analyzed
+                max_attempts = 3
+                if attempt_count >= max_attempts:
+                    logger.warning(f"URL {url_to_process} has reached max attempts ({max_attempts}), skipping")
+                    # Just remove from pending list but don't mark as processed
+                    url_storage.remove_pending_url(url_to_process)
+                    # Keep track of failed URLs
+                    failed_urls.append(url_to_process)
+                    error_count += 1
+                    processed_urls_count += 1
+                    continue
+                
+                # Process this URL
+                logger.info(f"🔄 Processing URL {url_index + 1}/{len(all_urls_for_processing)}: {url_to_process}")
+                logger.info(f"   ↳ From origin: {origin_url}")
+                logger.info(f"   ↳ Resource: {resource_for_origin.get('title', 'Unnamed')}")
+                logger.info(f"   ↳ Depth: {url_depth}, Attempt: {attempt_count + 1}/{max_attempts}")
+                logger.info(f"   ↳ PHASE LIMIT: Processing {url_index + 1} of max {max_urls_per_phase} URLs")
+                
+                try:
+                    # Increment the attempt count
+                    url_storage.increment_url_attempt(url_to_process)
                     
-                    url_to_process = pending_url_data.get('url')
-                    url_depth = pending_url_data.get('depth', level)
-                    origin = pending_url_data.get('origin', '')
-                    attempt_count = pending_url_data.get('attempt_count', 0)
+                    # Process the URL using SingleResourceProcessorUniversal's process_specific_url method
+                    # This is the ANALYSIS phase - we're not discovering URLs anymore
+                    logger.info(f"ANALYSIS PHASE: Processing URL {url_to_process} at level {url_depth} using SingleResourceProcessorUniversal")
+                    success_result = single_processor.process_specific_url(
+                        url=url_to_process,
+                        origin_url=origin,
+                        resource=resource_for_origin,
+                        depth=url_depth
+                    )
                     
-                    # Check if max attempts reached, but DON'T mark as processed if not analyzed
-                    max_attempts = 3
-                    if attempt_count >= max_attempts:
-                        logger.warning(f"URL {url_to_process} has reached max attempts ({max_attempts}), skipping")
-                        # Just remove from pending list but don't mark as processed
-                        url_storage.remove_pending_url(url_to_process)
-                        # Keep track of failed URLs
-                        failed_urls.append(url_to_process)
-                        error_count += 1
-                        processed_urls_count += 1
-                        continue
+                    success = success_result.get('success', False)
                     
-                    # Process this URL
-                    logger.info(f"Processing URL {idx + 1}/{len(urls_for_origin)}: {url_to_process}")
-                    
-                    try:
-                        # Increment the attempt count
-                        url_storage.increment_url_attempt(url_to_process)
+                    if success:
+                        logger.info(f"✅ Successfully processed URL: {url_to_process}")
+                        success_count += 1
                         
-                        # Process the URL using SingleResourceProcessorUniversal's process_specific_url method
-                        # This is the ANALYSIS phase - we're not discovering URLs anymore
-                        logger.info(f"ANALYSIS PHASE: Processing URL {url_to_process} at level {url_depth} using SingleResourceProcessorUniversal")
-                        success_result = single_processor.process_specific_url(
-                            url=url_to_process,
-                            origin_url=origin,
-                            resource=resource_for_origin,
-                            depth=url_depth
-                        )
+                        # Log what was extracted for better monitoring
+                        universal_results = success_result.get("universal_results", {})
+                        total_extracted = 0
+                        for content_type, items in universal_results.items():
+                            if items:
+                                logger.info(f"   ↳ Extracted {len(items)} {content_type}")
+                                total_extracted += len(items)
                         
-                        success = success_result.get('success', False)
-                        
-                        if success:
-                            logger.info(f"Successfully processed URL: {url_to_process}")
-                            success_count += 1
-                            # URL is already marked as processed by process_specific_url if successful
-                            # It also removes the URL from pending queue
+                        if total_extracted == 0:
+                            logger.info(f"   ↳ No content extracted (page may have no relevant content)")
                         else:
-                            logger.warning(f"Failed to process URL: {url_to_process}")
-                            error_count += 1
-                            # Keep in pending queue for retry unless max attempts reached
-                            if attempt_count + 1 >= max_attempts:
-                                logger.warning(f"URL {url_to_process} reached max attempts, removing from pending")
-                                # Just remove from pending but don't mark as processed
-                                url_storage.remove_pending_url(url_to_process)
-                                failed_urls.append(url_to_process)
-                            
-                        processed_urls_count += 1
+                            logger.info(f"   ↳ Total items extracted: {total_extracted}")
                         
-                    except Exception as url_error:
-                        logger.error(f"Error processing URL {url_to_process}: {url_error}")
+                        # URL is already marked as processed by process_specific_url if successful
+                        # It also removes the URL from pending queue
+                    else:
+                        logger.warning(f"❌ Failed to process URL: {url_to_process}")
                         error_count += 1
-                        processed_urls_count += 1
-                        # Add to failed URLs list
-                        failed_urls.append(url_to_process)
+                        # Keep in pending queue for retry unless max attempts reached
+                        if attempt_count + 1 >= max_attempts:
+                            logger.warning(f"URL {url_to_process} reached max attempts, removing from pending")
+                            # Just remove from pending but don't mark as processed
+                            url_storage.remove_pending_url(url_to_process)
+                            failed_urls.append(url_to_process)
+                        
+                    processed_urls_count += 1
+                    
+                    # Add delay between URL processing for better observation (unless it's the last URL)
+                    if url_index < len(all_urls_for_processing) - 1 and delay_seconds > 0:
+                        logger.info(f"⏱️  Waiting {delay_seconds}s before next URL...")
+                        import asyncio
+                        await asyncio.sleep(delay_seconds)
+                    
+                except Exception as url_error:
+                    logger.error(f"❌ Error processing URL {url_to_process}: {url_error}")
+                    error_count += 1
+                    processed_urls_count += 1
+                    # Add to failed URLs list
+                    failed_urls.append(url_to_process)
                 
         except Exception as e:
             logger.error(f"Error processing URLs at level {level}: {e}", exc_info=True)
@@ -993,7 +1046,12 @@ class KnowledgeOrchestrator:
                 "failed_urls": failed_urls
             }
                 
-        logger.info(f"Level {level} processing complete: {processed_urls_count} URLs processed, {success_count} successful, {error_count} errors")
+        logger.info(f"🎯 Level {level} processing complete:")
+        logger.info(f"   ↳ URLs processed: {processed_urls_count}/{total_urls}")
+        logger.info(f"   ↳ Successful: {success_count}")
+        logger.info(f"   ↳ Errors: {error_count}")
+        logger.info(f"   ↳ Failed URLs: {len(failed_urls)}")
+        logger.info(f"   ↳ Phase limit applied: {len(all_urls_for_processing) if 'all_urls_for_processing' in locals() else 'N/A'} of max {max_urls_per_phase}")
         
         # Save failed URLs to a separate file for future reference
         if failed_urls:
@@ -1333,30 +1391,72 @@ class KnowledgeOrchestrator:
             Dictionary with advancement results
         """
         try:
-            # Check if current level is actually complete
+            # CRITICAL FIX: Check ALL levels comprehensively for pending URLs before advancing
             from scripts.analysis.url_storage import URLStorageManager
             processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
             url_storage = URLStorageManager(processed_urls_file)
             
-            # Use discovery mode to see actual pending URLs
+            # Check current level first in discovery mode
             url_storage.set_discovery_mode(True)
             pending_urls = url_storage.get_pending_urls(depth=current_level)
+            current_level_pending = len(pending_urls) if pending_urls else 0
+            
+            # Check ALL levels for pending URLs before declaring completion
+            total_pending_all_levels = 0
+            pending_by_level = {}
+            for level in range(1, max_depth + 1):
+                level_urls = url_storage.get_pending_urls(depth=level)
+                level_count = len(level_urls) if level_urls else 0
+                pending_by_level[level] = level_count
+                total_pending_all_levels += level_count
+            
             url_storage.set_discovery_mode(False)
             
-            pending_count = len(pending_urls) if pending_urls else 0
-            
-            if pending_count > 0:
-                logger.warning(f"Level {current_level} is not complete yet - {pending_count} URLs still pending")
+            if current_level_pending > 0:
+                logger.warning(f"Level {current_level} is not complete yet - {current_level_pending} URLs still pending")
                 return {
                     "status": "not_complete",
                     "current_level": current_level,
                     "next_level": current_level,
-                    "pending_urls": pending_count,
-                    "message": f"Level {current_level} still has {pending_count} pending URLs"
+                    "pending_urls": current_level_pending,
+                    "message": f"Level {current_level} still has {current_level_pending} pending URLs"
                 }
+            
+            if total_pending_all_levels > 0:
+                # Find the lowest level with pending URLs
+                lowest_pending_level = None
+                for level in range(1, max_depth + 1):
+                    if pending_by_level.get(level, 0) > 0:
+                        lowest_pending_level = level
+                        break
+                
+                if lowest_pending_level and lowest_pending_level < current_level:
+                    logger.warning(f"Found {pending_by_level[lowest_pending_level]} pending URLs at lower level {lowest_pending_level} - should process that first")
+                    return {
+                        "status": "should_process_lower_level",
+                        "current_level": current_level,
+                        "next_level": lowest_pending_level,
+                        "pending_urls": pending_by_level[lowest_pending_level],
+                        "message": f"Should process level {lowest_pending_level} first ({pending_by_level[lowest_pending_level]} URLs pending)"
+                    }
             
             # Determine next level
             if current_level >= max_depth:
+                if total_pending_all_levels > 0:
+                    logger.warning(f"At max depth but {total_pending_all_levels} URLs still pending across all levels")
+                    # Find the lowest level with pending URLs to restart processing
+                    for level in range(1, max_depth + 1):
+                        if pending_by_level.get(level, 0) > 0:
+                            logger.info(f"Restarting at level {level} which has {pending_by_level[level]} pending URLs")
+                            self.update_config_level(level)
+                            return {
+                                "status": "restart_at_lower_level",
+                                "current_level": current_level,
+                                "next_level": level,
+                                "pending_urls": pending_by_level[level],
+                                "message": f"Restarting at level {level} with {pending_by_level[level]} pending URLs"
+                            }
+                
                 logger.info(f"Reached maximum depth {max_depth}, processing complete")
                 return {
                     "status": "completed",
@@ -1518,21 +1618,84 @@ class KnowledgeOrchestrator:
             logger.error(f"Error checking level completion status for level {level}: {e}")
             return False
 
-# Standalone function for easy import
-async def process_knowledge_base(data_folder=None, request_app_state=None, **kwargs):
-    """
-    Process all knowledge base files as a standalone function.
-    
-    Args:
-        data_folder: Path to data folder (deprecated - now always uses config)
-        request_app_state: FastAPI request.app.state
-        **kwargs: All other KnowledgeOrchestrator parameters
-    
-    Returns:
-        Dictionary with processing results
-    """
-    # Initialize orchestrator (always uses config-based path now)
-    orchestrator = KnowledgeOrchestrator()
-    
-    # Process knowledge
-    return await orchestrator.process_knowledge(request_app_state=request_app_state, **kwargs)
+    async def _check_and_restart_flow(self, request_app_state, result: Dict[str, Any]):
+        """
+        Check if the knowledge processing flow should restart from the beginning.
+        This creates a continuous cycle where the flow restarts after completion.
+        
+        Args:
+            request_app_state: The FastAPI request.app.state for ollama client
+            result: Current processing result to update
+        """
+        logger.info("🔄 CHECKING FOR CONTINUOUS CYCLE RESTART...")
+        
+        try:
+            # Check if we have completed a full cycle (all phases processed)
+            url_analysis_complete = result.get("url_analysis", {}).get("status") == "success"
+            vector_generation_complete = result.get("vector_generation", {}).get("status") == "success"
+            goal_extraction_complete = result.get("goal_extraction", {}).get("status") == "success"
+            
+            # Check if there are still pending URLs for more processing
+            from scripts.analysis.url_storage import URLStorageManager
+            processed_urls_file = os.path.join(self.data_folder, "processed_urls.csv")
+            url_storage = URLStorageManager(processed_urls_file)
+            
+            # Check discovery mode to see if there are any URLs left to process
+            url_storage.set_discovery_mode(True)
+            total_pending_urls = 0
+            for level in range(1, 6):  # Check levels 1-5
+                pending_urls = url_storage.get_pending_urls(depth=level)
+                total_pending_urls += len(pending_urls) if pending_urls else 0
+            url_storage.set_discovery_mode(False)
+            
+            # Restart conditions:
+            # 1. We processed some content (URL analysis was successful)
+            # 2. We have remaining URLs to process, OR
+            # 3. The flow completed successfully and we want to restart for new discoveries
+            should_restart = (
+                url_analysis_complete and 
+                (total_pending_urls > 0 or (vector_generation_complete and goal_extraction_complete))
+            )
+            
+            if should_restart:
+                logger.info("🔄 CONTINUOUS CYCLE: Restarting knowledge processing flow!")
+                logger.info(f"   ↳ Remaining URLs to process: {total_pending_urls}")
+                logger.info(f"   ↳ Flow phases completed: URL={url_analysis_complete}, Vector={vector_generation_complete}, Goals={goal_extraction_complete}")
+                
+                # Add a brief delay before restart to prevent rapid cycling
+                import asyncio
+                await asyncio.sleep(5)  # 5 second delay
+                
+                # Restart the flow with the same parameters but fresh state
+                restart_result = await self.process_knowledge(
+                    request_app_state=request_app_state,
+                    skip_markdown_scraping=True,
+                    analyze_resources=True,
+                    analyze_all_resources=False,
+                    batch_size=1,  # Keep sequential processing
+                    resource_limit=None,
+                    force_update=False,
+                    skip_vector_generation=False,
+                    check_unanalyzed=True,
+                    skip_questions=True,  # Skip questions in continuous cycle
+                    skip_goals=False,     # Keep goal extraction
+                    max_depth=5,
+                    force_url_fetch=False,
+                    process_level=None,   # Let it find the appropriate level
+                    auto_advance_level=True,
+                    continue_until_end=True  # Keep the continuous cycle
+                )
+                
+                # Add restart result to the overall result
+                result["restart_cycle"] = restart_result
+                result["continuous_cycle_active"] = True
+                
+                logger.info("🎉 CONTINUOUS CYCLE: Restart completed!")
+            else:
+                logger.info("🏁 CONTINUOUS CYCLE: Flow complete, no restart needed")
+                logger.info(f"   ↳ Remaining URLs: {total_pending_urls}")
+                result["continuous_cycle_active"] = False
+                
+        except Exception as e:
+            logger.error(f"Error in continuous cycle check: {e}", exc_info=True)
+            result["restart_error"] = str(e)

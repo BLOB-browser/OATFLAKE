@@ -6,29 +6,11 @@
 const SearchSlide = (() => {
     // HTML template for the search interface using web components
     const template = `
-        <div class="h-full flex flex-col p-0 overflow-hidden w-full">
-            <!-- Search Container - similar to your previous frontend -->
-            <div class="min-h-[60vh] mb-4 md:mb-6 w-full">
-                <div class="bg-black min-h-[60vh] md:min-h-[70vh] content-center h-full w-full" id="searchBoxContainer">
+        <div class="fixed inset-0 w-full h-full overflow-hidden">
+            <!-- Search Container - response-box component will be added above this when needed -->
+            <div class="w-full h-full">
+                <div class="bg-black w-full h-full" id="searchBoxContainer">
                     <!-- search-box will be added here directly -->
-                </div>
-            </div>
-            
-            <!-- Response Container -->
-            <div id="responseContainer" class="bg-neutral-800 rounded-lg p-6 border border-neutral-700 shadow-lg w-full mb-8 hidden">
-                <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-medium">Summary</h3>
-                    <div class="text-xs text-neutral-400" id="responseMetadataHeader">
-                        <span id="timingInfo"></span>
-                    </div>
-                </div>
-                <div id="responseText" class="prose prose-invert max-w-none mb-4"></div>
-                <div id="responseMetadataFooter" class="flex items-center justify-end text-xs text-neutral-400">
-                    <div class="mr-2">Powered by:</div>
-                    <img id="providerIcon" class="h-4 w-4 mr-1" src="" alt="" />
-                    <span id="providerInfo" class="mr-2"></span>
-                    <img id="modelIcon" class="h-4 w-4 mr-1" src="" alt="" />
-                    <span id="modelInfo"></span>
                 </div>
             </div>
         </div>
@@ -110,17 +92,11 @@ const SearchSlide = (() => {
             responseBox = document.createElement('response-box');
             responseBox.id = 'responseBox';
             
-            // Find where to insert the response box (after the search container)
-            const searchContainer = document.getElementById('searchContainer');
-            const responseContainer = document.getElementById('responseContainer');
+            // Insert before the search container (above search for better UX)
+            const searchBoxContainer = document.getElementById('searchBoxContainer');
             
-            // If the response container exists, replace it with our response-box
-            if (responseContainer) {
-                responseContainer.parentNode.replaceChild(responseBox, responseContainer);
-            } 
-            // Otherwise insert after the search container
-            else if (searchContainer && searchContainer.parentNode) {
-                searchContainer.parentNode.insertBefore(responseBox, searchContainer.nextSibling);
+            if (searchBoxContainer && searchBoxContainer.parentNode) {
+                searchBoxContainer.parentNode.insertBefore(responseBox, searchBoxContainer);
             }
             // Fallback - append to the main content
             else {
@@ -151,58 +127,6 @@ const SearchSlide = (() => {
     }
     
     /**
-     * Update response metadata in the UI
-     * @param {Object} metadata - The metadata object with timing and model info
-     */
-    function updateResponseMetadata(metadata) {
-        const timingInfo = document.getElementById('timingInfo');
-        const providerInfo = document.getElementById('providerInfo');
-        const modelInfo = document.getElementById('modelInfo');
-        const providerIcon = document.getElementById('providerIcon');
-        const modelIcon = document.getElementById('modelIcon');
-        
-        // Update timing information
-        if (timingInfo && metadata.timing) {
-            const totalTime = metadata.timing.total_seconds || 0;
-            timingInfo.textContent = `${totalTime.toFixed(1)}s`;
-        }
-        
-        // Update provider info
-        if (providerInfo && metadata.model && metadata.model.provider) {
-            providerInfo.textContent = metadata.model.provider;
-        }
-        
-        // Update model info
-        if (modelInfo && metadata.model && metadata.model.model_name) {
-            modelInfo.textContent = metadata.model.model_name;
-        }
-        
-        // Update icons if available
-        if (providerIcon && metadata.model && metadata.model.provider) {
-            const provider = metadata.model.provider.toLowerCase();
-            
-            // Set icon based on provider
-            if (provider.includes('openai')) {
-                providerIcon.src = '/static/icons/openai.svg';
-            } else if (provider.includes('ollama')) {
-                providerIcon.src = '/static/icons/ollama.svg';
-            } else if (provider.includes('openrouter')) {
-                providerIcon.src = '/static/icons/openrouter.svg';
-            } else {
-                providerIcon.src = '/static/icons/ai.svg';
-            }
-            
-            providerIcon.alt = metadata.model.provider;
-        }
-        
-        // Set model icon
-        if (modelIcon) {
-            modelIcon.src = '/static/icons/model.svg';
-            modelIcon.alt = 'Model';
-        }
-    }
-    
-    /**
      * Helper to dynamically load script
      * @param {string} src - Script source URL
      * @returns {Promise} - Promise that resolves when the script is loaded
@@ -224,23 +148,3 @@ const SearchSlide = (() => {
 
 // Removed automatic DOMContentLoaded initialization to prevent duplicate search boxes
 // Search slide is now only rendered by app.js initializeSlides()
-
-// Show the process button by making the container visible
-console.log('✅ Search completed, showing Generate button');
-console.log('Container element found:', !!container);
-if (container) {
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.alignItems = 'center';
-    container.style.justifyContent = 'center';
-    container.style.height = '100%';
-    container.style.width = '100%';
-    container.style.padding = '0';
-    container.style.margin = '0';
-    container.style.overflow = 'hidden';
-    container.classList.remove('hidden');
-    container.classList.add('flex');
-    
-    // Optionally, scroll to the top of the container
-    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
