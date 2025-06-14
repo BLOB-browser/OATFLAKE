@@ -54,10 +54,28 @@ class CriticalContentProcessor:
             # First process critical content (PDFs and methods)
             critical_result = await self.process_critical_content()
             
+            # Process markdown files if not skipped
+            markdown_result = {"status": "skipped", "reason": "skip_markdown_scraping=True"}
+            if not skip_markdown_scraping:
+                logger.info("STEP 2: PROCESSING MARKDOWN FILES FOR URL EXTRACTION")
+                logger.info("=====================================================")
+                
+                from scripts.analysis.markdown_processor_step import MarkdownProcessingStep
+                markdown_processor = MarkdownProcessingStep(self.data_folder)
+                
+                # Process markdown files to extract URLs
+                markdown_result = await markdown_processor.process_markdown_files(
+                    skip_scraping=skip_markdown_scraping,
+                    group_id="default"
+                )
+                
+                logger.info(f"Markdown processing completed: {markdown_result.get('status')}")
+            
             # Return the results
             return {
                 "status": "success",
                 "critical_content": critical_result,
+                "markdown_processing": markdown_result,
                 "message": "Content processing completed"
             }
             
