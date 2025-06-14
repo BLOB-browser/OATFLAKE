@@ -7,7 +7,7 @@ This package provides a modular approach to the knowledge processing workflow.
 """
 
 # Import main orchestrator for easy access
-from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator, process_knowledge_base
+from scripts.analysis.knowledge_orchestrator import KnowledgeOrchestrator
 
 # Import individual step components
 from scripts.analysis.change_detector import ChangeDetector, check_for_processing_needs
