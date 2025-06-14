@@ -451,14 +451,39 @@ class KnowledgeOrchestrator:
                     logger.error(f"❌ Error during FAISS fix: {e}")
                     # Continue anyway - this shouldn't block vector generation
                     
-                # STEP 5.2: Generate vectors
-                from scripts.analysis.vector_generator import VectorGenerator
-                vector_generator = VectorGenerator(self.data_folder)
+                # STEP 5.2: Generate vectors using universal rebuild system
+                logger.info("🚀 Using UNIVERSAL rebuild system for vector generation")
                 
-                # Get content paths from the content storage service
-                content_paths = list(content_storage.temp_storage_path.glob("*.jsonl"))
+                # Import the rebuild function directly
+                from scripts.tools.rebuild_faiss_indexes import rebuild_indexes, add_document_types
+                from pathlib import Path
                 
-                vector_result = await vector_generator.generate_vector_stores(content_paths)
+                data_path = Path(self.data_folder)
+                
+                # First, ensure all document types from CSVs are added to reference_store
+                logger.info("📊 Adding document types from CSVs to reference_store...")
+                added_docs = await add_document_types(data_path, force_all=False, check_existing=True)
+                logger.info(f"Added {added_docs} documents from CSV files")
+                
+                # Then rebuild all vector stores from existing content
+                logger.info("🔄 Rebuilding all vector stores...")
+                rebuild_success = await rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
+                
+                if rebuild_success:
+                    vector_result = {
+                        "status": "success", 
+                        "message": "Vector stores rebuilt successfully using universal system",
+                        "documents_added_from_csv": added_docs,
+                        "rebuild_method": "universal_rebuild_system"
+                    }
+                    logger.info("✅ Vector generation completed using universal rebuild system")
+                else:
+                    vector_result = {
+                        "status": "error",
+                        "message": "Vector store rebuild failed", 
+                        "documents_added_from_csv": added_docs,
+                        "rebuild_method": "universal_rebuild_system"
+                    }
                 
                 # Update result with vector generation results
                 result["vector_generation"] = vector_result

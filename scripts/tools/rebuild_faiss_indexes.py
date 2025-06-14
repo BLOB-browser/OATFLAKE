@@ -25,9 +25,11 @@ import json
 import time
 import os
 import sys
+import traceback
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+from langchain.schema import Document
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).resolve().parents[2]
@@ -239,8 +241,271 @@ def sanitize_value(value):
     # Return the value as-is if it's already a basic Python type
     return value
 
+def create_universal_field_mappings():
+    """Create comprehensive field mappings for all content types."""
+    return {
+        # Universal schema fields (primary)
+        'id': 'ID',
+        'title': 'TITLE',
+        'description': 'DESCRIPTION',
+        'content_type': 'CONTENT_TYPE',
+        'origin_url': 'SOURCE_URL',
+        'related_url': 'RELATED_URL',
+        'tags': 'TAGS',
+        'purpose': 'PURPOSE',
+        'location': 'LOCATION',
+        'status': 'STATUS',
+        'creator_id': 'CREATOR',
+        'collaborators': 'COLLABORATORS',
+        'group_id': 'GROUP',
+        'visibility': 'VISIBILITY',
+        'created_at': 'CREATED',
+        'last_updated_at': 'UPDATED',
+        'analysis_completed': 'ANALYZED',
+        
+        # Content-specific fields
+        'steps': 'STEPS',
+        'goals': 'GOALS',
+        'achievement': 'ACHIEVEMENT',
+        'documentation_url': 'DOCUMENTATION',
+        'file_path': 'FILE_PATH',
+        'authors': 'AUTHORS',
+        'publication_date': 'PUBLICATION_DATE',
+        'journal': 'JOURNAL',
+        'doi': 'DOI',
+        'abstract': 'ABSTRACT',
+        'keywords': 'KEYWORDS',
+        'methodology': 'METHODOLOGY',
+        'findings': 'FINDINGS',
+        'conclusion': 'CONCLUSION',
+        'recommendations': 'RECOMMENDATIONS',
+        'limitations': 'LIMITATIONS',
+        'future_work': 'FUTURE_WORK',
+        'references': 'REFERENCES',
+        
+        # Legacy backward compatibility fields
+        'term': 'TERM',
+        'definition': 'DEFINITION',
+        'resource_url': 'RESOURCE_URL',
+        'source_text': 'SOURCE_TEXT',
+        'category': 'CATEGORY',
+        'source': 'SOURCE',
+        'name': 'NAME',
+        'url': 'URL',
+        'path': 'PATH',
+        'content': 'CONTENT',
+        'summary': 'SUMMARY',
+        'notes': 'NOTES',
+        'examples': 'EXAMPLES',
+        'use_cases': 'USE_CASES',
+        'best_practices': 'BEST_PRACTICES',
+        'prerequisites': 'PREREQUISITES',
+        'difficulty': 'DIFFICULTY',
+        'time_required': 'TIME_REQUIRED',
+        'tools_required': 'TOOLS_REQUIRED',
+        'version': 'VERSION',
+        'license': 'LICENSE',
+        'maintainer': 'MAINTAINER',
+        'contact': 'CONTACT',
+        'feedback': 'FEEDBACK',
+        'rating': 'RATING',
+        'priority': 'PRIORITY',
+        'risk_level': 'RISK_LEVEL',
+        'dependencies': 'DEPENDENCIES',
+        'outputs': 'OUTPUTS',
+        'inputs': 'INPUTS',
+        'parameters': 'PARAMETERS',
+        'configuration': 'CONFIGURATION',
+        'environment': 'ENVIRONMENT',
+        'platform': 'PLATFORM',
+        'language': 'LANGUAGE',
+        'framework': 'FRAMEWORK',
+        'library': 'LIBRARY',
+        'api': 'API',
+        'database': 'DATABASE',
+        'schema': 'SCHEMA',
+        'model': 'MODEL',
+        'algorithm': 'ALGORITHM',
+        'data_source': 'DATA_SOURCE',
+        'data_format': 'DATA_FORMAT',
+        'data_size': 'DATA_SIZE',
+        'data_quality': 'DATA_QUALITY',
+        'validation': 'VALIDATION',
+        'testing': 'TESTING',
+        'deployment': 'DEPLOYMENT',
+        'monitoring': 'MONITORING',
+        'troubleshooting': 'TROUBLESHOOTING',
+        'faq': 'FAQ',
+        'changelog': 'CHANGELOG',
+        'roadmap': 'ROADMAP'
+    }
+
+def process_csv_to_documents(csv_path, content_type, field_mappings):
+    """Process any CSV file to create rich documents with universal schema support.
+    
+    Args:
+        csv_path (Path): Path to CSV file
+        content_type (str): Type of content (from analysis-tasks-config.json)
+        field_mappings (dict): Field mappings for labels
+        
+    Returns:
+        list: List of Document objects with rich content and metadata
+    """
+    try:
+        import pandas as pd
+        import json
+        from datetime import datetime
+        
+        df = pd.read_csv(csv_path)
+        logger.info(f"Processing {len(df)} {content_type} entries from {csv_path}")
+        logger.info(f"CSV columns: {list(df.columns)}")
+        
+        documents = []
+        
+        # Define intelligent title/description fallbacks based on content type
+        title_fallbacks = {
+            'definition': ['title', 'term', 'name', 'concept', 'keyword'],
+            'method': ['title', 'name', 'method', 'procedure', 'technique'],
+            'project': ['title', 'name', 'project', 'initiative', 'case_study'],
+            'reference': ['title', 'name', 'paper', 'article', 'source'],
+            'link': ['title', 'name', 'resource', 'tool', 'platform']
+        }
+        
+        description_fallbacks = {
+            'definition': ['description', 'definition', 'explanation', 'summary', 'abstract'],
+            'method': ['description', 'summary', 'overview', 'abstract', 'procedure'],
+            'project': ['description', 'summary', 'overview', 'abstract', 'objective'],
+            'reference': ['description', 'abstract', 'summary', 'overview', 'content'],
+            'link': ['description', 'summary', 'overview', 'abstract', 'purpose']
+        }
+        
+        for _, row in df.iterrows():
+            # Smart title detection with fallbacks
+            title = None
+            for field in title_fallbacks.get(content_type, ['title', 'name']):
+                if field in row.index and pd.notna(row[field]) and str(row[field]).strip():
+                    title = str(row[field]).strip()
+                    break
+            
+            if not title:
+                title = f"Untitled {content_type.title()}"
+            
+            # Smart description detection with fallbacks
+            description = None
+            for field in description_fallbacks.get(content_type, ['description', 'summary']):
+                if field in row.index and pd.notna(row[field]) and str(row[field]).strip():
+                    description = str(row[field]).strip()
+                    break
+            
+            if not description:
+                description = f"No description available for this {content_type}"
+            
+            # Create rich content that includes ALL available data
+            content_parts = []
+            content_parts.append(f"TITLE: {title}")
+            content_parts.append(f"DESCRIPTION: {description}")
+            content_parts.append(f"TYPE: {content_type.upper()}")
+            
+            # Process ALL columns to preserve maximum data richness
+            processed_fields = set()
+            # Track which fields we've already used for title/description
+            for field in title_fallbacks.get(content_type, []) + description_fallbacks.get(content_type, []):
+                if field in row.index and pd.notna(row[field]):
+                    processed_fields.add(field)
+            
+            # Process all remaining columns
+            for column in df.columns:
+                if column in processed_fields:
+                    continue
+                    
+                value = row[column]
+                if pd.isna(value):
+                    continue
+                    
+                clean_value = sanitize_value(value)
+                if not clean_value:
+                    continue
+                    
+                # Get display label
+                label = field_mappings.get(column, column.upper().replace('_', ' '))
+                
+                # Handle special field types
+                if column in ['tags', 'keywords', 'collaborators', 'authors', 'references']:
+                    # Handle JSON arrays or comma-separated values
+                    if isinstance(clean_value, str):
+                        try:
+                            if clean_value.startswith('['):
+                                items_list = json.loads(clean_value)
+                                content_parts.append(f"{label}: {', '.join(items_list)}")
+                            else:
+                                # Comma-separated values
+                                items_list = [item.strip() for item in clean_value.split(',') if item.strip()]
+                                content_parts.append(f"{label}: {', '.join(items_list)}")
+                        except:
+                            content_parts.append(f"{label}: {clean_value}")
+                    else:
+                        content_parts.append(f"{label}: {clean_value}")
+                        
+                elif column in ['steps', 'goals', 'examples', 'use_cases', 'best_practices']:
+                    # Handle structured lists
+                    if isinstance(clean_value, str):
+                        try:
+                            if clean_value.startswith('['):
+                                items_list = json.loads(clean_value)
+                                numbered_items = [f"{i+1}. {item}" for i, item in enumerate(items_list)]
+                                content_parts.append(f"{label}:\n" + '\n'.join(numbered_items))
+                            else:
+                                content_parts.append(f"{label}: {clean_value}")
+                        except:
+                            content_parts.append(f"{label}: {clean_value}")
+                    else:
+                        content_parts.append(f"{label}: {clean_value}")
+                        
+                else:
+                    # Standard field handling
+                    content_parts.append(f"{label}: {clean_value}")
+            
+            # Create the final rich content
+            content = '\n'.join(content_parts)
+            
+            # Create comprehensive metadata
+            metadata = {
+                # Core identification
+                "source_type": content_type,
+                "type": content_type,
+                "title": title,
+                "description": description,
+                "processed_at": datetime.now().isoformat(),
+                "csv_source": str(csv_path),
+                
+                # Content type from universal schema
+                "content_type": content_type,
+            }
+            
+            # Add ALL CSV data to metadata (sanitized)
+            for column in df.columns:
+                value = row[column]
+                if pd.notna(value):
+                    sanitized_value = sanitize_value(value)
+                    if sanitized_value:
+                        metadata[column] = sanitized_value
+            
+            # Create document
+            document = Document(
+                page_content=content,
+                metadata=metadata
+            )
+            documents.append(document)
+            
+        logger.info(f"Created {len(documents)} documents from {content_type} CSV")
+        return documents
+        
+    except Exception as e:
+        logger.error(f"Error processing {content_type} CSV at {csv_path}: {e}")
+        return []
+
 async def add_document_types(data_path, force_all=False, check_existing=False):
-    """Add document types (definitions, projects, methods) to reference_store.
+    """Add document types to reference_store from CSV files based on analysis-tasks-config.json.
     
     Args:
         data_path (Path): Path to data directory
@@ -255,9 +520,26 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
         import numpy as np
         import math
         from scripts.storage.vector_store_manager import VectorStoreManager
-        from langchain.schema import Document
         
-        logger.info("Processing document types for reference_store...")
+        logger.info("Processing document types for reference_store using UNIVERSAL CSV processing...")
+        
+        # Load analysis tasks configuration to determine which CSV files to process
+        tasks_config_path = Path(__file__).parent.parent / "settings" / "analysis-tasks-config.json"
+        available_content_types = []
+        
+        if tasks_config_path.exists():
+            try:
+                with open(tasks_config_path, 'r', encoding='utf-8') as f:
+                    tasks_config = json.load(f)
+                available_content_types = list(tasks_config.keys())
+                logger.info(f"Found {len(available_content_types)} content types in analysis config: {available_content_types}")
+            except Exception as e:
+                logger.warning(f"Could not load analysis tasks config: {e}")
+                # Fallback to common types
+                available_content_types = ['definition', 'method', 'project', 'reference', 'link']
+        else:
+            logger.warning("Analysis tasks config not found, using default types")
+            available_content_types = ['definition', 'method', 'project', 'reference', 'link']
         vector_store_manager = VectorStoreManager(base_path=data_path)
         
         # Check if reference_store exists
@@ -325,516 +607,85 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
             
             logger.info(f"Existing document types in reference_store: {existing_types}")
 
-        # Process all document types
+        # UNIVERSAL CSV PROCESSING - Process all content types dynamically
         added_docs = 0
+        field_mappings = create_universal_field_mappings()
         
-        # Process definitions if needed
-        if "definitions" not in existing_types or not check_existing or force_all:
-            # Try multiple possible paths for definitions.csv
-            definitions_paths = [
-                data_path / "definitions.csv",                    # Root directory
-                data_path / "data" / "definitions.csv",           # Data subdirectory
-                data_path / "vector_stores" / "definitions.csv",  # Vector stores directory
+        logger.info(f"🚀 Starting UNIVERSAL CSV processing for content types: {available_content_types}")
+        
+        # Process each content type dynamically based on analysis-tasks-config.json
+        for content_type in available_content_types:
+            # Convert content type to plural for CSV filename (e.g., definition -> definitions)
+            csv_name = content_type + 's' if not content_type.endswith('s') else content_type
+            
+            # Skip if already exists and we're checking
+            if check_existing and csv_name in existing_types and not force_all:
+                logger.info(f"✅ {csv_name} already in reference store, skipping")
+                continue
+            
+            logger.info(f"🔄 Processing {content_type} -> {csv_name}.csv")
+            
+            # Try multiple possible paths for the CSV file
+            csv_paths = [
+                data_path / f"{csv_name}.csv",                    # Root directory
+                data_path / "data" / f"{csv_name}.csv",           # Data subdirectory  
+                data_path / "vector_stores" / f"{csv_name}.csv",  # Vector stores directory
             ]
             
-            definitions_path = None
-            for path in definitions_paths:
+            csv_path = None
+            for path in csv_paths:
                 if path.exists():
-                    logger.info(f"Found definitions at {path}")
-                    definitions_path = path
+                    logger.info(f"📁 Found {csv_name} at {path}")
+                    csv_path = path
                     break
-                    
-            if definitions_path and definitions_path.exists():
-                try:
-                    # Read definitions CSV
-                    df = pd.read_csv(definitions_path)
-                    logger.info(f"Found {len(df)} definitions to add")
-                    
-                    # Check for column names - look for either title/description or term/definition
-                    has_title = 'title' in df.columns
-                    has_term = 'term' in df.columns
-                    has_description = 'description' in df.columns
-                    has_definition = 'definition' in df.columns
-                    
-                    logger.info(f"Definition columns: title={has_title}, term={has_term}, description={has_description}, definition={has_definition}")
-                    
-                    # Convert to documents using universal schema with backward compatibility
-                    documents = []
-                    for _, row in df.iterrows():
-                        # Universal schema mapping with backward compatibility
-                        # Priority: new universal schema -> old CSV schema -> fallbacks
-                        title = (row.get('title') or 
-                                row.get('term') or 
-                                'Untitled')
-                        
-                        description = (row.get('description') or 
-                                     row.get('definition') or 
-                                     '')
-                        
-                        # Handle content_type from universal schema or infer from context
-                        content_type = (row.get('content_type') or 
-                                      'definition')  # Default for definitions
-                        
-                        # Create rich content that preserves structure
-                        content_parts = []
-                        content_parts.append(f"TITLE: {title}")
-                        if description:
-                            content_parts.append(f"DESCRIPTION: {description}")
-                        
-                        # Add purpose if available (universal schema)
-                        purpose = row.get('purpose', '')
-                        if purpose:
-                            content_parts.append(f"PURPOSE: {purpose}")
-                            
-                        # Add location if available (universal schema)
-                        location = row.get('location', '')
-                        if location:
-                            content_parts.append(f"LOCATION: {location}")
-                        
-                        content = '\n'.join(content_parts)
-                        
-                        # Create comprehensive metadata using universal schema
-                        metadata = {
-                            # Core fields (always present)
-                            "source_type": content_type,
-                            "type": content_type,
-                            "title": title,  # Always store title in metadata
-                            "description": description,  # Always store description in metadata
-                            "processed_at": datetime.now().isoformat(),
-                            
-                            # Universal schema fields (primary) - sanitize all values
-                            "id": sanitize_value(row.get('id', '')),
-                            "content_type": content_type,
-                            "origin_url": sanitize_value(row.get('origin_url', '')),
-                            "tags": sanitize_value(row.get('tags', [])),
-                            "purpose": sanitize_value(purpose),
-                            "location": sanitize_value(location),
-                            "related_url": sanitize_value(row.get('related_url', '')),
-                            "status": sanitize_value(row.get('status', '')),
-                            "creator_id": sanitize_value(row.get('creator_id', '')),
-                            "collaborators": sanitize_value(row.get('collaborators', '')),
-                            "group_id": sanitize_value(row.get('group_id', '')),
-                            "created_at": sanitize_value(row.get('created_at', '')),
-                            "last_updated_at": sanitize_value(row.get('last_updated_at', '')),
-                            "analysis_completed": sanitize_value(row.get('analysis_completed', '')),
-                            "visibility": sanitize_value(row.get('visibility', '')),
-                        }
-                        
-                        # Add backward compatibility fields (old CSV schema)
-                        legacy_fields = {
-                            'term': row.get('term', ''),
-                            'definition': row.get('definition', ''),
-                            'resource_url': row.get('resource_url', ''),
-                            'source_text': row.get('source_text', ''),
-                            'category': row.get('category', ''),
-                            'source': row.get('source', ''),
-                        }
-                        
-                        # Only add legacy fields if they have values
-                        for key, value in legacy_fields.items():
-                            sanitized_value = sanitize_value(value)
-                            if sanitized_value:  # Only add if not empty after sanitization
-                                metadata[key] = sanitized_value
-                        
-                        # Add any additional columns not covered above
-                        excluded_cols = {
-                            'title', 'description', 'term', 'definition', 'id', 'content_type',
-                            'origin_url', 'tags', 'purpose', 'location', 'related_url', 'status',
-                            'creator_id', 'collaborators', 'group_id', 'created_at', 
-                            'last_updated_at', 'analysis_completed', 'visibility', 'resource_url',
-                            'source_text', 'category', 'source'
-                        }
-                        
-                        for col in df.columns:
-                            if col not in excluded_cols:
-                                value = row.get(col)
-                                sanitized_value = sanitize_value(value)
-                                if sanitized_value:  # Only add if not empty after sanitization
-                                    metadata[col] = sanitized_value
-                        
-                        # Create document
-                        documents.append(Document(page_content=content, metadata=metadata))
-                    
-                    if documents:
-                        logger.info(f"Adding {len(documents)} definitions to reference_store")
-                        
-                        # Create metadata for tracking
-                        metadata = {
-                            "data_type": "definitions",
-                            "item_count": len(documents),
-                            "source": "rebuild_faiss_indexes",
-                            "added_at": datetime.now().isoformat()
-                        }
-                        
-                        # Add to reference store
-                        result = await vector_store_manager.add_documents_to_store(
-                            "reference_store", 
-                            documents, 
-                            metadata=metadata,
-                            update_stats=True
-                        )
-                        
-                        if result:
-                            logger.info(f"✅ Successfully added {len(documents)} definitions")
-                            added_docs += len(documents)
-                        else:
-                            logger.error("❌ Failed to add definitions")
-                except Exception as e:
-                    logger.error(f"Error adding definitions: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            else:
-                logger.info("No definitions.csv file found")
-        else:
-            logger.info("Definitions already in reference store, skipping")
-        
-        # Process projects if needed
-        if "projects" not in existing_types or not check_existing or force_all:
-            # Try multiple possible paths for projects.csv
-            projects_paths = [
-                data_path / "projects.csv",                    # Root directory
-                data_path / "data" / "projects.csv",           # Data subdirectory
-                data_path / "vector_stores" / "projects.csv",  # Vector stores directory
-            ]
             
-            projects_path = None
-            for path in projects_paths:
-                if path.exists():
-                    logger.info(f"Found projects at {path}")
-                    projects_path = path
-                    break
-                    
-            if projects_path and projects_path.exists():
-                try:
-                    # Read projects CSV
-                    df = pd.read_csv(projects_path)
-                    logger.info(f"Found {len(df)} projects to add")
-                    
-                    # Convert to documents using universal schema with backward compatibility
-                    documents = []
-                    for _, row in df.iterrows():
-                        # Universal schema mapping with backward compatibility
-                        title = (row.get('title') or 
-                                row.get('project_name') or 
-                                'Untitled Project')
-                        
-                        description = (row.get('description') or 
-                                     row.get('project_description') or 
-                                     '')
-                        
-                        goals = row.get('goals', '')
-                        
-                        # Handle content_type from universal schema or infer from context
-                        content_type = (row.get('content_type') or 
-                                      'project')  # Default for projects
-                        
-                        # Create rich content that preserves structure
-                        content_parts = []
-                        content_parts.append(f"TITLE: {title}")
-                        if description:
-                            content_parts.append(f"DESCRIPTION: {description}")
-                        if goals:
-                            content_parts.append(f"GOALS: {goals}")
-                        
-                        # Add purpose if available (universal schema)
-                        purpose = row.get('purpose', '')
-                        if purpose:
-                            content_parts.append(f"PURPOSE: {purpose}")
-                            
-                        # Add location if available (universal schema)
-                        location = row.get('location', '')
-                        if location:
-                            content_parts.append(f"LOCATION: {location}")
-                        
-                        content = '\n'.join(content_parts)
-                        
-                        # Create comprehensive metadata using universal schema
-                        metadata = {
-                            # Core fields (always present)
-                            "source_type": content_type,
-                            "type": content_type,
-                            "title": title,  # Always store title in metadata
-                            "description": description,  # Always store description in metadata
-                            "processed_at": datetime.now().isoformat(),
-                            
-                            # Universal schema fields (primary) - sanitize all values
-                            "id": sanitize_value(row.get('id', '')),
-                            "content_type": content_type,
-                            "origin_url": sanitize_value(row.get('origin_url', '')),
-                            "tags": sanitize_value(row.get('tags', [])),
-                            "purpose": sanitize_value(purpose),
-                            "location": sanitize_value(location),
-                            "related_url": sanitize_value(row.get('related_url', '')),
-                            "status": sanitize_value(row.get('status', '')),
-                            "creator_id": sanitize_value(row.get('creator_id', '')),
-                            "collaborators": sanitize_value(row.get('collaborators', '')),
-                            "group_id": sanitize_value(row.get('group_id', '')),
-                            "created_at": sanitize_value(row.get('created_at', '')),
-                            "last_updated_at": sanitize_value(row.get('last_updated_at', '')),
-                            "analysis_completed": sanitize_value(row.get('analysis_completed', '')),
-                            "visibility": sanitize_value(row.get('visibility', '')),
-                        }
-                        
-                        # Add backward compatibility fields (old CSV schema)
-                        legacy_fields = {
-                            'goals': goals,
-                            'project_name': row.get('project_name', ''),
-                            'project_description': row.get('project_description', ''),
-                            'resource_url': row.get('resource_url', ''),
-                            'source_text': row.get('source_text', ''),
-                            'category': row.get('category', ''),
-                            'source': row.get('source', ''),
-                        }
-                        
-                        # Only add legacy fields if they have values
-                        for key, value in legacy_fields.items():
-                            if value and pd.notna(value):
-                                # Convert numpy/pandas types to native Python types and handle NaN
-                                if isinstance(value, (pd.Series, pd.DataFrame)):
-                                    continue
-                                if pd.isna(value):
-                                    continue
-                                # Convert numpy types to Python native types
-                                if hasattr(value, 'item'):
-                                    value = value.item()
-                                metadata[key] = value
-                        
-                        # Add any additional columns not covered above
-                        excluded_cols = {
-                            'title', 'description', 'goals', 'project_name', 'project_description',
-                            'id', 'content_type', 'origin_url', 'tags', 'purpose', 'location', 
-                            'related_url', 'status', 'creator_id', 'collaborators', 'group_id', 
-                            'created_at', 'last_updated_at', 'analysis_completed', 'visibility', 
-                            'resource_url', 'source_text', 'category', 'source'
-                        }
-                        
-                        for col in df.columns:
-                            if col not in excluded_cols:
-                                value = row.get(col)
-                                if pd.notna(value) and isinstance(value, (str, int, float, bool)):
-                                    # Convert numpy/pandas types to native Python types and handle NaN
-                                    if isinstance(value, (pd.Series, pd.DataFrame)):
-                                        continue
-                                    if pd.isna(value):
-                                        continue
-                                    # Convert numpy types to Python native types
-                                    if hasattr(value, 'item'):
-                                        value = value.item()
-                                    metadata[col] = value
-                        
-                        # Create document
-                        documents.append(Document(page_content=content, metadata=metadata))
-                    
-                    if documents:
-                        logger.info(f"Adding {len(documents)} projects to reference_store")
-                        
-                        # Create metadata for tracking
-                        metadata = {
-                            "data_type": "projects",
-                            "item_count": len(documents),
-                            "source": "rebuild_faiss_indexes",
-                            "added_at": datetime.now().isoformat()
-                        }
-                        
-                        # Add to reference store
-                        result = await vector_store_manager.add_documents_to_store(
-                            "reference_store", 
-                            documents, 
-                            metadata=metadata,
-                            update_stats=True
-                        )
-                        
-                        if result:
-                            logger.info(f"✅ Successfully added {len(documents)} projects")
-                            added_docs += len(documents)
-                        else:
-                            logger.error("❌ Failed to add projects")
-                except Exception as e:
-                    logger.error(f"Error adding projects: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            else:
-                logger.info("No projects.csv file found")
-        else:
-            logger.info("Projects already in reference store, skipping")
-        
-        # Process methods if needed
-        if "methods" not in existing_types or not check_existing or force_all:
-            # Try multiple possible paths for methods.csv
-            methods_paths = [
-                data_path / "methods.csv",                    # Root directory
-                data_path / "data" / "methods.csv",           # Data subdirectory
-                data_path / "vector_stores" / "methods.csv",  # Vector stores directory
-            ]
+            if not csv_path:
+                logger.info(f"⚠️  No {csv_name}.csv file found, skipping")
+                continue
             
-            methods_path = None
-            for path in methods_paths:
-                if path.exists():
-                    logger.info(f"Found methods at {path}")
-                    methods_path = path
-                    break
+            try:
+                # Use universal CSV processor
+                documents = process_csv_to_documents(csv_path, content_type, field_mappings)
+                
+                if not documents:
+                    logger.warning(f"⚠️  No documents created from {csv_name}.csv")
+                    continue
+                
+                logger.info(f"📊 Adding {len(documents)} {content_type} documents to reference_store")
+                
+                # Create metadata for tracking
+                metadata = {
+                    "data_type": csv_name,
+                    "content_type": content_type,
+                    "item_count": len(documents),
+                    "source": "rebuild_faiss_indexes_universal",
+                    "csv_path": str(csv_path),
+                    "added_at": datetime.now().isoformat()
+                }
+                
+                # Add to reference store
+                result = await vector_store_manager.add_documents_to_store(
+                    "reference_store",
+                    documents,
+                    metadata=metadata,
+                    update_stats=True
+                )
+                
+                if result:
+                    logger.info(f"✅ Successfully added {len(documents)} {content_type} documents")
+                    added_docs += len(documents)
+                else:
+                    logger.error(f"❌ Failed to add {content_type} documents")
                     
-            if methods_path and methods_path.exists():
-                try:
-                    # Read methods CSV
-                    df = pd.read_csv(methods_path)
-                    logger.info(f"Found {len(df)} methods to add")
-                    
-                    # Convert to documents using universal schema with backward compatibility
-                    documents = []
-                    for _, row in df.iterrows():
-                        # Universal schema mapping with backward compatibility
-                        title = (row.get('title') or 
-                                row.get('name') or 
-                                row.get('method_name') or 
-                                'Untitled Method')
-                        
-                        description = (row.get('description') or 
-                                     row.get('method_description') or 
-                                     '')
-                        
-                        steps = row.get('steps', '')
-                        
-                        # Handle content_type from universal schema or infer from context
-                        content_type = (row.get('content_type') or 
-                                      'method')  # Default for methods
-                        
-                        # Create rich content that preserves structure
-                        content_parts = []
-                        content_parts.append(f"TITLE: {title}")
-                        if description:
-                            content_parts.append(f"DESCRIPTION: {description}")
-                        if steps:
-                            content_parts.append(f"STEPS: {steps}")
-                        
-                        # Add purpose if available (universal schema)
-                        purpose = row.get('purpose', '')
-                        if purpose:
-                            content_parts.append(f"PURPOSE: {purpose}")
-                            
-                        # Add location if available (universal schema)
-                        location = row.get('location', '')
-                        if location:
-                            content_parts.append(f"LOCATION: {location}")
-                        
-                        content = '\n'.join(content_parts)
-                        
-                        # Create comprehensive metadata using universal schema
-                        metadata = {
-                            # Core fields (always present)
-                            "source_type": content_type,
-                            "type": content_type,
-                            "title": title,  # Always store title in metadata
-                            "description": description,  # Always store description in metadata
-                            "processed_at": datetime.now().isoformat(),
-                            
-                            # Universal schema fields (primary) - sanitize all values
-                            "id": sanitize_value(row.get('id', '')),
-                            "content_type": content_type,
-                            "origin_url": sanitize_value(row.get('origin_url', '')),
-                            "tags": sanitize_value(row.get('tags', [])),
-                            "purpose": sanitize_value(purpose),
-                            "location": sanitize_value(location),
-                            "related_url": sanitize_value(row.get('related_url', '')),
-                            "status": sanitize_value(row.get('status', '')),
-                            "creator_id": sanitize_value(row.get('creator_id', '')),
-                            "collaborators": sanitize_value(row.get('collaborators', '')),
-                            "group_id": sanitize_value(row.get('group_id', '')),
-                            "created_at": sanitize_value(row.get('created_at', '')),
-                            "last_updated_at": sanitize_value(row.get('last_updated_at', '')),
-                            "analysis_completed": sanitize_value(row.get('analysis_completed', '')),
-                            "visibility": sanitize_value(row.get('visibility', '')),
-                        }
-                        
-                        # Add backward compatibility fields (old CSV schema)
-                        legacy_fields = {
-                            'steps': steps,
-                            'name': row.get('name', ''),
-                            'method_name': row.get('method_name', ''),
-                            'method_description': row.get('method_description', ''),
-                            'resource_url': row.get('resource_url', ''),
-                            'source_text': row.get('source_text', ''),
-                            'category': row.get('category', ''),
-                            'source': row.get('source', ''),
-                        }
-                        
-                        # Only add legacy fields if they have values
-                        for key, value in legacy_fields.items():
-                            if value and pd.notna(value):
-                                # Convert numpy/pandas types to native Python types and handle NaN
-                                if isinstance(value, (pd.Series, pd.DataFrame)):
-                                    continue
-                                if pd.isna(value):
-                                    continue
-                                # Convert numpy types to Python native types
-                                if hasattr(value, 'item'):
-                                    value = value.item()
-                                metadata[key] = value
-                        
-                        # Add any additional columns not covered above
-                        excluded_cols = {
-                            'title', 'description', 'steps', 'name', 'method_name', 'method_description',
-                            'id', 'content_type', 'origin_url', 'tags', 'purpose', 'location', 
-                            'related_url', 'status', 'creator_id', 'collaborators', 'group_id', 
-                            'created_at', 'last_updated_at', 'analysis_completed', 'visibility', 
-                            'resource_url', 'source_text', 'category', 'source'
-                        }
-                        
-                        for col in df.columns:
-                            if col not in excluded_cols:
-                                value = row.get(col)
-                                if pd.notna(value) and isinstance(value, (str, int, float, bool)):
-                                    # Convert numpy/pandas types to native Python types and handle NaN
-                                    if isinstance(value, (pd.Series, pd.DataFrame)):
-                                        continue
-                                    if pd.isna(value):
-                                        continue
-                                    # Convert numpy types to Python native types
-                                    if hasattr(value, 'item'):
-                                        value = value.item()
-                                    metadata[col] = value
-                            
-                        # Create document
-                        documents.append(Document(page_content=content, metadata=metadata))
-                    
-                    if documents:
-                        logger.info(f"Adding {len(documents)} methods to reference_store")
-                        
-                        # Create metadata for tracking
-                        metadata = {
-                            "data_type": "methods",
-                            "item_count": len(documents),
-                            "source": "rebuild_faiss_indexes",
-                            "added_at": datetime.now().isoformat()
-                        }
-                        
-                        # Add to reference store
-                        result = await vector_store_manager.add_documents_to_store(
-                            "reference_store", 
-                            documents, 
-                            metadata=metadata,
-                            update_stats=True
-                        )
-                        
-                        if result:
-                            logger.info(f"✅ Successfully added {len(documents)} methods")
-                            added_docs += len(documents)
-                        else:
-                            logger.error("❌ Failed to add methods")
-                except Exception as e:
-                    logger.error(f"Error adding methods: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            else:
-                logger.info("No methods.csv file found")
-        else:
-            logger.info("Methods already in reference store, skipping")
+            except Exception as e:
+                logger.error(f"❌ Error processing {content_type}: {e}")
+                logger.error(traceback.format_exc())
         
+        logger.info(f"🎉 UNIVERSAL CSV processing complete! Total documents added: {added_docs}")
         return added_docs
         
     except Exception as e:
-        logger.error(f"Error adding document types: {e}")
-        import traceback
+        logger.error(f"💥 Error in universal document processing: {e}")
         logger.error(traceback.format_exc())
         return 0
 
@@ -845,9 +696,7 @@ def get_data_path_from_config():
     
     # Prioritize config.json in the project root directory
     config_paths = [
-        project_root / "config.json",  # Project root config
-        Path.cwd() / "config.json",    # Current working directory
-        Path.home() / '.blob' / 'config.json',  # User home directory
+        project_root / "config.json"  # Project root config
     ]
     
     for config_path in config_paths:
@@ -866,6 +715,185 @@ def get_data_path_from_config():
     # Default fallback - use the project root
     logger.warning("No data_path found in config files, using project root as fallback")
     return project_root
+
+def create_universal_field_mappings():
+    """Create comprehensive field mappings for all content types."""
+    return {
+        # Universal schema core fields
+        'id': 'ID',
+        'title': 'TITLE', 
+        'description': 'DESCRIPTION',
+        'content_type': 'TYPE',
+        'purpose': 'PURPOSE',
+        'location': 'LOCATION', 
+        'tags': 'TAGS',
+        'origin_url': 'SOURCE_URL',
+        'related_url': 'RELATED_URL',
+        'status': 'STATUS',
+        'creator_id': 'CREATOR',
+        'group_id': 'GROUP',
+        'visibility': 'VISIBILITY',
+        'created_at': 'CREATED',
+        'last_updated_at': 'UPDATED',
+        'analysis_completed': 'ANALYZED',
+        'collaborators': 'COLLABORATORS',
+        
+        # Content type specific fields
+        'steps': 'STEPS',                    # Methods
+        'goals': 'GOALS',                    # Projects
+        'achievement': 'ACHIEVEMENT',        # Projects
+        'documentation_url': 'DOCUMENTATION', # Projects
+        'file_path': 'FILE_PATH',           # Materials
+        
+        # Legacy/backward compatibility fields
+        'term': 'TERM',                     # Old definitions
+        'definition': 'DEFINITION',         # Old definitions  
+        'project_name': 'PROJECT_NAME',     # Old projects
+        'project_description': 'PROJECT_DESCRIPTION',  # Old projects
+        'method_name': 'METHOD_NAME',       # Old methods
+        'method_description': 'METHOD_DESCRIPTION',    # Old methods
+        'usecase': 'USECASE',              # Old methods
+        'resource_url': 'RESOURCE_URL',
+        'source_text': 'SOURCE_TEXT',
+        'category': 'CATEGORY',
+        'source': 'SOURCE',
+        'fields': 'FIELDS',                # Old tags
+        'privacy': 'PRIVACY',              # Old visibility
+    }
+
+def process_csv_to_documents(csv_path: Path, content_type: str, field_mappings: dict) -> list:
+    """Universal CSV to Document converter that preserves all data."""
+    try:
+        df = pd.read_csv(csv_path)
+        logger.info(f"Processing {csv_path.name}: Found {len(df)} {content_type} records")
+        logger.debug(f"CSV columns: {list(df.columns)}")
+        
+        documents = []
+        for _, row in df.iterrows():
+            # Determine title with fallbacks based on content type
+            title_fallbacks = {
+                'definition': ['title', 'term'],
+                'method': ['title', 'method_name', 'name'],
+                'project': ['title', 'project_name', 'name'],
+                'reference': ['title', 'name'],
+                'material': ['title', 'name'],
+            }
+            
+            title = None
+            for field in title_fallbacks.get(content_type, ['title', 'name']):
+                if row.get(field):
+                    title = str(row[field]).strip()
+                    break
+            
+            if not title:
+                title = f'Untitled {content_type.title()}'
+            
+            # Determine description with fallbacks based on content type  
+            description_fallbacks = {
+                'definition': ['description', 'definition'],
+                'method': ['description', 'method_description', 'usecase'],
+                'project': ['description', 'project_description'],
+                'reference': ['description'],
+                'material': ['description', 'content'],
+            }
+            
+            description = ''
+            for field in description_fallbacks.get(content_type, ['description']):
+                if row.get(field):
+                    description = str(row[field]).strip()
+                    break
+            
+            # Build rich content that includes ALL available CSV data
+            content_parts = []
+            content_parts.append(f"TITLE: {title}")
+            
+            if description:
+                content_parts.append(f"DESCRIPTION: {description}")
+            
+            # Process ALL other columns to preserve maximum data richness
+            processed_fields = {'title', 'description'}
+            
+            # Add title fallback fields to processed to avoid duplication
+            processed_fields.update(title_fallbacks.get(content_type, []))
+            processed_fields.update(description_fallbacks.get(content_type, []))
+            
+            for column, value in row.items():
+                if column in processed_fields:
+                    continue
+                    
+                # Clean and validate the value
+                clean_value = sanitize_value(value)
+                if not clean_value:  # Skip empty values
+                    continue
+                
+                # Get the display label for this field
+                label = field_mappings.get(column, column.upper().replace('_', ' '))
+                
+                # Special handling for JSON fields
+                if column in ['tags', 'collaborators', 'steps', 'goals'] and clean_value:
+                    if isinstance(clean_value, str):
+                        try:
+                            if clean_value.startswith('[') or clean_value.startswith('{'):
+                                parsed_value = json.loads(clean_value)
+                                if isinstance(parsed_value, list):
+                                    if column == 'steps':
+                                        # Format steps as numbered list
+                                        numbered_steps = [f"{i+1}. {step}" for i, step in enumerate(parsed_value)]
+                                        content_parts.append(f"{label}:\n" + '\n'.join(numbered_steps))
+                                    else:
+                                        content_parts.append(f"{label}: {', '.join(map(str, parsed_value))}")
+                                else:
+                                    content_parts.append(f"{label}: {parsed_value}")
+                            else:
+                                # Comma-separated string
+                                if column == 'tags':
+                                    tags_list = [tag.strip() for tag in clean_value.split(',')]
+                                    content_parts.append(f"{label}: {', '.join(tags_list)}")
+                                else:
+                                    content_parts.append(f"{label}: {clean_value}")
+                        except json.JSONDecodeError:
+                            content_parts.append(f"{label}: {clean_value}")
+                    elif isinstance(clean_value, list):
+                        if column == 'steps':
+                            numbered_steps = [f"{i+1}. {step}" for i, step in enumerate(clean_value)]
+                            content_parts.append(f"{label}:\n" + '\n'.join(numbered_steps))
+                        else:
+                            content_parts.append(f"{label}: {', '.join(map(str, clean_value))}")
+                    else:
+                        content_parts.append(f"{label}: {clean_value}")
+                else:
+                    # Standard field handling
+                    content_parts.append(f"{label}: {clean_value}")
+            
+            content = '\n'.join(content_parts)
+            
+            # Create comprehensive metadata preserving all CSV data
+            metadata = {
+                # Core fields (always present)
+                "source_type": content_type,
+                "type": content_type, 
+                "title": title,
+                "description": description,
+                "processed_at": datetime.now().isoformat(),
+                "content_type": content_type,
+            }
+            
+            # Add all CSV columns as metadata (sanitized)
+            for col in df.columns:
+                value = row.get(col)
+                sanitized_value = sanitize_value(value)
+                if sanitized_value:  # Only add non-empty values
+                    metadata[col] = sanitized_value
+            
+            # Create document
+            documents.append(Document(page_content=content, metadata=metadata))
+        
+        logger.info(f"✅ Created {len(documents)} documents from {csv_path.name}")
+        return documents
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing {csv_path}: {e}")
+        return []
 
 def main():
     """Main entry point."""
