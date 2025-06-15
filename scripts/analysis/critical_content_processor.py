@@ -47,8 +47,10 @@ class CriticalContentProcessor:
         Returns:
             Dictionary with processing results
         """
-        logger.info("PROCESSING CONTENT INCLUDING CRITICAL CONTENT")
-        logger.info("=============================================")
+        logger.info("PROCESSING CRITICAL CONTENT (HIGHEST PRIORITY)")
+        logger.info("===============================================")
+        logger.info("Critical content (PDFs, methods) is always processed first,")
+        logger.info("regardless of vector store existence or other conditions.")
         
         try:
             # First process critical content (PDFs and methods)

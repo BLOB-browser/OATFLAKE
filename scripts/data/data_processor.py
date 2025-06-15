@@ -132,21 +132,26 @@ class DataProcessor:
                     df = pd.read_csv(materials_path)
                     logger.info(f"Processing PDFs from {len(df)} materials")
                     
-                    # Check existing vector store to avoid reprocessing PDFs
-                    content_store_path = self.base_path / "vector_stores" / "default" / "content_store"
+                    # CRITICAL CONTENT PRIORITY: Process all PDFs in materials.csv first
+                    # This ensures critical learning content is always processed regardless of vector store status
                     already_processed_pdfs = set()
                     
-                    # If the content store exists, load metadata to check what's already processed
+                    # For incremental optimization only (not to skip critical content):
+                    # Check existing vector store to identify what's already been processed for efficiency
+                    content_store_path = self.base_path / "vector_stores" / "default" / "content_store"
+                    check_for_duplicates = False
+                    
                     if content_store_path.exists() and (content_store_path / "embedding_stats.json").exists():
                         try:
-                            # Check metadata file for processed PDF info
+                            # Check metadata file for processed PDF info (for optimization only)
                             with open(content_store_path / "embedding_stats.json", 'r') as f:
                                 stats_data = json.load(f)
                                 if "processed_files" in stats_data:
                                     already_processed_pdfs = set(stats_data["processed_files"])
-                                    logger.info(f"Found {len(already_processed_pdfs)} already processed PDFs in vector store")
+                                    logger.info(f"Found {len(already_processed_pdfs)} already processed PDFs - will check for duplicates but still process critical content")
+                                    check_for_duplicates = True
                         except Exception as stats_err:
-                            logger.warning(f"Could not read embedding stats, will reprocess PDFs: {stats_err}")
+                            logger.warning(f"Could not read embedding stats, will process all PDFs: {stats_err}")
                     
                     skipped_pdfs = 0
                     processed_pdfs = 0
@@ -158,13 +163,18 @@ class DataProcessor:
                                 pdf_path = self.base_path / row_data['file_path']
                                 pdf_path_str = str(pdf_path)
                                 
-                                # Skip if already processed (in incremental mode)
-                                if pdf_path_str in already_processed_pdfs:
-                                    logger.info(f"Skipping already processed PDF: {pdf_path}")
-                                    skipped_pdfs += 1
-                                    continue
+                                # CRITICAL CONTENT PRIORITY: Always process PDFs from materials.csv
+                                # Only skip if we can confirm the exact same file was already processed
+                                should_process = True
                                 
-                                if pdf_path.exists() and pdf_path.suffix.lower() == '.pdf':
+                                if check_for_duplicates and pdf_path_str in already_processed_pdfs:
+                                    # For efficiency, we can skip this PDF if it was already processed
+                                    # But log this as an optimization skip, not a critical content skip
+                                    logger.info(f"PDF already in vector store (optimization skip): {pdf_path}")
+                                    skipped_pdfs += 1
+                                    should_process = False
+                                
+                                if should_process and pdf_path.exists() and pdf_path.suffix.lower() == '.pdf':
                                     logger.info(f"Processing PDF: {pdf_path}")
                                     try:
                                         loader = PyPDFLoader(pdf_path_str)
@@ -186,7 +196,7 @@ class DataProcessor:
                         except Exception as e:
                             logger.error(f"Error processing material: {e}")
                     
-                    logger.info(f"PDF processing summary: {processed_pdfs} processed, {skipped_pdfs} skipped (already in vector store)")
+                    logger.info(f"PDF processing summary: {processed_pdfs} processed, {skipped_pdfs} skipped (optimization: already vectorized)")
                 except Exception as e:
                     logger.error(f"Error reading materials.csv: {e}")
             

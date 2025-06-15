@@ -219,7 +219,7 @@ class URLLevelProcessor:
             for pending_url_data in pending_urls:
                 url = pending_url_data.get('origin_url')
                 resource_id = pending_url_data.get('resource_id', '')
-                origin = pending_url_data.get('origin', '')
+                origin = pending_url_data.get('origin_url', '')
                 
                 # If no resource ID, use origin as fallback
                 group_key = resource_id or origin
@@ -234,7 +234,7 @@ class URLLevelProcessor:
             # Group by origin
             for pending_url_data in pending_urls:
                 url = pending_url_data.get('origin_url')
-                origin = pending_url_data.get('origin', '')
+                origin = pending_url_data.get('origin_url', '')
                 
                 if origin not in urls_by_group:
                     urls_by_group[origin] = []

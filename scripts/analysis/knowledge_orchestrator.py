@@ -173,15 +173,29 @@ class KnowledgeOrchestrator:
             else:
                 logger.info("No pending URLs found. Discovery phase needed.")
             
-            # STEP 2: PROCESS CONTENT FIRST (PDFs, markdown, etc.)
-            # This creates resources.csv that discovery phase needs
+            # STEP 2: PROCESS CRITICAL CONTENT FIRST (ALWAYS PRIORITIZED)
+            # Critical content (PDFs, methods.csv) should always be processed first regardless of vector store status
             resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
             resources_exist = os.path.exists(resources_csv_path)
             
-            # Always run content processing if:
-            # 1. Normal conditions apply (process_all_steps or unanalyzed_resources_exist), OR
-            # 2. No resources.csv exists (need to create initial resources from markdown)
-            if process_all_steps or unanalyzed_resources_exist or not resources_exist:
+            # Check if critical content files exist to force processing
+            materials_csv_path = os.path.join(self.data_folder, 'materials.csv')
+            methods_csv_path = os.path.join(self.data_folder, 'methods.csv')
+            critical_content_exists = os.path.exists(materials_csv_path) or os.path.exists(methods_csv_path)
+            
+            # CRITICAL CONTENT PRIORITY: Always process critical content if it exists
+            # OR run normal content processing if other conditions are met
+            should_process_content = (
+                critical_content_exists or  # Always process if critical content exists
+                process_all_steps or 
+                unanalyzed_resources_exist or 
+                not resources_exist
+            )
+            
+            if should_process_content:
+                if critical_content_exists:
+                    logger.info("🔥 CRITICAL CONTENT DETECTED - PROCESSING WITH HIGHEST PRIORITY")
+                
                 logger.info("==================================================")
                 logger.info("STARTING CONTENT PROCESSING PHASE")
                 logger.info("==================================================")
@@ -904,8 +918,8 @@ class KnowledgeOrchestrator:
             # Group URLs by origin
             urls_by_origin = {}
             for pending_url_data in pending_urls:
-                url = pending_url_data.get('origin_url')
-                origin = pending_url_data.get('origin', '')
+                url = pending_url_data.get('url')
+                origin = pending_url_data.get('origin_url', '')
                 
                 if origin not in urls_by_origin:
                     urls_by_origin[origin] = []
@@ -974,10 +988,21 @@ class KnowledgeOrchestrator:
                 resource_for_origin = url_info['resource']
                 origin_url = url_info['origin_url']
                 
-                url_to_process = pending_url_data.get('origin_url')
+                url_to_process = pending_url_data.get('url')
                 url_depth = pending_url_data.get('depth', level)
-                origin = pending_url_data.get('origin', '')
+                origin = pending_url_data.get('origin_url', '')
                 attempt_count = pending_url_data.get('attempt_count', 0)
+                
+                # Skip if URL is None or empty
+                if not url_to_process:
+                    logger.warning(f"Skipping processing: URL is None or empty in pending URL data")
+                    logger.debug(f"Pending URL data: {pending_url_data}")
+                    # Remove this invalid entry from pending URLs
+                    if hasattr(url_storage, 'remove_pending_url') and url_to_process is not None:
+                        url_storage.remove_pending_url(url_to_process)
+                    processed_urls_count += 1
+                    error_count += 1
+                    continue
                 
                 # Check if max attempts reached, but DON'T mark as processed if not analyzed
                 max_attempts = 3
