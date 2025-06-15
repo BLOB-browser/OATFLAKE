@@ -37,7 +37,7 @@ class ResourceResolver:
             Resource dictionary or None if no resource is found
         """
         # Filter resources to only include those with URLs
-        resources_with_url = resources_df[resources_df['url'].notna()]
+        resources_with_url = resources_df[resources_df['origin_url'].notna()]
         
         if resources_with_url.empty:
             logger.warning(f"No resources with URLs available")
@@ -45,7 +45,7 @@ class ResourceResolver:
         
         # Step 1: Try exact match with origin URL
         for _, row in resources_with_url.iterrows():
-            if row['url'] == origin_url:
+            if row['origin_url'] == origin_url:
                 resource = row.to_dict()
                 logger.info(f"Found exact origin match for URL: {url} -> {origin_url}")
                 return resource
@@ -75,7 +75,7 @@ class ResourceResolver:
         Returns:
             Dictionary mapping resource IDs to resource dictionaries
         """
-        resources_with_url = resources_df[resources_df['url'].notna()]
+        resources_with_url = resources_df[resources_df['origin_url'].notna()]
         resource_mapping = {}
         
         for resource_id in resource_ids:
@@ -120,7 +120,7 @@ class ResourceResolver:
         
         # Look for resources with the same domain
         for _, row in resources_df.iterrows():
-            resource_url = row['url']
+            resource_url = row['origin_url']
             resource_domain_match = re.search(r'https?://([^/]+)', resource_url)
             if resource_domain_match and resource_domain_match.group(1) == origin_domain:
                 resource = row.to_dict()
@@ -134,7 +134,7 @@ class ResourceResolver:
         
         # Find any resource with this base domain
         for _, row in resources_df.iterrows():
-            resource_url = row['url']
+            resource_url = row['origin_url']
             if base_domain in resource_url:
                 resource = row.to_dict()
                 logger.warning(f"Found base domain match: {base_domain} in {resource_url}")
@@ -154,7 +154,7 @@ class ResourceResolver:
         """
         # First look for fabacademy.org as a fallback (domain-specific logic)
         for _, row in resources_df.iterrows():
-            if 'fabacademy.org' in row['url']:
+            if 'fabacademy.org' in row['origin_url']:
                 resource = row.to_dict()
                 logger.warning(f"Using fabacademy.org resource as fallback")
                 return resource

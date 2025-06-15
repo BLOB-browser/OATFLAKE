@@ -36,10 +36,10 @@ def extract_pdfs_from_pending_urls(data_folder):
         pending_urls = url_storage.get_pending_urls(depth=level)
         if pending_urls:
             for url_data in pending_urls:
-                url = url_data.get('url', '')
+                url = url_data.get('origin_url', '')
                 if is_pdf_url(url):
                     pdf_urls.append({
-                        'url': url,
+                        'origin_url': url,
                         'origin': url_data.get('origin', ''),
                         'depth': url_data.get('depth', level),
                         'resource_id': url_data.get('resource_id', '')
@@ -104,7 +104,7 @@ def main():
         if args.list_only:
             print("\n📄 PDF URLs found:")
             for i, pdf in enumerate(pdf_urls[:20]):  # Show first 20
-                print(f"   {i+1}. {pdf['url']}")
+                print(f"   {i+1}. {pdf['origin_url']}")
                 print(f"      Origin: {pdf.get('origin', 'N/A')}")
                 print(f"      Level: {pdf.get('depth', 'N/A')}")
                 print()
@@ -121,7 +121,7 @@ def main():
         failed = []
         
         for i, pdf_data in enumerate(pdfs_to_download):
-            url = pdf_data['url']
+            url = pdf_data['origin_url']
             print(f"\n[{i+1}/{len(pdfs_to_download)}] Processing: {url}")
             
             result = download_pdf_to_materials(
@@ -152,7 +152,7 @@ def main():
         if failed:
             print(f"\n❌ Failed URLs:")
             for fail in failed:
-                print(f"   {fail['url']}: {fail['error']}")
+                print(f"   {fail['origin_url']}: {fail['error']}")
         
         # Save download log
         log_file = os.path.join(download_dir, 'download_log.json')

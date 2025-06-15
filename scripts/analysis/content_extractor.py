@@ -66,7 +66,7 @@ async def fetch_batch_content(batch: List[Dict]) -> List[Dict]:
         List of content entry dictionaries
     """
     async def fetch_url(url_data):
-        url = url_data.get('url')
+        url = url_data.get('origin_url')
         if not url:
             return None
             

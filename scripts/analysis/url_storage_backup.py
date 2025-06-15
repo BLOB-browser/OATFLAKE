@@ -411,19 +411,18 @@ class URLStorageManager:
                     title_index = 0
                     if header:
                         try:
-                            # First try to find origin_url (preferred field for universal schema)
+                            # Use only origin_url field (universal schema)
                             if "origin_url" in header:
                                 url_index = header.index("origin_url")
                                 logger.info("Found origin_url column in resources.csv")
                             else:
-                                # Fall back to url if origin_url not found
-                                url_index = header.index("url")
-                                logger.info("Using url column in resources.csv (origin_url not found)")
+                                logger.error("origin_url column not found in resources.csv - universal schema requires origin_url field")
+                                return resource_urls
                             
                             title_index = header.index("title") if "title" in header else 0
                         except ValueError:
-                            logger.warning("Could not find origin_url or url column in resources.csv, defaulting to first column")
-                            url_index = 0  # Default to first column
+                            logger.error("Could not find required origin_url column in resources.csv")
+                            return resource_urls
                             
                     resource_count = 0
                     for idx, row in enumerate(reader):
@@ -1025,7 +1024,7 @@ class URLStorageManager:
                 with open(self.processed_urls_file, 'r', newline='', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        if row.get('url') == url and row.get('discovery_only') == 'True':
+                        if row.get('origin_url') == url and row.get('discovery_only') == 'True':
                             # Add to cache for future lookups
                             self._discovery_completed_cache.add(url)
                             return True

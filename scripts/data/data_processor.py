@@ -256,7 +256,7 @@ class DataProcessor:
                 "projects": (self.base_path / "projects.csv",
                           lambda row: f"Project: {row.get('title', '')}\nDescription: {row.get('description', '')}\nGoals: {row.get('goals', '')}\nAchievement: {row.get('achievement', '')}"),
                 "resources": (self.base_path / "resources.csv",
-                          lambda row: f"Resource: {row.get('title', '')}\nURL: {row.get('url', '')}\nDescription: {row.get('description', '')}\nTags: {row.get('tags', '')}")
+                          lambda row: f"Resource: {row.get('title', '')}\nURL: {row.get('origin_url', '')}\nDescription: {row.get('description', '')}\nTags: {row.get('tags', '')}")
             }
 
             # Keep track of resources that were successfully processed
@@ -483,7 +483,7 @@ class DataProcessor:
                                 if "analysis_completed" not in resources_df.columns:
                                     resources_df["analysis_completed"] = False
                                 resources_df.at[res_idx[0], "analysis_completed"] = True
-                                logger.info(f"Marked resource with URL {row_data['url']} as analysis_completed=True")
+                                logger.info(f"Marked resource with URL {row_data['origin_url']} as analysis_completed=True")
                         
                         # Save the updated DataFrame if changes were made
                         if match_found:

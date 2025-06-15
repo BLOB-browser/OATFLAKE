@@ -94,7 +94,7 @@ class DocumentProcessor:
                     elif doc_type == "projects":
                         content = f"Project: {row_data.get('title', '')}\nDescription: {row_data.get('description', '')}\nGoals: {row_data.get('goals', '')}\nAchievement: {row_data.get('achievement', '')}"
                     elif doc_type == "resources":
-                        content = f"Resource: {row_data.get('title', '')}\nURL: {row_data.get('url', '')}\nDescription: {row_data.get('description', '')}\nTags: {row_data.get('tags', '')}"
+                        content = f"Resource: {row_data.get('title', '')}\nURL: {row_data.get('origin_url', '')}\nDescription: {row_data.get('description', '')}\nTags: {row_data.get('tags', '')}"
                     elif doc_type == "materials":
                         content = f"Material: {row_data.get('title', '')}\nDescription: {row_data.get('description', '')}"
                     

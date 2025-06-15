@@ -242,25 +242,23 @@ class LevelBasedProcessor:
                 current_session_processed.add(url)
                 
                 logger.info(f"Processing level {depth} URL {url_idx+1}/{len(pending_urls)}: {url}")
-                  # Find the resource this URL belongs to
-                # Try to find the resource by either origin_url or url field
-                # Origin_url is the preferred field for the universal schema
-                if 'origin_url' in resources_df.columns:
-                    resource_row = resources_df[resources_df['origin_url'] == origin]
-                    if resource_row.empty:
-                        # Fall back to url field if origin_url match fails
-                        resource_row = resources_df[resources_df['url'] == origin]
-                else:
-                    resource_row = resources_df[resources_df['url'] == origin]
+                # Find the resource this URL belongs to
+                # Use universal schema only - require origin_url field
+                if 'origin_url' not in resources_df.columns:
+                    logger.error("Resources DataFrame missing 'origin_url' column - universal schema required")
+                    continue
+                    
+                resource_row = resources_df[resources_df['origin_url'] == origin]
                     
                 if resource_row.empty:
                     logger.warning(f"Could not find origin resource for URL: {url} (origin: {origin})")
                     continue
                 
                 origin_resource = resource_row.iloc[0].to_dict()
-                # Ensure resource works with new field names
-                if 'url' in origin_resource and 'origin_url' not in origin_resource:
-                    origin_resource['origin_url'] = origin_resource['url']
+                # Ensure resource follows universal schema
+                if 'origin_url' not in origin_resource:
+                    logger.error(f"Resource missing origin_url field - universal schema required: {origin_resource}")
+                    continue
                 
                 try:
                     # Process just this specific URL with detailed logging

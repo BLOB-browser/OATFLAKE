@@ -227,7 +227,7 @@ class ContentAnalyzer:
                            f"({batch_end - batch_start} URLs)")
                 
                 for pending_url_data in batch:
-                    url_to_process = pending_url_data.get('url')
+                    url_to_process = pending_url_data.get('origin_url')
                     origin_url = pending_url_data.get('origin', '')
                     resource_id = pending_url_data.get('resource_id', '')
                     

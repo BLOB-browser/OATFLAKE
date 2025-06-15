@@ -108,22 +108,26 @@ class URLProcessorStep:
                     try:
                         resources_df = pd.read_csv(resources_csv_path)
                         if not resources_df.empty:
-                            added_count = 0                            # Use either origin_url or url field based on what's available
-                            if 'origin_url' in resources_df.columns:
-                                resources_with_url = resources_df[resources_df['origin_url'].notna()]
-                                url_field = 'origin_url'
-                            else:
-                                resources_with_url = resources_df[resources_df['url'].notna()]
-                                url_field = 'url'
+                            added_count = 0
+                            # Use universal schema only - require origin_url field
+                            if 'origin_url' not in resources_df.columns:
+                                logger.error("Resources DataFrame missing 'origin_url' column - universal schema required")
+                                return {
+                                    "success": False,
+                                    "message": "Resources file missing universal schema (origin_url field)",
+                                    "urls_added": 0
+                                }
+                                
+                            resources_with_url = resources_df[resources_df['origin_url'].notna()]
                                 
                             for _, row in resources_with_url.iterrows():
-                                url = row.get(url_field)
+                                url = row.get('origin_url')
                                 # Generate a unique resource_id for this resource (use row index + 1)
                                 resource_id = str(row.name + 1)  # row.name is the index, +1 for 1-based IDs
                                 if url and isinstance(url, str) and url.startswith('http'):
                                     # Check if already in pending URLs
                                     pending_urls = url_storage.get_pending_urls(depth=1)
-                                    if not any(p.get('url') == url for p in pending_urls):
+                                    if not any(p.get('origin_url') == url for p in pending_urls):
                                         # Save with the generated resource_id
                                         url_storage.save_pending_url(url, depth=1, origin=url, resource_id=resource_id)
                                         added_count += 1

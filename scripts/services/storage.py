@@ -453,14 +453,14 @@ class DataSaver:
             if not is_new_file:
                 try:
                     df = pd.read_csv(csv_path)
-                    if 'url' in df.columns:
-                        existing_urls = set(url.lower() for url in df['url'].dropna())
+                    if 'origin_url' in df.columns:
+                        existing_urls = set(url.lower() for url in df['origin_url'].dropna())
                 except Exception as e:
                     logger.error(f"Error reading existing resources: {e}")
 
-            # Skip duplicate URLs
-            if resource.get('url', '').lower() in existing_urls:
-                logger.info(f"Resource with URL '{resource.get('url')}' already exists, skipping")
+            # Skip duplicate URLs (universal schema)
+            if resource.get('origin_url', '').lower() in existing_urls:
+                logger.info(f"Resource with URL '{resource.get('origin_url')}' already exists, skipping")
                 return True  # Not an error
 
             # Process tags
@@ -473,10 +473,10 @@ class DataSaver:
             else:
                 tags_str = str(tags_value) if tags_value else ''
 
-            # Prepare row data
+            # Prepare row data (universal schema)
             row = {
                 'title': resource.get('title', ''),
-                'url': resource.get('url', ''),
+                'origin_url': resource.get('origin_url', ''),
                 'description': resource.get('description', ''),
                 'type': resource.get('type', 'other'),
                 'category': resource.get('category', ''),
@@ -486,8 +486,8 @@ class DataSaver:
             }
 
             try:
-                # Standard fields
-                default_fields = ['title', 'url', 'description', 'type', 'category', 'tags', 'created_at', 'analysis_completed']
+                # Standard fields (universal schema)
+                default_fields = ['title', 'origin_url', 'description', 'type', 'category', 'tags', 'created_at', 'analysis_completed']
 
                 # Add any extra fields that might be present
                 for key, value in resource.items():
@@ -699,8 +699,8 @@ class DataSaver:
                                 match_idx = matches[0]
                                 match_found = True
 
-                        if not match_found and 'url' in resource and resource['url']:
-                            matches = original_df.loc[original_df['url'] == resource['url']].index.tolist()
+                        if not match_found and 'origin_url' in resource and resource['origin_url']:
+                            matches = original_df.loc[original_df['origin_url'] == resource['origin_url']].index.tolist()
                             if matches:
                                 match_idx = matches[0]
                                 match_found = True
@@ -715,7 +715,7 @@ class DataSaver:
                                 # Update the value
                                 original_df.at[match_idx, col] = value
 
-                            logger.info(f"Updated resource {resource.get('id', resource.get('url', 'unknown'))}")
+                            logger.info(f"Updated resource {resource.get('id', resource.get('origin_url', 'unknown'))}")
                         else:
                             # New resource, make sure all columns are present
                             temp_df = pd.DataFrame([resource])
@@ -725,7 +725,7 @@ class DataSaver:
 
                             # Append to the original df
                             original_df = pd.concat([original_df, temp_df], ignore_index=True)
-                            logger.info(f"Added new resource {resource.get('id', resource.get('url', 'unknown'))}")
+                            logger.info(f"Added new resource {resource.get('id', resource.get('origin_url', 'unknown'))}")
 
                     except Exception as e:
                         logger.error(f"Error updating resource at index {i}: {e}")

@@ -106,8 +106,12 @@ class SingleResourceProcessorUniversal:
         result = {"resource_id": resource_id, "universal_results": {}, "errors": []}
 
         try:
-            # Use origin_url for universal schema compatibility, fallback to url if not available
-            main_url = resource.get("origin_url", resource.get("url"))
+            # Use only origin_url field (universal schema)
+            main_url = resource.get("origin_url")
+            if not main_url:
+                logger.error(f"[{resource_id}] No origin_url found in resource - universal schema requires origin_url field")
+                result["errors"].append("No origin_url field found")
+                return result
             resource_id = resource.get("title", "")
             logger.info(f"[{resource_id}] Starting universal analysis for {main_url}")
 
@@ -577,11 +581,9 @@ class SingleResourceProcessorUniversal:
             if "location" not in item:
                 item["location"] = ""
                 
-            # Ensure backward compatibility with both url and origin_url fields
-            if "origin_url" not in item and "url" in item:
-                item["origin_url"] = item["url"]
-            elif "url" not in item and "origin_url" in item:
-                item["url"] = item["origin_url"]
+            # Ensure origin_url field exists (universal schema only)
+            if "origin_url" not in item:
+                item["origin_url"] = ""
             
             # DEBUG: Log final URL fields after processing
             logger.debug(f"   � Item {i+1} output fields: origin_url='{item.get('origin_url', 'MISSING')}', related_url='{item.get('related_url', 'MISSING')}'")

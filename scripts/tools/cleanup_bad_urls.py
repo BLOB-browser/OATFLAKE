@@ -89,7 +89,7 @@ class URLCleanupTool:
         semaphore = asyncio.Semaphore(max_concurrent)
         
         async def test_single(url_data: Dict) -> Tuple[str, bool, str]:
-            url = url_data.get('url', '')
+            url = url_data.get('origin_url', '')
             async with semaphore:
                 accessible, reason = await self.test_url_accessibility(url)
                 return url, accessible, reason
@@ -103,7 +103,7 @@ class URLCleanupTool:
         url_status = {}
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                url = urls_data[i].get('url', 'unknown')
+                url = urls_data[i].get('origin_url', 'unknown')
                 url_status[url] = (False, "test_error")
                 print(f"❌ Error testing {url}: {result}")
             else:
@@ -159,7 +159,7 @@ class URLCleanupTool:
             original_count = len(df)
             
             # Remove bad URLs
-            df = df[~df['url'].isin(bad_urls)]
+            df = df[~df['origin_url'].isin(bad_urls)]
             new_count = len(df)
             removed_count = original_count - new_count
             

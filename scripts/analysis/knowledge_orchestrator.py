@@ -173,46 +173,94 @@ class KnowledgeOrchestrator:
             else:
                 logger.info("No pending URLs found. Discovery phase needed.")
             
-            # STEP 2: DISCOVERY PHASE - Only if needed (no pending URLs)
+            # STEP 2: PROCESS CONTENT FIRST (PDFs, markdown, etc.)
+            # This creates resources.csv that discovery phase needs
+            resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
+            resources_exist = os.path.exists(resources_csv_path)
+            
+            # Always run content processing if:
+            # 1. Normal conditions apply (process_all_steps or unanalyzed_resources_exist), OR
+            # 2. No resources.csv exists (need to create initial resources from markdown)
+            if process_all_steps or unanalyzed_resources_exist or not resources_exist:
+                logger.info("==================================================")
+                logger.info("STARTING CONTENT PROCESSING PHASE")
+                logger.info("==================================================")
+                
+                from scripts.analysis.critical_content_processor import CriticalContentProcessor
+                content_processor = CriticalContentProcessor(self.data_folder)
+                
+                # Process content (this will create resources.csv if it doesn't exist)
+                content_result = await content_processor.process_content(
+                    request_app_state=request_app_state,
+                    skip_markdown_scraping=skip_markdown_scraping,
+                    analyze_resources=analyze_resources,
+                    analyze_all_resources=analyze_all_resources,
+                    batch_size=batch_size,
+                    resource_limit=resource_limit,
+                    check_unanalyzed=check_unanalyzed
+                )
+                
+                # Update result with content processing results
+                result["content_processing"] = content_result
+                
+                # After content processing, check if resources.csv was created
+                if not resources_exist and os.path.exists(resources_csv_path):
+                    logger.info("✅ resources.csv was created during content processing")
+                    resources_exist = True
+            else:
+                logger.info("Skipping content processing phase")
+                result["content_processing"] = {"status": "skipped", "reason": "no_processing_needed"}
+                
+            # STEP 3: DISCOVERY PHASE - Only if needed (no pending URLs) and resources exist
             # Use discovery mode counts for this decision
             if actual_pending_count == 0:
                 logger.info("==================================================")
                 logger.info("STARTING DISCOVERY PHASE")
                 logger.info("==================================================")
                 
-                # Check if resources.csv exists before trying discovery
-                resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
+                # Check if resources.csv exists after content processing
                 if not os.path.exists(resources_csv_path):
-                    logger.error(f"Resources file not found: {resources_csv_path}")
-                    return {
-                        "status": "error",
-                        "message": f"Resources file not found: {resources_csv_path}",
-                        "data": result
+                    logger.warning(f"Resources file still not found after content processing: {resources_csv_path}")
+                    logger.warning("Cannot perform URL discovery without resources")
+                    result["discovery_phase"] = {
+                        "status": "skipped",
+                        "reason": "no_resources_file_after_content_processing",
+                        "message": "No resources.csv file found even after content processing."
                     }
-                else:                    # Initialize URL discovery manager
+                else:
+                    # Initialize URL discovery manager
                     url_discovery = URLDiscoveryManager(self.data_folder)
-                      # Get all resources with URLs
+                    
+                    # Get all resources with URLs
                     resources_df = pd.read_csv(resources_csv_path)
-                    # Use origin_url instead of url for compatibility with universal schema
-                    resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
+                    # Use only origin_url field (universal schema)
+                    resources_with_url = resources_df[resources_df['origin_url'].notna()]
                     
                     # Log discovery details
                     logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
                     
-                    # Call discover_urls_from_resources with correct method name
-                    logger.info(f"Starting URL discovery from resources with max_depth={max_depth}")
-                    discovery_result = await url_discovery.discover_urls_from_resources(
-                        max_depth=max_depth,
-                        force_reprocess=force_url_fetch
-                    )
-                    # Log discovery results
-                    if discovery_result.get("status") == "success":
-                        logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
+                    if len(resources_with_url) > 0:
+                        # Call discover_urls_from_resources with correct method name
+                        logger.info(f"Starting URL discovery from resources with max_depth={max_depth}")
+                        discovery_result = await url_discovery.discover_urls_from_resources(
+                            max_depth=max_depth,
+                            force_reprocess=force_url_fetch
+                        )
+                        # Log discovery results
+                        if discovery_result.get("status") == "success":
+                            logger.info(f"Discovery succeeded: Found {discovery_result.get('discovered_urls', 0)} pending URLs")
+                        else:
+                            logger.warning(f"Discovery status: {discovery_result.get('status')}, reason: {discovery_result.get('reason')}")
+                        
+                        # Add discovery results to the overall result
+                        result["discovery_phase"] = discovery_result
                     else:
-                        logger.warning(f"Discovery status: {discovery_result.get('status')}, reason: {discovery_result.get('reason')}")
-                    
-                    # Add discovery results to the overall result
-                    result["discovery_phase"] = discovery_result
+                        logger.info("No resources with URLs found for discovery")
+                        result["discovery_phase"] = {
+                            "status": "skipped",
+                            "reason": "no_resources_with_urls",
+                            "message": "No resources with URLs found for discovery"
+                        }
                 
                 # After discovery, refresh our pending URLs count
                 pending_urls_count = 0
@@ -228,29 +276,7 @@ class KnowledgeOrchestrator:
                 logger.info("Skipping discovery phase - found existing pending URLs")
                 result["discovery_phase"] = {"status": "skipped", "reason": "existing_pending_urls"}
                 
-            # STEP 3: PROCESS CONTENT (PDFs, markdown, etc.)
-            if process_all_steps or unanalyzed_resources_exist:
-                logger.info("==================================================")
-                logger.info("STARTING CONTENT PROCESSING PHASE")
-                logger.info("==================================================")
-                
-                from scripts.analysis.critical_content_processor import CriticalContentProcessor
-                content_processor = CriticalContentProcessor(self.data_folder)
-                
-                # Process content
-                content_result = await content_processor.process_content(
-                    request_app_state=request_app_state,
-                    skip_markdown_scraping=skip_markdown_scraping,
-                    analyze_resources=analyze_resources,
-                    analyze_all_resources=analyze_all_resources,
-                    batch_size=batch_size,
-                    resource_limit=resource_limit,
-                    check_unanalyzed=check_unanalyzed
-                )
-                
-                # Update result with content processing results
-                result["content_processing"] = content_result
-              # STEP 4: URL ANALYSIS PHASE 
+            # STEP 4: URL ANALYSIS PHASE 
             # Process URLs until all levels are complete or cancelled
             # Use discovery mode counts to make the decision
             if not self.cancel_requested and actual_pending_count > 0:
@@ -640,10 +666,10 @@ class KnowledgeOrchestrator:
                 pending_urls = url_storage.get_pending_urls(depth=level)
                 pending_urls_by_level[level] = len(pending_urls)
                 total_pending_urls += len(pending_urls)
-              # Get overall resource statistics
+            # Get overall resource statistics
             total_resources = len(resources_df)
-            # Use origin_url instead of url for compatibility with universal schema
-            resources_with_url = resources_df['origin_url'].notna().sum() if 'origin_url' in resources_df.columns else resources_df['url'].notna().sum()
+            # Use only origin_url field (universal schema)
+            resources_with_url = resources_df['origin_url'].notna().sum()
             analyzed_resources = resources_df['analysis_completed'].fillna(False).sum()
             unanalyzed_resources = resources_with_url - analyzed_resources
             
@@ -785,8 +811,8 @@ class KnowledgeOrchestrator:
                 
                 # Load resources with URLs for discovery
                 resources_df = pd.read_csv(resources_csv_path)
-                # Use origin_url instead of url for compatibility with universal schema
-                resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
+                # Use only origin_url field (universal schema)
+                resources_with_url = resources_df[resources_df['origin_url'].notna()]
                 
                 if len(resources_with_url) > 0:
                     logger.info(f"Found {len(resources_with_url)} resources with URLs for discovery")
@@ -872,13 +898,13 @@ class KnowledgeOrchestrator:
                 resources_with_url = resources_df
             else:
                 resources_df = pd.read_csv(resources_csv_path)
-                # Use origin_url instead of url for compatibility with universal schema
-                resources_with_url = resources_df[resources_df['origin_url'].notna() if 'origin_url' in resources_df.columns else resources_df['url'].notna()]
+                # Use only origin_url field (universal schema)
+                resources_with_url = resources_df[resources_df['origin_url'].notna()]
             
             # Group URLs by origin
             urls_by_origin = {}
             for pending_url_data in pending_urls:
-                url = pending_url_data.get('url')
+                url = pending_url_data.get('origin_url')
                 origin = pending_url_data.get('origin', '')
                 
                 if origin not in urls_by_origin:
@@ -898,9 +924,8 @@ class KnowledgeOrchestrator:
                 # Find the resource this origin URL belongs to
                 resource_for_origin = None
                 for _, row in resources_with_url.iterrows():
-                    # Check origin_url first, then url as fallback
-                    url_field = 'origin_url' if 'origin_url' in row else 'url'
-                    if row[url_field] == origin_url:
+                    # Use only origin_url field (universal schema)
+                    if row['origin_url'] == origin_url:
                         resource_for_origin = row.to_dict()
                         break
                 
@@ -921,7 +946,6 @@ class KnowledgeOrchestrator:
                     # During discovery phase, just use origin URL without generating a title
                     resource_for_origin = {
                         'origin_url': origin_url,  # Use origin_url as the primary URL field
-                        'url': origin_url,        # Keep url for backward compatibility
                         'title': resource_id_from_map or ""  # Use existing resource ID if available
                     }
                     logger.info(f"No resource found for origin URL: {origin_url}. Using existing resource ID: {resource_id_from_map or 'none'}")
@@ -950,7 +974,7 @@ class KnowledgeOrchestrator:
                 resource_for_origin = url_info['resource']
                 origin_url = url_info['origin_url']
                 
-                url_to_process = pending_url_data.get('url')
+                url_to_process = pending_url_data.get('origin_url')
                 url_depth = pending_url_data.get('depth', level)
                 origin = pending_url_data.get('origin', '')
                 attempt_count = pending_url_data.get('attempt_count', 0)
@@ -1142,11 +1166,12 @@ class KnowledgeOrchestrator:
                     # Check if resources.csv exists before trying discovery
                     resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
                     if not os.path.exists(resources_csv_path):
-                        logger.error(f"Resources file not found: {resources_csv_path}")
-                        logger.error("Cannot discover URLs without resources. Please add resources first.")
+                        logger.warning(f"Resources file not found: {resources_csv_path}")
+                        logger.info("Will skip URL discovery and proceed to content processing to create initial resources")
                         result["discovery_phase"] = {
-                            "status": "error",
-                            "message": "No resources.csv file found. Please add resources first."
+                            "status": "skipped",
+                            "reason": "no_resources_file",
+                            "message": "No resources.csv file found. Will create during content processing."
                         }
                     else:
                         # Run discovery phase using URL Discovery Manager with direct method

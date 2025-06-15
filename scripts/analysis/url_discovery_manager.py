@@ -110,8 +110,8 @@ class URLDiscoveryManager:
             resource_ids = {}
             
             for _, row in resources_df.iterrows():
-                # Use origin_url field for universal schema compatibility
-                url = row.get('origin_url', row.get('url', ''))
+                # Use only origin_url field (universal schema)
+                url = row.get('origin_url', '')
                 resource_id = row.get('title', row.get('id', ''))  # Use title as resource_id
                 if url and not pd.isna(url):
                     urls_to_discover.append(url)
@@ -178,7 +178,7 @@ class URLDiscoveryManager:
             resource_ids = {}
             
             for url_data in urls_to_process:
-                url = url_data.get('url')
+                url = url_data.get('origin_url')
                 resource_id = url_data.get('resource_id', '')
                 if url:
                     urls_list.append(url)
@@ -300,7 +300,7 @@ class URLDiscoveryManager:
             domain_counts = {}
             
             for url_data in all_urls:
-                url = url_data.get('url', '')
+                url = url_data.get('origin_url', '')
                 if url:
                     try:
                         from urllib.parse import urlparse
@@ -345,7 +345,7 @@ class URLDiscoveryManager:
             # Mark them as pending (implementation depends on storage structure)
             reset_count = 0
             for url_data in urls_at_level:
-                url = url_data.get('url')
+                url = url_data.get('origin_url')
                 if url:
                     # This would need to be implemented in URL storage
                     # self.url_storage.mark_as_pending(url, level)

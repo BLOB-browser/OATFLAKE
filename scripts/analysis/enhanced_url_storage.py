@@ -238,7 +238,7 @@ class EnhancedURLStorageManager:
             # Find main URL (depth 0)
             main_urls = [url for url in resource_urls if int(url.get('depth', 0)) == 0]
             if main_urls:
-                tree["main_url"] = main_urls[0].get('url', '')
+                tree["main_url"] = main_urls[0].get('origin_url', '')
                 tree["main_url_id"] = main_urls[0].get('url_id', '')
             
             # Build tree structure
@@ -247,7 +247,7 @@ class EnhancedURLStorageManager:
                 for child in children:
                     child_id = child.get('url_id')
                     parent_node["children"][child_id] = {
-                        "url": child.get('url'),
+                        "url": child.get('origin_url'),
                         "url_id": child_id,
                         "depth": int(child.get('depth', 0)),
                         "children": {}
@@ -273,7 +273,7 @@ class EnhancedURLStorageManager:
             def print_tree_level(children, level=1):
                 for url_id, data in children.items():
                     indent = "  " * level
-                    url = data.get('url', '')[:60]
+                    url = data.get('origin_url', '')[:60]
                     depth = data.get('depth', 0)
                     print(f"{indent}├─ [{depth}] {url}... (ID: {url_id[:8]})")
                     if data.get('children'):
@@ -322,7 +322,7 @@ class EnhancedURLStorageManager:
                     for row in reader:
                         if (row.get('resource_id') == resource_id and 
                             int(row.get('depth', 0)) <= 1):
-                            return row.get('main_resource_url', '') or row.get('url', '')
+                            return row.get('main_resource_url', '')
             
             return ""
             

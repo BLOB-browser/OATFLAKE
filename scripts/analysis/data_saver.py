@@ -149,13 +149,10 @@ class DataSaver:
                         if 'file_path' not in item_copy:
                             item_copy['file_path'] = None
                     
-                    # 8. Handle origin_url/url field compatibility                if 'origin_url' not in item_copy and 'url' in item_copy:
-                        item_copy['origin_url'] = item_copy['url']
-                    elif 'url' not in item_copy and 'origin_url' in item_copy:
-                        item_copy['url'] = item_copy['origin_url']
-                    elif 'origin_url' not in item_copy:
-                        # Ensure origin_url always exists for universal schema compliance
-                        item_copy['origin_url'] = item_copy.get('url', '')
+                    # 8. Ensure origin_url field exists (universal schema)
+                    if 'origin_url' not in item_copy:
+                        # For universal schema compliance, origin_url is required
+                        item_copy['origin_url'] = ''
                     
                     # 9. Convert all list fields to JSON strings for CSV storage
                     # Also ensure proper formatting and non-empty values

@@ -217,7 +217,7 @@ class URLLevelProcessor:
         if has_resource_ids:
             # Group URLs by resource ID (simpler approach)
             for pending_url_data in pending_urls:
-                url = pending_url_data.get('url')
+                url = pending_url_data.get('origin_url')
                 resource_id = pending_url_data.get('resource_id', '')
                 origin = pending_url_data.get('origin', '')
                 
@@ -233,7 +233,7 @@ class URLLevelProcessor:
         else:
             # Group by origin
             for pending_url_data in pending_urls:
-                url = pending_url_data.get('url')
+                url = pending_url_data.get('origin_url')
                 origin = pending_url_data.get('origin', '')
                 
                 if origin not in urls_by_group:
@@ -257,19 +257,20 @@ class URLLevelProcessor:
         Returns:
             Resource dictionary or None
         """
-        # Check for origin_url field first (new schema), then url field (legacy schema)
-        if 'origin_url' in resources_df.columns:
-            resources_with_url = resources_df[resources_df['origin_url'].notna()]
-        else:
-            resources_with_url = resources_df[resources_df['url'].notna()]
+        # Use universal schema only - require origin_url field
+        if 'origin_url' not in resources_df.columns:
+            logger.error("Resources DataFrame missing 'origin_url' column - universal schema required")
+            return None
+            
+        resources_with_url = resources_df[resources_df['origin_url'].notna()]
           # First try to find resource by title match (for resource IDs)
         for _, row in resources_with_url.iterrows():
             title = row.get('title', '').strip()
             if title == group_key:
                 resource = row.to_dict()
-                # Make sure the resource has origin_url field (new schema format)
-                if 'origin_url' not in resource and 'url' in resource:
-                    resource['origin_url'] = resource['url']
+                # Ensure the resource has origin_url field (universal schema)
+                if 'origin_url' not in resource:
+                    resource['origin_url'] = ""
                 logger.info(f"Found resource for ID: {group_key}")
                 return resource
                 
@@ -289,7 +290,7 @@ class URLLevelProcessor:
         Returns:
             Status string: "success", "error", or "skipped"
         """
-        url_to_process = url_data.get('url')
+        url_to_process = url_data.get('origin_url')
         # Use 'origin' field as origin_url (consistent with universal schema)
         origin_url = url_data.get('origin', '')
         
@@ -304,8 +305,11 @@ class URLLevelProcessor:
         logger.info(f"Processing URL: {url_to_process}")
         try:
             # Ensure resource has origin_url field (universal schema)
-            if resource and 'origin_url' not in resource and 'url' in resource:
-                resource['origin_url'] = resource['url']
+            if resource and 'origin_url' not in resource:
+                logger.error(f"Resource missing origin_url field - universal schema required: {resource}")
+                # Skip processing this resource as it doesn't follow universal schema
+                self.url_storage.remove_pending_url(url_to_process)
+                return "skipped"
             
             url_result = processor.process_specific_url(
                 url=url_to_process,

@@ -62,7 +62,7 @@ async def discover_all_levels(max_depth: int = None, force_discovery: bool = Tru
             logger.error(f"Resources file not found: {resources_csv_path}")
             return {"status": "error", "message": f"Resources file not found: {resources_csv_path}"}
         resources_df = pd.read_csv(resources_csv_path)
-        resources_with_url = resources_df[resources_df['url'].notna()]
+        resources_with_url = resources_df[resources_df['origin_url'].notna()]
         
         results = {
             "status": "success",
@@ -73,7 +73,7 @@ async def discover_all_levels(max_depth: int = None, force_discovery: bool = Tru
         # For each resource, discover all levels before moving to the next
         for idx, row in resources_with_url.iterrows():
             resource = row.to_dict()
-            resource_url = resource.get('url', '')
+            resource_url = resource.get('origin_url', '')
             resource_id = resource.get('id', '') or str(idx)
             if not resource_url:
                 continue

@@ -202,7 +202,7 @@ class LevelBasedURLProcessor:
             
             # Extract resource data
             resource_idx, resource = row
-            resource_url = resource.get('url')
+            resource_url = resource.get('origin_url')
             resource_id = resource.get('id')
             
             if not resource_url:
@@ -361,7 +361,7 @@ class LevelBasedURLProcessor:
             logger.info(f"Processing {len(all_pending_urls)} pending URLs across all levels")
             
             # Create a set of URLs we've already processed to avoid duplicates
-            processed_urls = set(url['url'] for url in self.url_storage.get_processed_urls())
+            processed_urls = set(url['origin_url'] for url in self.url_storage.get_processed_urls())
             current_session_processed = set()
             
             # Process all pending URLs
@@ -397,7 +397,7 @@ class LevelBasedURLProcessor:
                 logger.info(f"Processing URL {url_idx+1}/{len(all_pending_urls)}: {url} (level {depth})")
                 
                 # Find the resource this URL belongs to
-                resource_row = resources_df[resources_df['url'] == origin]
+                resource_row = resources_df[resources_df['origin_url'] == origin]
                 resource_data = {}
                 
                 if not resource_row.empty:

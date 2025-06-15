@@ -63,10 +63,9 @@ class MarkdownProcessingStep:
                 logger.info("No markdown files found to process")
                 return {"status": "skipped", "data_extracted": {}}
             
-            # Process markdown files (set analyze_resources=False to do it separately in Step 3)
+            # Process markdown files 
             markdown_result = await markdown_processor.process_markdown_files(
-                skip_scraping=skip_scraping,
-                analyze_resources=False  # We'll analyze in a separate step for better control
+                skip_scraping=skip_scraping
             )
             
             logger.info("=================================================")

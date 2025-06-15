@@ -132,7 +132,7 @@ class PDFProcessor:
         print(f"📄 Processing {min(max_pdfs, len(pdf_queue))} PDFs from queue of {len(pdf_queue)}")
         
         for i, pdf_data in enumerate(pdf_queue[:max_pdfs]):
-            url = pdf_data.get('url', '')
+            url = pdf_data.get('origin_url', '')
             print(f"\n[{i+1}/{min(max_pdfs, len(pdf_queue))}] Processing: {url[:60]}...")
             
             try:
@@ -183,7 +183,7 @@ class PDFProcessor:
             return {"count": 0, "pdfs": []}
         
         for i, pdf_data in enumerate(pdf_queue[:10]):  # Show first 10
-            url = pdf_data.get('url', '')
+            url = pdf_data.get('origin_url', '')
             origin = pdf_data.get('origin', '')
             depth = pdf_data.get('depth', 'unknown')
             
@@ -205,7 +205,7 @@ class PDFProcessor:
         remaining_pdfs = []
         
         for pdf_data in pdf_queue:
-            url = pdf_data.get('url', '')
+            url = pdf_data.get('origin_url', '')
             # Generate expected filename
             filename = url.split('/')[-1]
             if not filename.endswith('.pdf'):

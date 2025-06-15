@@ -276,7 +276,7 @@ class URLDiscoveryEngine:
                 # Check if the main URL already has an ID
                 existing_urls = self.enhanced_url_storage.get_enhanced_pending_urls(resource_id=resource_id)
                 for url_data in existing_urls:
-                    if url_data.get('url') == url and int(url_data.get('depth', 0)) == 0:
+                    if url_data.get('origin_url') == url and int(url_data.get('depth', 0)) == 0:
                         main_url_id = url_data.get('url_id')
                         url_id_mapping[url] = main_url_id
                         break
@@ -706,7 +706,7 @@ class URLDiscoveryEngine:
                 # Add these to our discovery results since they're already known good URLs
                 for pending_url_data in pending_domain_urls[:10]:  # Take up to 10 pending URLs
                     try:
-                        pending_url = pending_url_data.get('url')
+                        pending_url = pending_url_data.get('origin_url')
                         depth = pending_url_data.get('depth', 1)
                         if pending_url and depth <= max_depth:
                             fallback_result["additional_urls"].append(pending_url)
@@ -756,7 +756,7 @@ class URLDiscoveryEngine:
             with open(resources_file, 'r', encoding='utf-8') as file:
                 reader = csv.DictReader(file)
                 for row in reader:
-                    url = row.get('url', '').strip()
+                    url = row.get('origin_url', '').strip()
                     if url and domain in url:
                         alternative_urls.append(url)
             
@@ -798,7 +798,7 @@ class URLDiscoveryEngine:
             # Filter by domain
             domain_urls = []
             for url_data in all_pending:
-                url = url_data.get('url', '')
+                url = url_data.get('origin_url', '')
                 if domain in url:
                     domain_urls.append(url_data)
             

@@ -78,7 +78,7 @@ class MarkdownScraper:
                 # If resources were found, log details for debugging
                 if num_resources > 0:
                     for i, resource in enumerate(extracted_data.get("resources", [])):
-                        logger.info(f"  Resource {i+1}: '{resource.get('title')}' - {resource.get('url')}")
+                        logger.info(f"  Resource {i+1}: '{resource.get('title')}' - {resource.get('origin_url')}")
                 
                 # Add to global collections - only resources now
                 self.resources.extend(extracted_data.get("resources", []))
@@ -160,7 +160,7 @@ class MarkdownScraper:
                         
                         resource = {
                             "title": title,
-                            "url": url,
+                            "origin_url": url,
                             "description": f"Website for {title}",
                             "type": "website",
                             "category": "imported",
@@ -207,7 +207,7 @@ class MarkdownScraper:
                     
                     resource = {
                         "title": resource_id,
-                        "url": url,
+                        "origin_url": url,
                         "description": line,
                         "type": "website",
                         "category": "imported",
@@ -256,7 +256,7 @@ class MarkdownScraper:
                 # Create resource entry
                 resource = {
                     "title": page_title,
-                    "url": url,
+                    "origin_url": url,
                     "description": description,
                     "type": "website",
                     "category": "scraped",
@@ -360,10 +360,10 @@ class MarkdownScraper:
                     logger.info(f"Added 'processed' column to {filename}")
                 
                 # Merge without duplicates
-                if "url" in df.columns:
+                if "origin_url" in df.columns:
                     if "processed" not in df.columns:
                         df["processed"] = False
-                    merged_df = pd.concat([existing_df, df]).drop_duplicates(subset=["url"])
+                    merged_df = pd.concat([existing_df, df]).drop_duplicates(subset=["origin_url"])
                 else:
                     if "processed" not in df.columns:
                         df["processed"] = False

@@ -83,7 +83,8 @@ class ChangeDetector:
         
         resources_path = self.data_folder / "resources.csv"
         if not resources_path.exists():
-            return False, 0
+            logger.info("No resources.csv file found - will need content processing to create initial resources")
+            return True, 0  # Return True to trigger content processing, but 0 count since file doesn't exist
             
         try:
             df = pd.read_csv(resources_path)
