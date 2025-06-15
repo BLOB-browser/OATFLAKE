@@ -361,7 +361,7 @@ class KnowledgeOrchestrator:
                     level_result = await self.process_urls_at_level(
                         level=level_to_process,
                         batch_size=batch_size,
-                        max_urls_per_phase=10  # PHASE LIMITATION: Only 10 URLs per phase
+                        max_urls_per_phase=50  # PHASE LIMITATION: Only 50 URLs per phase
                     )
                     
                     # Store results for this level
