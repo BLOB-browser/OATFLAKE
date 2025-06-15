@@ -617,7 +617,17 @@ def _training_loop():
                         
                         class MockAppState:
                             def __init__(self):
-                                pass
+                                # Initialize as OllamaClient for proper functionality
+                                from scripts.llm.ollama_client import OllamaClient
+                                self.ollama_client = OllamaClient()
+                            
+                            async def get_relevant_context(self, query: str, k: int = 3) -> str:
+                                """Delegate to the actual OllamaClient for context retrieval"""
+                                return await self.ollama_client.get_relevant_context(query, k)
+                            
+                            def __getattr__(self, name):
+                                """Delegate any other method calls to the OllamaClient"""
+                                return getattr(self.ollama_client, name)
                         
                         mock_request = MockRequest()
                         

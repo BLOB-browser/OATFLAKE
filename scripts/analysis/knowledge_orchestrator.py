@@ -449,21 +449,42 @@ class KnowledgeOrchestrator:
                 url_analysis_successful = result.get("url_analysis", {}).get("status") == "success"
                 url_analysis_processed_urls = result.get("url_analysis", {}).get("success_count", 0) > 0
                 
+                # CRITICAL CHECK: Always ensure vector stores exist before goal/question generation
+                # Check if vector stores exist and are functional
+                from pathlib import Path
+                vector_stores_path = Path(self.data_folder) / "vector_stores" / "default"
+                reference_store_exists = (vector_stores_path / "reference_store" / "index.faiss").exists()
+                content_store_exists = (vector_stores_path / "content_store" / "index.faiss").exists()
+                
                 # Check if there's existing content to vectorize
                 from scripts.storage.content_storage_service import ContentStorageService
                 content_storage = ContentStorageService(self.data_folder)
                 content_paths = list(content_storage.temp_storage_path.glob("*.jsonl"))
                 has_existing_content = len(content_paths) > 0
                 
+                # Also check for CSV files that can be used for vector generation
+                materials_csv_exists = os.path.exists(os.path.join(self.data_folder, 'materials.csv'))
+                methods_csv_exists = os.path.exists(os.path.join(self.data_folder, 'methods.csv'))
+                resources_csv_exists = os.path.exists(os.path.join(self.data_folder, 'resources.csv'))
+                has_csv_content = materials_csv_exists or methods_csv_exists or resources_csv_exists
+                
+                # Consider any content source as "existing content"
+                has_any_content = has_existing_content or has_csv_content
+                
                 if url_analysis_successful and url_analysis_processed_urls:
                     should_generate_vectors = True
                     vector_generation_reason = "new_content_from_url_analysis"
-                elif has_existing_content and force_update:
+                elif has_any_content and force_update:
                     should_generate_vectors = True  
                     vector_generation_reason = "existing_content_with_force_update"
-                elif has_existing_content and process_all_steps:
+                elif has_any_content and process_all_steps:
                     should_generate_vectors = True
                     vector_generation_reason = "existing_content_with_process_all_steps"
+                elif has_any_content and (not reference_store_exists or not content_store_exists):
+                    should_generate_vectors = True
+                    vector_generation_reason = "vector_stores_missing_but_content_exists"
+                    logger.info(f"🔧 Vector stores missing (reference: {reference_store_exists}, content: {content_store_exists}) but content exists - rebuilding for goal/question generation")
+                    logger.info(f"🔧 Content sources found: jsonl files: {len(content_paths)}, CSV files: materials={materials_csv_exists}, methods={methods_csv_exists}, resources={resources_csv_exists}")
                 else:
                     vector_generation_reason = "no_new_content_to_vectorize"
                     
@@ -547,9 +568,23 @@ class KnowledgeOrchestrator:
                 from scripts.analysis.goal_extractor import GoalExtractor
                 goal_extractor = GoalExtractor(self.data_folder)
                 
+                # Properly extract the OllamaClient from request_app_state
+                # If request_app_state has an ollama_client attribute, use it
+                # Otherwise, pass request_app_state itself (which should have get_relevant_context method)
+                client_to_use = None
+                if hasattr(request_app_state, 'ollama_client'):
+                    client_to_use = request_app_state.ollama_client
+                elif hasattr(request_app_state, 'get_relevant_context'):
+                    client_to_use = request_app_state
+                else:
+                    # Fall back to creating a new client
+                    logger.warning("request_app_state does not have expected client attributes, creating new OllamaClient")
+                    from scripts.llm.ollama_client import OllamaClient
+                    client_to_use = OllamaClient()
+                
                 # Extract goals with the correct parameter name and PHASE LIMITATION
                 goal_extraction_result = await goal_extractor.extract_goals(
-                    ollama_client=request_app_state,
+                    ollama_client=client_to_use,
                     max_goals=5  # PHASE LIMITATION: Only 5 goals per phase
                 )
                 
@@ -654,7 +689,6 @@ class KnowledgeOrchestrator:
         """
         try:
             import pandas as pd
-            import os
             
             # Get resources CSV path
             resources_csv_path = os.path.join(self.data_folder, 'resources.csv')
@@ -767,7 +801,6 @@ class KnowledgeOrchestrator:
         from scripts.analysis.url_storage import URLStorageManager
         from scripts.analysis.url_discovery_manager import URLDiscoveryManager
         import pandas as pd
-        import os
         import csv
         
         single_processor = SingleResourceProcessorUniversal(self.data_folder)

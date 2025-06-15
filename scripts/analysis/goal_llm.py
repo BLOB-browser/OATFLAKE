@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Dedicated LLM interface for goal extraction.
-This implementation is focused on reliable extraction of learning goals and objectives
-from educational content, using a JSON structure for consistency.
+Dedicated LLM interface for goal extraction with flexible provider support.
+This implementation supports both Ollama and OpenRouter providers,
+using configuration from goal-model-settings.json.
 """
 
 import logging
@@ -13,28 +13,102 @@ import re
 import requests
 import time
 from typing import Dict, List, Any, Optional, Union
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class GoalLLM:
     """
     A dedicated LLM interface for extracting learning goals and objectives.
-    This ensures consistent extraction and format, separate from
-    the chat-focused OllamaClient implementation.
+    Supports flexible providers (Ollama, OpenRouter) based on configuration.
     """
     
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "mistral:7b-instruct-v0.2-q4_0"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = None):
         self.base_url = base_url
-        self.model = model
+        self.settings = self._load_model_settings()
+        self.provider = self.settings.get("provider", "ollama").lower()
+        self.model = model or self.settings.get("model_name", "mistral:7b-instruct-v0.2-q4_0")
+        self.system_prompt = self.settings.get("system_prompt", self._get_default_system_prompt())
         
         # Get adaptive model configuration from the utility
         from scripts.llm.processor_config_utils import get_adaptive_model_config
         self.model_config = get_adaptive_model_config()
         
-        logger.info(f"Initialized GoalLLM with model {model} ({self.model_config['threads']} threads, {self.model_config['num_ctx']} context)")
+        # Initialize provider-specific settings
+        if self.provider == "openrouter":
+            self.openrouter_model = self.settings.get("openrouter_model", "meta-llama/llama-3.3-8b-instruct:free")
+            self._setup_openrouter()
+        
+        logger.info(f"Initialized GoalLLM with {self.provider} provider, model {self.model}")
+    
+    def _load_model_settings(self):
+        """Load model settings from goal-model-settings.json"""
+        try:
+            settings_path = Path(__file__).parent.parent / "settings" / "goal-model-settings.json"
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                logger.info(f"Loaded goal model settings: {settings.get('provider')} - {settings.get('model_name')}")
+                return settings
+            else:
+                logger.warning("goal-model-settings.json not found, using default Ollama settings")
+                return self._get_default_settings()
+        except Exception as e:
+            logger.error(f"Error loading goal model settings: {e}")
+            return self._get_default_settings()
+    
+    def _get_default_settings(self):
+        """Default settings for goal extraction"""
+        return {
+            "provider": "ollama",
+            "model_name": "mistral:7b-instruct-v0.2-q4_0",
+            "system_prompt": self._get_default_system_prompt(),
+            "temperature": 0.3,
+            "max_tokens": 2000
+        }
+    
+    def _get_default_system_prompt(self):
+        """Default system prompt for goal extraction"""
+        return """You are a goal extraction assistant that identifies learning objectives and educational goals from content.
+
+CRITICAL REQUIREMENT: Your response MUST be a JSON array that starts with [ and ends with ]. Never return a single JSON object. Always return an array, even if there's only one item.
+
+Correct format (ALWAYS use this):
+[
+  {
+    "title": "Goal or objective title",
+    "description": "Detailed description of what this goal aims to achieve",
+    "category": "learning|research|skill|knowledge|practical",
+    "priority": "high|medium|low",
+    "domain": "Subject area or field this goal relates to",
+    "outcome": "Expected learning outcome or result"
+  }
+]
+
+IMPORTANT RULES:
+1. Response MUST start with [ and end with ]
+2. Never return {"title":...} - always return [{"title":...}]
+3. Extract goals, objectives, learning outcomes, and educational targets
+4. Focus on actionable and measurable goals
+5. Category must be one of: learning, research, skill, knowledge, practical
+6. Priority should reflect importance and urgency
+7. If no clear goals found, return []
+8. No explanatory text - only the JSON array
+9. Minimum 1 goal, maximum 5 goals per response"""
+    
+    def _setup_openrouter(self):
+        """Setup OpenRouter specific configuration"""
+        try:
+            # Try to get API key from environment or config
+            import os
+            self.openrouter_api_key = os.getenv('OPENROUTER_API_KEY')
+            if not self.openrouter_api_key:
+                logger.warning("OPENROUTER_API_KEY not found in environment variables")
+        except Exception as e:
+            logger.error(f"Error setting up OpenRouter: {e}")
     
     def generate_structured_response(self, prompt: str, format_type: str = "json", 
-                                    temperature: float = 0.1, max_tokens: int = 1024) -> Any:
+                                    temperature: float = None, max_tokens: int = None) -> Any:
         """
         Generate a structured response from the LLM, with parameters
         optimized for extracting goals.
@@ -42,12 +116,76 @@ class GoalLLM:
         Args:
             prompt: The prompt to send to the model
             format_type: Type of formatting to expect ("json", "list", "text")
-            temperature: Temperature setting (lower for more deterministic output)
-            max_tokens: Maximum tokens to generate
+            temperature: Temperature setting (uses config default if None)
+            max_tokens: Maximum tokens to generate (uses config default if None)
             
         Returns:
             Parsed structured response (JSON object, list, or text)
         """
+        # Use config defaults if not specified
+        if temperature is None:
+            temperature = self.settings.get("temperature", 0.3)
+        if max_tokens is None:
+            max_tokens = self.settings.get("max_tokens", 2000)
+        
+        if self.provider == "openrouter":
+            return self._generate_openrouter_response(prompt, format_type, temperature, max_tokens)
+        else:
+            return self._generate_ollama_response(prompt, format_type, temperature, max_tokens)
+    
+    def _generate_openrouter_response(self, prompt: str, format_type: str, temperature: float, max_tokens: int) -> Any:
+        """Generate response using OpenRouter API"""
+        try:
+            # Prepare the messages with system prompt
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+            
+            logger.info(f"Generating structured response via OpenRouter")
+            
+            start_time = time.time()
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "http://localhost:3000",
+                    "X-Title": "Goal Extraction"
+                },
+                json={
+                    "model": self.openrouter_model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "top_p": self.settings.get("top_p", 0.9),
+                    "stream": False
+                },
+                timeout=60
+            )
+            
+            generation_time = time.time() - start_time
+            
+            if response.status_code != 200:
+                logger.error(f"OpenRouter API error {response.status_code}: {response.text}")
+                return None
+            
+            response_data = response.json()
+            if "choices" not in response_data or not response_data["choices"]:
+                logger.error("No choices in OpenRouter response")
+                return None
+            
+            response_text = response_data["choices"][0]["message"]["content"].strip()
+            logger.info(f"Generated {len(response_text)} chars in {generation_time:.2f}s via OpenRouter")
+            
+            return self._parse_response(response_text, format_type)
+            
+        except Exception as e:
+            logger.error(f"Error generating OpenRouter response: {e}")
+            return None
+    
+    def _generate_ollama_response(self, prompt: str, format_type: str, temperature: float, max_tokens: int) -> Any:
+        """Generate response using Ollama API"""
         # Verify model exists
         try:
             model_check_response = requests.get(f"{self.base_url}/api/tags")
@@ -68,29 +206,30 @@ class GoalLLM:
         except Exception as e:
             logger.warning(f"Error checking model availability: {e}")
         
-        # Add formatting guidance for Mistral model
+        # Combine system prompt with user prompt for Ollama
         if format_type == "json":
-            # Add Mistral-specific system prompt for better JSON formatting
-            prompt = f"""<s>[INST] You are an expert JSON formatter with perfect accuracy.
-When asked to generate JSON, you ONLY output valid, parseable JSON without any explanation or markdown formatting.
-            
-{prompt.strip()}
+            # Add formatting guidance for JSON
+            full_prompt = f"""<s>[INST] {self.system_prompt}
 
-Output ONLY the JSON with no additional text. [/INST]</s>"""
+User request: {prompt.strip()}
+
+Output ONLY the JSON array with no additional text. [/INST]</s>"""
         else:
-            # For non-JSON responses, still use the Mistral instruction format
-            prompt = f"""<s>[INST] {prompt.strip()} [/INST]</s>"""
+            # For non-JSON responses
+            full_prompt = f"""<s>[INST] {self.system_prompt}
+
+{prompt.strip()} [/INST]</s>"""
         
         # Make API call to generate response
         try:
-            logger.info(f"Generating structured response for goal extraction")
+            logger.info(f"Generating structured response for goal extraction via Ollama")
             
             start_time = time.time()
             response = requests.post(
                 f"{self.base_url}/api/generate",
                 json={
                     "model": self.model,
-                    "prompt": prompt.strip(),
+                    "prompt": full_prompt,
                     "stream": False,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
@@ -120,41 +259,101 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             
             # Extract the raw response text
             raw_response = result['response']
+            logger.info(f"Generated {len(raw_response)} chars via Ollama")
             
-            # Process based on expected format
-            if format_type == "json":
-                try:
-                    return self._parse_json_response(raw_response)
-                except Exception as e:
-                    logger.error(f"Error parsing JSON response: {e}")
-                    return None
-            else:
-                return raw_response
+            return self._parse_response(raw_response, format_type)
                 
         except Exception as e:
-            logger.error(f"Error generating structured response: {e}")
+            logger.error(f"Error generating Ollama response: {e}")
             return None
     
-    async def chat_completion_async(self, messages: List[Dict[str, str]], max_tokens: int = 1024, 
-                             temperature: float = 0.2, model: str = None) -> Dict[str, Any]:
+    def _parse_response(self, raw_response: str, format_type: str) -> Any:
+        """Parse the raw response based on format type"""
+        if format_type == "json":
+            try:
+                return self._parse_json_response(raw_response)
+            except Exception as e:
+                logger.error(f"Error parsing JSON response: {e}")
+                return None
+        else:
+            return raw_response
+    
+    async def chat_completion_async(self, messages: List[Dict[str, str]], max_tokens: int = None, 
+                             temperature: float = None, model: str = None) -> Dict[str, Any]:
         """
         Generate a chat completion asynchronously.
         This method emulates the interface expected by the goal_extractor.
         
         Args:
             messages: List of message dictionaries with 'role' and 'content'
-            max_tokens: Maximum tokens to generate
-            temperature: Temperature setting (lower for more deterministic output)
+            max_tokens: Maximum tokens to generate (uses config default if None)
+            temperature: Temperature setting (uses config default if None)
             model: Optional model override
             
         Returns:
             Dict with 'message' containing the response
         """
-        import httpx
-        import asyncio
-        
+        # Use config defaults if not specified
+        if temperature is None:
+            temperature = self.settings.get("temperature", 0.3)
+        if max_tokens is None:
+            max_tokens = self.settings.get("max_tokens", 2000)
+            
         model_name = model or self.model
-        logger.info(f"Generating chat completion with model {model_name}")
+        logger.info(f"Generating chat completion with {self.provider} provider, model {model_name}")
+        
+        if self.provider == "openrouter":
+            return await self._chat_completion_openrouter(messages, max_tokens, temperature)
+        else:
+            return await self._chat_completion_ollama(messages, max_tokens, temperature, model_name)
+    
+    async def _chat_completion_openrouter(self, messages: List[Dict[str, str]], max_tokens: int, temperature: float) -> Dict[str, Any]:
+        """Generate chat completion using OpenRouter API"""
+        import httpx
+        
+        try:
+            # Add system prompt if not already present
+            if not any(msg.get("role") == "system" for msg in messages):
+                messages = [{"role": "system", "content": self.system_prompt}] + messages
+            
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "http://localhost:3000",
+                        "X-Title": "Goal Extraction"
+                    },
+                    json={
+                        "model": self.openrouter_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "top_p": self.settings.get("top_p", 0.9),
+                        "stream": False
+                    }
+                )
+                
+                if response.status_code != 200:
+                    logger.error(f"OpenRouter API error {response.status_code}: {response.text}")
+                    return {"message": {"content": f"Error: API returned {response.status_code}"}}
+                
+                response_data = response.json()
+                if "choices" not in response_data or not response_data["choices"]:
+                    logger.error("No choices in OpenRouter response")
+                    return {"message": {"content": "Error: No response generated"}}
+                
+                content = response_data["choices"][0]["message"]["content"]
+                return {"message": {"content": content}}
+                
+        except Exception as e:
+            logger.error(f"Error in OpenRouter chat completion: {e}")
+            return {"message": {"content": f"Error: {str(e)}"}}
+    
+    async def _chat_completion_ollama(self, messages: List[Dict[str, str]], max_tokens: int, temperature: float, model_name: str) -> Dict[str, Any]:
+        """Generate chat completion using Ollama API"""
+        import httpx
         
         # Extract prompt from messages
         prompt = ""
@@ -167,8 +366,10 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
             logger.error("No user message found in messages")
             return {"message": {"content": "Error: No prompt provided"}}
         
-        # Process using an appropriate instruction format for Mistral
-        instruction_prompt = f"""<s>[INST] {prompt.strip()} [/INST]</s>"""
+        # Combine system prompt with user prompt for Ollama
+        instruction_prompt = f"""<s>[INST] {self.system_prompt}
+
+{prompt.strip()} [/INST]</s>"""
         
         try:
             async with httpx.AsyncClient(timeout=600.0) as client:
@@ -192,7 +393,7 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 )
                 
                 if response.status_code != 200:
-                    logger.error(f"Error from LLM API: {response.status_code}")
+                    logger.error(f"Error from Ollama API: {response.status_code}")
                     return {"message": {"content": f"Error: API returned {response.status_code}"}}
                 
                 result = response.json()
@@ -204,7 +405,7 @@ Output ONLY the JSON with no additional text. [/INST]</s>"""
                 return {"message": {"content": result['response']}}
                 
         except Exception as e:
-            logger.error(f"Error in chat_completion_async: {e}")
+            logger.error(f"Error in Ollama chat completion: {e}")
             return {"message": {"content": f"Error: {str(e)}"}}
     
     def extract_goals(self, content: str, store_type: str = "content") -> List[Dict[str, Any]]:

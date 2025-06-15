@@ -7,6 +7,7 @@ import asyncio
 from scripts.services.settings_manager import SettingsManager
 from scripts.models.settings import ModelSettings
 from langchain_community.vectorstores import FAISS  # Updated import
+from langchain.schema import Document
 from .ollama_embeddings import OllamaEmbeddings
 import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -87,13 +88,63 @@ class OllamaClient:
             reference_path = vector_path / "reference_store"
             if reference_path.exists() and (reference_path / "index.faiss").exists():
                 try:
-                    self.reference_store = FAISS.load_local(
-                        str(reference_path),
-                        self.embeddings,
-                        allow_dangerous_deserialization=True
-                    )
-                    ref_count = len(self.reference_store.docstore._dict) if hasattr(self.reference_store, 'docstore') else 0
-                    logger.info(f"Successfully loaded reference store with {ref_count} documents")
+                    # Check if this is a new format store (documents.json) or old format (docstore)
+                    documents_json_path = reference_path / "documents.json"
+                    
+                    if documents_json_path.exists():
+                        # New format: Load from documents.json and index.faiss directly
+                        logger.info("Loading reference store using new format (documents.json)")
+                        
+                        # Load documents from JSON
+                        with open(documents_json_path, 'r', encoding='utf-8') as f:
+                            doc_data = json.load(f)
+                        
+                        # Convert to LangChain Document objects
+                        documents = []
+                        for item in doc_data:
+                            documents.append(Document(
+                                page_content=item["content"],
+                                metadata=item["metadata"]
+                            ))
+                        
+                        # Create FAISS store from embeddings if we have them, otherwise from documents
+                        try:
+                            # Try to load the existing index directly
+                            import faiss
+                            index = faiss.read_index(str(reference_path / "index.faiss"))
+                            
+                            # Create FAISS store using the existing index and documents
+                            self.reference_store = FAISS(
+                                embedding_function=self.embeddings.embed_query,
+                                index=index,
+                                docstore=None,  # We'll create a simple docstore
+                                index_to_docstore_id=None
+                            )
+                            
+                            # Manually set up docstore to match documents
+                            from langchain.docstore.in_memory import InMemoryDocstore
+                            docstore_dict = {str(i): doc for i, doc in enumerate(documents)}
+                            self.reference_store.docstore = InMemoryDocstore(docstore_dict)
+                            self.reference_store.index_to_docstore_id = {i: str(i) for i in range(len(documents))}
+                            
+                            logger.info(f"Successfully loaded reference store with {len(documents)} documents (new format)")
+                            
+                        except Exception as faiss_error:
+                            # Fallback: recreate from documents
+                            logger.warning(f"Could not load existing index ({faiss_error}), recreating from documents")
+                            self.reference_store = FAISS.from_documents(documents, self.embeddings)
+                            logger.info(f"Successfully recreated reference store with {len(documents)} documents")
+                    else:
+                        # Old format: Use LangChain's load_local
+                        logger.info("Loading reference store using old format (docstore)")
+                        self.reference_store = FAISS.load_local(
+                            str(reference_path),
+                            self.embeddings,
+                            allow_dangerous_deserialization=True
+                        )
+                        ref_count = len(self.reference_store.docstore._dict) if hasattr(self.reference_store, 'docstore') else 0
+                        logger.info(f"Successfully loaded reference store with {ref_count} documents (old format)")
+                        
                 except Exception as e:
                     logger.error(f"Error loading reference store: {e}")
             else:
@@ -103,13 +154,63 @@ class OllamaClient:
             content_path = vector_path / "content_store"
             if content_path.exists() and (content_path / "index.faiss").exists():
                 try:
-                    self.content_store = FAISS.load_local(
-                        str(content_path),
-                        self.embeddings,
-                        allow_dangerous_deserialization=True
-                    )
-                    content_count = len(self.content_store.docstore._dict) if hasattr(self.content_store, 'docstore') else 0
-                    logger.info(f"Successfully loaded content store with {content_count} documents")
+                    # Check if this is a new format store (documents.json) or old format (docstore)
+                    documents_json_path = content_path / "documents.json"
+                    
+                    if documents_json_path.exists():
+                        # New format: Load from documents.json and index.faiss directly
+                        logger.info("Loading content store using new format (documents.json)")
+                        
+                        # Load documents from JSON
+                        with open(documents_json_path, 'r', encoding='utf-8') as f:
+                            doc_data = json.load(f)
+                        
+                        # Convert to LangChain Document objects
+                        documents = []
+                        for item in doc_data:
+                            documents.append(Document(
+                                page_content=item["content"],
+                                metadata=item["metadata"]
+                            ))
+                        
+                        # Create FAISS store from embeddings if we have them, otherwise from documents
+                        try:
+                            # Try to load the existing index directly
+                            import faiss
+                            index = faiss.read_index(str(content_path / "index.faiss"))
+                            
+                            # Create FAISS store using the existing index and documents
+                            self.content_store = FAISS(
+                                embedding_function=self.embeddings.embed_query,
+                                index=index,
+                                docstore=None,  # We'll create a simple docstore
+                                index_to_docstore_id=None
+                            )
+                            
+                            # Manually set up docstore to match documents
+                            from langchain.docstore.in_memory import InMemoryDocstore
+                            docstore_dict = {str(i): doc for i, doc in enumerate(documents)}
+                            self.content_store.docstore = InMemoryDocstore(docstore_dict)
+                            self.content_store.index_to_docstore_id = {i: str(i) for i in range(len(documents))}
+                            
+                            logger.info(f"Successfully loaded content store with {len(documents)} documents (new format)")
+                            
+                        except Exception as faiss_error:
+                            # Fallback: recreate from documents
+                            logger.warning(f"Could not load existing index ({faiss_error}), recreating from documents")
+                            self.content_store = FAISS.from_documents(documents, self.embeddings)
+                            logger.info(f"Successfully recreated content store with {len(documents)} documents")
+                    else:
+                        # Old format: Use LangChain's load_local
+                        logger.info("Loading content store using old format (docstore)")
+                        self.content_store = FAISS.load_local(
+                            str(content_path),
+                            self.embeddings,
+                            allow_dangerous_deserialization=True
+                        )
+                        content_count = len(self.content_store.docstore._dict) if hasattr(self.content_store, 'docstore') else 0
+                        logger.info(f"Successfully loaded content store with {content_count} documents (old format)")
+                        
                 except Exception as e:
                     logger.error(f"Error loading content store: {e}")
             else:

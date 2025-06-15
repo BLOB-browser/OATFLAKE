@@ -18,6 +18,59 @@ import faiss
 
 logger = logging.getLogger(__name__)
 
+def check_faiss_corruption(store_path: Path) -> bool:
+    """
+    Check if a FAISS vector store has index/docstore synchronization issues.
+    
+    Args:
+        store_path: Path to the vector store directory
+        
+    Returns:
+        True if corruption is detected, False otherwise
+    """
+    try:
+        index_faiss_file = store_path / "index.faiss"
+        index_pkl_file = store_path / "index.pkl"
+        
+        if not index_faiss_file.exists() or not index_pkl_file.exists():
+            return True  # Missing files indicate corruption
+        
+        # Load FAISS index
+        index = faiss.read_index(str(index_faiss_file))
+        
+        # Load docstore and index mapping
+        with open(index_pkl_file, 'rb') as f:
+            data = pickle.load(f)
+        
+        docstore = data.get("docstore")
+        index_to_docstore_id = data.get("index_to_docstore_id", {})
+        
+        if not docstore or not index_to_docstore_id:
+            logger.warning(f"Missing docstore or index mapping in {store_path}")
+            return True
+        
+        # Check if index references non-existent documents
+        missing_docs = []
+        for i in range(index.ntotal):
+            doc_id = index_to_docstore_id.get(i, str(i))
+            if doc_id not in docstore._dict:
+                missing_docs.append(doc_id)
+        
+        if missing_docs:
+            logger.warning(f"Found {len(missing_docs)} missing documents in docstore: {missing_docs[:10]}...")
+            return True
+        
+        # Check for count mismatches
+        if len(docstore._dict) != index.ntotal:
+            logger.warning(f"Count mismatch: docstore has {len(docstore._dict)} docs, index has {index.ntotal} vectors")
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking corruption in {store_path}: {e}")
+        return True  # Assume corruption if we can't check
+
 def fix_single_faiss_store(store_path: Path) -> Dict[str, Any]:
     """
     Fix a single FAISS vector store by regenerating missing index.pkl file.
@@ -37,14 +90,21 @@ def fix_single_faiss_store(store_path: Path) -> Dict[str, Any]:
         index_pkl_file = store_path / "index.pkl"
         documents_file = store_path / "documents.json"
         
-        # Skip if index.pkl already exists
+        # Check for corruption even if index.pkl exists
+        corruption_detected = False
         if index_pkl_file.exists():
-            logger.info(f"index.pkl already exists in {store_path}, skipping")
-            return {
-                "success": True,
-                "action": "skipped",
-                "reason": "index.pkl already exists"
-            }
+            logger.info(f"index.pkl exists, checking for corruption in {store_path}")
+            corruption_detected = check_faiss_corruption(store_path)
+            
+            if not corruption_detected:
+                logger.info(f"No corruption detected in {store_path}, skipping")
+                return {
+                    "success": True,
+                    "action": "skipped",
+                    "reason": "No corruption detected"
+                }
+            else:
+                logger.warning(f"Corruption detected in {store_path}, will rebuild")
         
         # Check if required files exist
         if not index_faiss_file.exists():
@@ -74,20 +134,32 @@ def fix_single_faiss_store(store_path: Path) -> Dict[str, Any]:
             documents_data = json.load(f)
         logger.info(f"Found {len(documents_data)} documents")
         
-        # Create document objects
+        # Create document objects - handle both old and new document formats
         documents = []
         for doc_data in documents_data:
+            # Handle both formats: new format uses 'content' and old format uses 'page_content'
+            content = doc_data.get('content', doc_data.get('page_content', ''))
+            metadata = doc_data.get('metadata', {})
+            
             doc = Document(
-                page_content=doc_data.get('page_content', ''),
-                metadata=doc_data.get('metadata', {})
+                page_content=content,
+                metadata=metadata
             )
             documents.append(doc)
+        
+        # Verify we have the right number of documents vs vectors
+        if len(documents) != index.ntotal:
+            logger.warning(f"Document count ({len(documents)}) doesn't match vector count ({index.ntotal})")
+            # Adjust to the smaller count to prevent KeyErrors
+            min_count = min(len(documents), index.ntotal)
+            documents = documents[:min_count]
+            logger.info(f"Adjusted document count to {min_count} to match vector index")
         
         # Create docstore
         logger.info(f"Created docstore with {len(documents)} documents")
         docstore = InMemoryDocstore({str(i): doc for i, doc in enumerate(documents)})
         
-        # Create index to docstore mapping
+        # Create index to docstore mapping - ensure it matches the actual index size
         index_to_docstore_id = {i: str(i) for i in range(len(documents))}
         logger.info(f"Created index mapping with {len(index_to_docstore_id)} entries")
         
@@ -102,9 +174,10 @@ def fix_single_faiss_store(store_path: Path) -> Dict[str, Any]:
             pickle.dump(data_to_save, f)
         
         logger.info(f"✅ Successfully fixed vector store: {store_name}")
+        action_type = "corruption_fixed" if corruption_detected else "regenerated"
         return {
             "success": True,
-            "action": "fixed",
+            "action": action_type,
             "documents_count": len(documents),
             "vectors_count": index.ntotal
         }
@@ -156,7 +229,7 @@ def fix_all_faiss_stores(data_folder: str) -> Dict[str, Any]:
             result["store_name"] = store_dir.name
             results.append(result)
             
-            if result["success"] and result["action"] == "fixed":
+            if result["success"] and result["action"] in ["regenerated", "corruption_fixed"]:
                 fixed_count += 1
             elif not result["success"]:
                 failed_count += 1
