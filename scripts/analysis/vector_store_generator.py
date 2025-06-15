@@ -180,8 +180,12 @@ class VectorStoreGenerator:
                             )
                             
                             if rep_docs:
-                                # Create topic stores
-                                topic_results = await vector_store_manager.create_topic_stores(rep_docs)
+                                # Create topic stores using tag-based approach
+                                topic_results = await vector_store_manager.create_topic_stores(
+                                    rep_docs,
+                                    use_clustering=False,  # Use individual tag stores
+                                    min_docs_per_topic=1
+                                )
                                 
                                 # Track rebuilt topic stores
                                 for topic, success in topic_results.items():

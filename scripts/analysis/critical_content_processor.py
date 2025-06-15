@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 
 class CriticalContentProcessor:
     """
-    Processes high priority content such as PDFs and methods files.
+    Processes high priority content such as PDFs.
     This component handles STEP 1 of the knowledge processing workflow.
+    
+    Methods CSV is handled separately by the reference store processing pipeline.
     """
     
     def __init__(self, data_folder: str):
@@ -32,8 +34,10 @@ class CriticalContentProcessor:
                              resource_limit: int = None,
                              check_unanalyzed: bool = True) -> Dict[str, Any]:
         """
-        Process content including critical content like PDFs and methods files.
+        Process content including critical content like PDFs.
         This is the method called by knowledge_orchestrator.
+        
+        Methods CSV processing is handled separately by the reference store pipeline.
         
         Args:
             request_app_state: The FastAPI request.app.state
@@ -49,11 +53,11 @@ class CriticalContentProcessor:
         """
         logger.info("PROCESSING CRITICAL CONTENT (HIGHEST PRIORITY)")
         logger.info("===============================================")
-        logger.info("Critical content (PDFs, methods) is always processed first,")
+        logger.info("Critical content (PDFs) is always processed first,")
         logger.info("regardless of vector store existence or other conditions.")
         
         try:
-            # First process critical content (PDFs and methods)
+            # First process critical content (PDFs)
             critical_result = await self.process_critical_content()
             
             # Process markdown files if not skipped
@@ -90,26 +94,61 @@ class CriticalContentProcessor:
         
     async def process_critical_content(self) -> Dict[str, Any]:
         """
-        Process PDFs and methods files which are considered highest priority content.
+        Check for critical content (PDFs) but defer actual processing to universal rebuild system.
+        This prevents duplication where PDFs are processed both here and in the universal rebuild.
+        Methods CSV is handled separately by the reference store processing.
         
         Returns:
             Dictionary with processing results
         """
-        logger.info("STEP 1: PROCESSING CRITICAL CONTENT (PDFs AND METHODS)")
-        logger.info("=====================================================")
+        logger.info("STEP 1: CHECKING FOR CRITICAL CONTENT (PDFs)")
+        logger.info("=============================================")
+        logger.info("📋 Critical content will be processed via universal rebuild system to avoid duplication")
         
         try:
-            from scripts.data.data_processor import DataProcessor
-            processor = DataProcessor(self.data_folder, "default")
+            # Check for PDF files in materials folder (auto-downloaded PDFs)
+            materials_folder = os.path.join(self.data_folder, 'materials')
+            pdf_files = []
             
-            # Process critical content (PDFs and methods)
-            critical_content_result = await processor.process_critical_content()
+            if os.path.exists(materials_folder):
+                for filename in os.listdir(materials_folder):
+                    if filename.lower().endswith('.pdf'):
+                        pdf_files.append(filename)
             
-            logger.info(f"Critical content processing completed: {critical_content_result}")
-            return critical_content_result
+            # Check for materials.csv (uploaded PDFs)
+            materials_csv_path = os.path.join(self.data_folder, 'materials.csv')
+            materials_csv_exists = os.path.exists(materials_csv_path)
+            
+            # Determine if we have critical content (PDFs only)
+            has_pdfs = len(pdf_files) > 0 or materials_csv_exists
+            
+            if has_pdfs:
+                if len(pdf_files) > 0:
+                    logger.info(f"✅ Found {len(pdf_files)} auto-downloaded PDF(s) in materials folder: {pdf_files[:3]}{'...' if len(pdf_files) > 3 else ''}")
+                if materials_csv_exists:
+                    logger.info(f"✅ Found materials.csv with uploaded PDFs - will be processed by universal rebuild")
+            
+            if not has_pdfs:
+                logger.info("ℹ️  No critical content found (no PDFs in materials folder, no materials.csv)")
+                return {
+                    "status": "skipped",
+                    "reason": "no_critical_content_files",
+                    "materials_processed": 0
+                }
+            
+            # Return successful result indicating critical content was found
+            # Actual processing will be handled by universal rebuild system
+            return {
+                "status": "deferred_to_universal_rebuild",
+                "materials_found": has_pdfs,
+                "pdf_files_count": len(pdf_files),
+                "materials_csv_exists": materials_csv_exists,
+                "materials_processed": 0,  # Will be processed by universal rebuild
+                "message": f"Critical content found ({len(pdf_files)} auto-downloaded PDFs, materials.csv: {materials_csv_exists}) - will be processed by universal rebuild system"
+            }
             
         except Exception as e:
-            logger.error(f"Error processing critical content: {e}", exc_info=True)
+            logger.error(f"Error checking critical content: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e)
@@ -118,7 +157,8 @@ class CriticalContentProcessor:
 # Standalone function for easy import
 async def process_critical_content(data_folder: str) -> Dict[str, Any]:
     """
-    Process PDFs and methods files which are considered highest priority content.
+    Process PDFs which are considered highest priority content.
+    Methods CSV is handled separately by the reference store processing.
     
     Args:
         data_folder: Path to data folder

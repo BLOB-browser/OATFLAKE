@@ -194,7 +194,7 @@ class KnowledgeOrchestrator:
             
             if should_process_content:
                 if critical_content_exists:
-                    logger.info("🔥 CRITICAL CONTENT DETECTED - PROCESSING WITH HIGHEST PRIORITY")
+                    logger.info("🔥 CRITICAL CONTENT DETECTED - WILL BE PROCESSED VIA UNIVERSAL REBUILD SYSTEM")
                 
                 logger.info("==================================================")
                 logger.info("STARTING CONTENT PROCESSING PHASE")
@@ -204,6 +204,7 @@ class KnowledgeOrchestrator:
                 content_processor = CriticalContentProcessor(self.data_folder)
                 
                 # Process content (this will create resources.csv if it doesn't exist)
+                # NOTE: PDFs will be processed later via universal rebuild system to avoid duplication
                 content_result = await content_processor.process_content(
                     request_app_state=request_app_state,
                     skip_markdown_scraping=skip_markdown_scraping,
@@ -485,6 +486,11 @@ class KnowledgeOrchestrator:
                     vector_generation_reason = "vector_stores_missing_but_content_exists"
                     logger.info(f"🔧 Vector stores missing (reference: {reference_store_exists}, content: {content_store_exists}) but content exists - rebuilding for goal/question generation")
                     logger.info(f"🔧 Content sources found: jsonl files: {len(content_paths)}, CSV files: materials={materials_csv_exists}, methods={methods_csv_exists}, resources={resources_csv_exists}")
+                elif critical_content_exists:
+                    # ALWAYS process critical content (PDFs/methods) via universal rebuild system
+                    should_generate_vectors = True
+                    vector_generation_reason = "critical_content_via_universal_rebuild"
+                    logger.info(f"🔥 Critical content detected - will process PDFs/methods via universal rebuild system")
                 else:
                     vector_generation_reason = "no_new_content_to_vectorize"
                     
@@ -515,6 +521,7 @@ class KnowledgeOrchestrator:
                     
                 # STEP 5.2: Generate vectors using universal rebuild system
                 logger.info("🚀 Using UNIVERSAL rebuild system for vector generation")
+                logger.info("📋 This system will process ALL content types including PDFs from materials.csv")
                 
                 # Import the rebuild function directly
                 from scripts.tools.rebuild_faiss_indexes import rebuild_indexes, add_document_types
@@ -522,10 +529,11 @@ class KnowledgeOrchestrator:
                 
                 data_path = Path(self.data_folder)
                 
-                # First, ensure all document types from CSVs are added to reference_store
-                logger.info("📊 Adding document types from CSVs to reference_store...")
+                # First, ensure all document types from CSVs are added to appropriate stores
+                logger.info("📊 Adding document types from CSVs to vector stores...")
+                logger.info("🔄 Materials (PDFs) → content_store, Methods/Others → reference_store")
                 added_docs = await add_document_types(data_path, force_all=False, check_existing=True)
-                logger.info(f"Added {added_docs} documents from CSV files")
+                logger.info(f"Added {added_docs} documents from CSV files including PDFs")
                 
                 # Then rebuild all vector stores from existing content
                 logger.info("🔄 Rebuilding all vector stores...")
@@ -772,7 +780,7 @@ class KnowledgeOrchestrator:
                 "error": str(e)
             }
     
-    async def process_urls_at_level(self, level: int, batch_size: int = 1, delay_seconds: float = 2.0, max_urls_per_phase: int = 10) -> Dict[str, Any]:
+    async def process_urls_at_level(self, level: int, batch_size: int = 1, delay_seconds: float = 2.0, max_urls_per_phase: int = 50) -> Dict[str, Any]:
         """
         Process all pending URLs at a specific level ONE AT A TIME for better observation.
         LIMITED TO max_urls_per_phase URLs per processing cycle.

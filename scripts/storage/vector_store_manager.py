@@ -500,7 +500,7 @@ class VectorStoreManager:
             logger.error(f"Error adding documents to topic stores: {e}", exc_info=True)
             return {}
 
-    async def create_topic_stores(self, documents: List[Document], group_id: str = "default", use_clustering: bool = True, min_docs_per_topic: int = 5) -> Dict:
+    async def create_topic_stores(self, documents: List[Document], group_id: str = "default", use_clustering: bool = False, min_docs_per_topic: int = 5) -> Dict:
         """Create separate vector stores by topic (with optional clustering)"""
         if use_clustering:
             logger.info("Using intelligent topic clustering to create meaningful topic stores")
@@ -511,61 +511,38 @@ class VectorStoreManager:
             return await self._create_individual_topic_stores(documents, group_id)
     
     async def _create_individual_topic_stores(self, documents: List[Document], group_id: str = "default") -> Dict:
-        """Original topic store creation method (creates individual stores for each topic)"""
+        """Pure tag-based topic store creation method (no LLM or NLP interpretation)"""
         try:
-            # First, extract topics from document metadata
+            # First, extract topics from document metadata - TAGS ONLY
             topic_docs: Dict[str, List[Document]] = {}
             
-            # Look for topics in both 'topics' field and 'tags' field
+            # Look for explicit tags/topics in metadata - no fallback to NLP
             for doc in documents:
                 # Check if document already has topics
                 topics = doc.metadata.get('topics', [])
                 if isinstance(topics, str):
-                    topics = [topics]
+                    topics = [t.strip() for t in topics.split(',') if t.strip()]
                 
                 # If no topics found, try using tags
                 if not topics:
                     tags = doc.metadata.get('tags', [])
                     if isinstance(tags, str):
-                        tags = [tags]
+                        tags = [t.strip() for t in tags.split(',') if t.strip()]
                     topics = tags
                     
                 # If still no topics, try fields (some tables use fields instead of tags)
                 if not topics:
                     fields = doc.metadata.get('fields', [])
                     if isinstance(fields, str):
-                        fields = [fields]
+                        fields = [t.strip() for t in fields.split(',') if t.strip()]
                     topics = fields
                 
-                # If still no topics, try using simple NLP to extract topics from content
+                # REMOVED: No LLM/NLP fallback - skip documents without explicit tags
                 if not topics:
-                    # Use basic NLP to identify potential topics from the content
-                    if hasattr(doc, 'page_content') and doc.page_content:
-                        text = doc.page_content.lower()
-                        
-                        # Try to extract topics from document title if available
-                        title = None
-                        if doc.metadata.get('title'):
-                            title = doc.metadata.get('title')
-                        elif doc.metadata.get('resource_id'):
-                            title = doc.metadata.get('resource_id')
-                        
-                        # If we have a title, use it as a potential topic
-                        detected_topics = []
-                        if title:
-                            # Split title into words, remove common stop words
-                            stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'about', 'for', 'with', 'to', 'from', 'in', 'on', 'at'}
-                            import re
-                            title_tokens = re.findall(r'\b\w+\b', title.lower())
-                            title_topics = [word for word in title_tokens if len(word) > 3 and word not in stop_words]
-                            detected_topics.extend(title_topics[:2])  # Use up to 2 terms from title
-                        
-                        # Add general topic as fallback
-                        if not detected_topics:
-                            detected_topics = ["general"]
-                        
-                        topics = detected_topics
-                  # Add document to each topic collection
+                    logger.debug(f"Skipping document without explicit tags: {doc.metadata.get('title', 'Unknown')}")
+                    continue
+                
+                # Add document to each topic collection (only if explicit tags found)
                 for topic in topics:
                     # Sanitize topic name for Windows file systems
                     # Remove invalid characters: [ ] " ' , and other problematic characters
@@ -577,17 +554,31 @@ class VectorStoreManager:
                     # Remove leading/trailing hyphens
                     normalized_topic = normalized_topic.strip('-')
                     
-                    if not normalized_topic:
-                        normalized_topic = "general"
+                    # Skip empty or invalid topics
+                    if not normalized_topic or len(normalized_topic) < 2:
+                        continue
                         
                     if normalized_topic not in topic_docs:
                         topic_docs[normalized_topic] = []
                     topic_docs[normalized_topic].append(doc)
             
-            # Log topic distribution
-            logger.info(f"Found {len(topic_docs)} topics with document counts:")
-            for topic, docs in topic_docs.items():
-                logger.info(f"  - Topic '{topic}': {len(docs)} documents")
+            # Calculate processing statistics
+            total_docs_with_topics = sum(len(docs) for docs in topic_docs.values())
+            skipped_docs = len(documents) - total_docs_with_topics
+            
+            # Log topic distribution and processing summary
+            logger.info(f"📊 Tag-based topic extraction results:")
+            logger.info(f"  - Total documents: {len(documents)}")
+            logger.info(f"  - Documents with explicit tags: {total_docs_with_topics}")
+            logger.info(f"  - Documents skipped (no tags): {skipped_docs}")
+            logger.info(f"  - Unique topics found: {len(topic_docs)}")
+            
+            if topic_docs:
+                logger.info("📋 Topic distribution:")
+                for topic, docs in topic_docs.items():
+                    logger.info(f"  - Topic '{topic}': {len(docs)} documents")
+            else:
+                logger.warning("⚠️  No documents with explicit tags found - no topic stores will be created")
             
             # Create vector store for each topic
             results = {}

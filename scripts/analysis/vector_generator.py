@@ -22,12 +22,13 @@ class VectorGenerator:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         
-    async def generate_vector_stores(self, content_paths: List[Path]) -> Dict[str, Any]:
+    async def generate_vector_stores(self, content_paths: List[Path], create_topic_stores: bool = True) -> Dict[str, Any]:
         """
         Generate vector stores from content files by delegating to VectorStoreManager.
         
         Args:
             content_paths: Paths to JSONL files containing content to vectorize
+            create_topic_stores: Whether to create topic stores using clustering
             
         Returns:
             Dictionary with statistics about the vector generation process
@@ -105,11 +106,11 @@ class VectorGenerator:
             if tagged_docs:
                 logger.info(f"Found {len(tagged_docs)} documents with tags for topic stores")
                 
-                # Use VectorStoreManager's intelligent clustering method to create topic stores
+                # Use tag-based approach to create individual topic stores per tag
                 topic_results = await vector_store_manager.create_topic_stores(
                     tagged_docs, 
-                    use_clustering=True, 
-                    min_docs_per_topic=5  # Require at least 5 docs per cluster
+                    use_clustering=False,  # Use individual tag stores instead of clustering
+                    min_docs_per_topic=1   # Allow single-document topics per tag
                 )
                 
                 # Add topic stores to stats

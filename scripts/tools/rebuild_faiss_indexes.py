@@ -30,6 +30,7 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from langchain.schema import Document
+from langchain_community.document_loaders import PyPDFLoader
 
 # Add the project root directory to the Python path
 project_root = Path(__file__).resolve().parents[2]
@@ -63,9 +64,13 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
     try:
         start_time = time.time()
         
-        # If we're doing a complete reference store rebuild, handle that first
+        # STEP 1: Validate and cleanup existing vector stores
+        logger.info("🔧 STEP 1: Validating and cleaning up existing vector stores...")
+        cleanup_results = validate_and_cleanup_vector_stores(data_path)
+        
+        # STEP 2: If we're doing a complete reference store rebuild, handle that first
         if rebuild_reference:
-            logger.info("🔄 Starting complete reference store rebuild with all document types...")
+            logger.info("🔄 STEP 2: Starting complete reference store rebuild with all document types...")
             from scripts.storage.vector_store_manager import VectorStoreManager
             
             # Initialize vector store manager
@@ -95,7 +100,8 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
             # The FAISS index is automatically built when documents are added
             logger.info("Reference store FAISS index has been rebuilt successfully")
         
-        # First rebuild all existing stores (or if --rebuild-reference isn't specified)
+        # STEP 3: Rebuild all existing stores (or if --rebuild-reference isn't specified)
+        logger.info("🔄 STEP 3: Rebuilding vector stores using modular architecture...")
         if use_new_modules:
             logger.info("Using new modular architecture for rebuilding")
             faiss_builder = FAISSBuilder(data_path)
@@ -128,22 +134,22 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
             for store_name, doc_count in result.get('document_counts', {}).items():
                 logger.info(f"  - {store_name}: {doc_count} documents")
                 
-            # If we're not forcing a complete rebuild of the reference store,
+            # STEP 4: If we're not forcing a complete rebuild of the reference store,
             # check for missing document types and add them
             if not rebuild_reference:
-                logger.info("Checking for missing document types...")
+                logger.info("🔍 STEP 4: Checking for missing document types...")
                 added_missing = await add_document_types(data_path, check_existing=True)
                 if added_missing > 0:
                     logger.info(f"Successfully added {added_missing} missing documents to reference_store")
                 else:
                     logger.info("No missing document types needed to be added")
             
-            # Check if we need to generate topic stores
+            # STEP 5: Check if we need to generate topic stores
             # Count how many topic stores were rebuilt
             topic_stores = [store for store in result.get('stores_rebuilt', []) if store.startswith("topic_")]
             
             if len(topic_stores) < 3:
-                logger.info(f"Few topic stores created ({len(topic_stores)}), attempting to generate topic stores")
+                logger.info(f"🏷️ STEP 5: Few topic stores created ({len(topic_stores)}), attempting to generate topic stores")
                 
                 # Import vector store manager for topic store generation
                 from scripts.storage.vector_store_manager import VectorStoreManager
@@ -165,11 +171,11 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
                     if rep_docs:
                         logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
                         
-                        # Try to create topic stores from these docs using intelligent clustering
+                        # Try to create topic stores from these docs using tag-based approach
                         topic_results = await vector_store_manager.create_topic_stores(
                             rep_docs, 
-                            use_clustering=True, 
-                            min_docs_per_topic=3  # Lower threshold for rebuild process
+                            use_clustering=False,  # Use individual tag stores instead of clustering
+                            min_docs_per_topic=1   # Allow single-document topics per tag
                         )
                         
                         if topic_results:
@@ -184,19 +190,60 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
                     logger.warning("Content store not found, cannot generate topic stores")
             else:
                 logger.info(f"Found {len(topic_stores)} topic stores, no need to generate more")
-                
-            # Log completion time
+            
+            # STEP 6: Create comprehensive processing summary
             duration = time.time() - start_time
-            logger.info(f"⏱️ Rebuild completed in {duration:.2f} seconds")
+            
+            # Combine all results
+            comprehensive_results = {
+                **result,
+                "cleanup_results": cleanup_results,
+                "rebuild_reference": rebuild_reference,
+                "rebuild_all": rebuild_all,
+                "processing_duration_seconds": duration,
+                "missing_documents_added": added_missing if not rebuild_reference else 0,
+                "topic_stores_generated": len(topic_stores)
+            }
+            
+            # Create processing summary
+            create_processing_summary(data_path, comprehensive_results)
+            
+            # Log completion time
+            logger.info(f"⏱️ Complete rebuild process finished in {duration:.2f} seconds")
+            logger.info("🎉 REBUILD COMPLETE - Check processing_summary.txt for details")
             return True
         else:
             error_msg = result.get("message", "Unknown error") if result else "No result returned"
             logger.error(f"❌ Failed to rebuild indexes: {error_msg}")
+            
+            # Still create a summary for failed processing
+            duration = time.time() - start_time
+            error_results = {
+                "status": "error",
+                "error": error_msg,
+                "cleanup_results": cleanup_results,
+                "processing_duration_seconds": duration
+            }
+            create_processing_summary(data_path, error_results)
+            
             return False
     except Exception as e:
         logger.error(f"❌ Error rebuilding indexes: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        
+        # Create error summary
+        try:
+            duration = time.time() - start_time
+            error_results = {
+                "status": "exception",
+                "error": str(e),
+                "processing_duration_seconds": duration
+            }
+            create_processing_summary(data_path, error_results)
+        except:
+            pass  # Don't fail on summary creation
+            
         return False
 
 def sanitize_value(value):
@@ -544,6 +591,12 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
         else:
             logger.warning("Analysis tasks config not found, using default types")
             available_content_types = ['definition', 'method', 'project', 'reference', 'link']
+        
+        # Add materials/PDF processing to available content types
+        if 'material' not in available_content_types:
+            available_content_types.append('material')
+            logger.info("Added 'material' content type for PDF processing")
+
         vector_store_manager = VectorStoreManager(base_path=data_path)
         
         # Check if reference_store exists
@@ -648,14 +701,23 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
                 continue
             
             try:
-                # Use universal CSV processor
-                documents = process_csv_to_documents(csv_path, content_type, field_mappings)
+                # Special handling for materials (PDFs)
+                if content_type == 'material':
+                    logger.info(f"🔄 Using specialized PDF processing for materials")
+                    documents = await process_materials_to_documents(csv_path, data_path)
+                else:
+                    # Use universal CSV processor for other content types
+                    documents = process_csv_to_documents(csv_path, content_type, field_mappings)
                 
                 if not documents:
                     logger.warning(f"⚠️  No documents created from {csv_name}.csv")
                     continue
                 
-                logger.info(f"📊 Adding {len(documents)} {content_type} documents to reference_store")
+                logger.info(f"📊 Adding {len(documents)} {content_type} documents to vector store")
+                
+                # Determine target store based on content type
+                target_store = "content_store" if content_type == 'material' else "reference_store"
+                logger.info(f"📍 Target vector store: {target_store}")
                 
                 # Create metadata for tracking
                 metadata = {
@@ -667,9 +729,9 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
                     "added_at": datetime.now().isoformat()
                 }
                 
-                # Add to reference store
+                # Add to appropriate vector store
                 result = await vector_store_manager.add_documents_to_store(
-                    "reference_store",
+                    target_store,
                     documents,
                     metadata=metadata,
                     update_stats=True
@@ -692,6 +754,403 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
         logger.error(f"💥 Error in universal document processing: {e}")
         logger.error(traceback.format_exc())
         return 0
+
+async def process_materials_to_documents(csv_path, data_path):
+    """Process materials.csv to create PDF documents using PyPDFLoader with consistent chunking.
+    Also handles PDFs in materials folder that don't appear in materials.csv (auto-downloaded ones).
+    
+    Args:
+        csv_path (Path): Path to materials.csv file
+        data_path (Path): Base data path for finding PDF files
+        
+    Returns:
+        list: List of Document objects from PDF processing
+    """
+    try:
+        import pandas as pd
+        
+        documents = []
+        materials_path = data_path / "materials"
+        processed_pdfs = set()  # Track which PDFs we've processed
+        
+        # First, process PDFs listed in materials.csv
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            logger.info(f"Processing {len(df)} PDF materials from {csv_path}")
+            logger.info(f"Materials CSV columns: {list(df.columns)}")
+            
+            for _, row in df.iterrows():
+                try:
+                    # Get PDF file path from the CSV
+                    file_path_str = row.get('file_path', '')
+                    if not file_path_str:
+                        logger.warning(f"No file_path for material: {row.get('title', 'Unknown')}")
+                        continue
+                    
+                    # Handle both absolute and relative paths
+                    file_path = Path(file_path_str)
+                    if not file_path.is_absolute():
+                        # Try relative to materials folder first
+                        file_path = materials_path / file_path_str
+                        if not file_path.exists():
+                            # Try relative to data path
+                            file_path = data_path / file_path_str
+                    
+                    if not file_path.exists():
+                        logger.warning(f"PDF file not found: {file_path}")
+                        continue
+                    
+                    if not file_path.suffix.lower() == '.pdf':
+                        logger.warning(f"File is not a PDF: {file_path}")
+                        continue
+                    
+                    # Mark this PDF as processed from CSV
+                    processed_pdfs.add(str(file_path.resolve()))
+                    
+                    logger.info(f"Processing PDF from CSV: {file_path}")
+                    
+                    # Use PyPDFLoader to extract content
+                    loader = PyPDFLoader(str(file_path))
+                    pdf_docs = loader.load()
+                    
+                    # Apply consistent chunking to match reference store settings
+                    from langchain.text_splitter import RecursiveCharacterTextSplitter
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1500,    # Consistent with reference store chunking
+                        chunk_overlap=200,  # Consistent with reference store chunking
+                        separators=["\n\n", "\n", ". ", ", ", " ", ""]
+                    )
+                    
+                    # Re-chunk PDF documents for consistency with reference store
+                    chunked_docs = text_splitter.split_documents(pdf_docs)
+                    pdf_docs = chunked_docs
+                    
+                    # Generate unique document ID for relationship tracking
+                    material_id = row.get('id', '')
+                    document_id = f"material_{material_id}_pdf_{file_path.name}"
+                    document_title = row.get('title', file_path.stem)
+                    
+                    # Add comprehensive metadata to each document chunk for relationship tracking
+                    for i, doc in enumerate(pdf_docs):
+                        # Create enhanced metadata with document relationship labeling
+                        doc.metadata.update({
+                            # Core identification
+                            'source_type': 'material',
+                            'content_type': 'material',
+                            'type': 'material',
+                            'title': document_title,
+                            'description': row.get('description', ''),
+                            'fields': row.get('fields', '').split(',') if row.get('fields') else [],
+                            'file_path': str(file_path),
+                            'created_at': row.get('created_at', ''),
+                            'processed_at': datetime.now().isoformat(),
+                            'csv_source': str(csv_path),
+                            
+                            # Document relationship labeling for chunk grouping (CRITICAL FOR SUMMARIZATION)
+                            'document_id': document_id,
+                            'document_name': file_path.name,
+                            'document_title': document_title,
+                            'material_id': material_id,
+                            'material_title': document_title,
+                            
+                            # Chunk relationship metadata for document summaries
+                            'total_chunks': len(pdf_docs),
+                            'chunk_index': i,
+                            'chunk_id': f"{document_id}_chunk_{i}",
+                            
+                            # PDF-specific metadata
+                            'pdf_page': doc.metadata.get('page', 0),
+                            'pdf_source': str(file_path),
+                            'pdf_chunks_total': len(pdf_docs),
+                            
+                            # Additional material-specific metadata
+                            'original_source': 'materials_csv'
+                        })
+                        
+                        # Sanitize all metadata to ensure JSON serialization
+                        for key, value in doc.metadata.items():
+                            doc.metadata[key] = sanitize_value(value)
+                    
+                    documents.extend(pdf_docs)
+                    logger.info(f"✅ Extracted {len(pdf_docs)} chunks from PDF: {file_path.name} (chunks sized ~1500 chars for consistency)")
+                    logger.info(f"📊 Document ID for summarization: {document_id}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing PDF material {row.get('title', 'Unknown')}: {e}")
+                    continue
+        else:
+            logger.info(f"materials.csv not found at {csv_path}, will only process PDFs in materials folder")
+        
+        # Second, process any PDFs in materials folder that weren't in materials.csv
+        # (These are typically auto-downloaded PDFs from URL processing)
+        if materials_path.exists():
+            logger.info(f"🔍 Scanning materials folder for additional PDFs: {materials_path}")
+            
+            # Find all PDF files in materials directory
+            pdf_files = list(materials_path.glob("*.pdf"))
+            logger.info(f"Found {len(pdf_files)} PDF files in materials folder")
+            
+            # Filter out PDFs we already processed from CSV
+            unprocessed_pdfs = []
+            for pdf_file in pdf_files:
+                pdf_path_str = str(pdf_file.resolve())
+                if pdf_path_str not in processed_pdfs:
+                    unprocessed_pdfs.append(pdf_file)
+            
+            logger.info(f"Found {len(unprocessed_pdfs)} PDFs not in materials.csv that need processing")
+            
+            # Process unprocessed PDFs
+            for pdf_file in unprocessed_pdfs:
+                try:
+                    logger.info(f"Processing auto-downloaded PDF: {pdf_file.name}")
+                    
+                    # Use PyPDFLoader to extract content
+                    loader = PyPDFLoader(str(pdf_file))
+                    pdf_docs = loader.load()
+                    
+                    # Apply consistent chunking
+                    from langchain.text_splitter import RecursiveCharacterTextSplitter
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1500,    # Consistent with reference store chunking
+                        chunk_overlap=200,  # Consistent with reference store chunking
+                        separators=["\n\n", "\n", ". ", ", ", " ", ""]
+                    )
+                    
+                    # Re-chunk PDF documents for consistency
+                    chunked_docs = text_splitter.split_documents(pdf_docs)
+                    pdf_docs = chunked_docs
+                    
+                    # Generate document ID for auto-downloaded PDFs
+                    document_id = f"auto_pdf_{pdf_file.stem}_{int(datetime.now().timestamp())}"
+                    document_title = pdf_file.stem
+                    
+                    # Add metadata for auto-downloaded PDFs
+                    for i, doc in enumerate(pdf_docs):
+                        doc.metadata.update({
+                            # Core identification
+                            'source_type': 'auto_downloaded_pdf',
+                            'content_type': 'material',
+                            'type': 'material',
+                            'title': document_title,
+                            'description': f"Auto-downloaded PDF: {pdf_file.name}",
+                            'fields': [],
+                            'file_path': str(pdf_file),
+                            'created_at': '',
+                            'processed_at': datetime.now().isoformat(),
+                            'csv_source': 'not_in_csv',
+                            
+                            # Document relationship labeling
+                            'document_id': document_id,
+                            'document_name': pdf_file.name,
+                            'document_title': document_title,
+                            'material_id': '',
+                            'material_title': document_title,
+                            
+                            # Chunk relationship metadata
+                            'total_chunks': len(pdf_docs),
+                            'chunk_index': i,
+                            'chunk_id': f"{document_id}_chunk_{i}",
+                            
+                            # PDF-specific metadata
+                            'pdf_page': doc.metadata.get('page', 0),
+                            'pdf_source': str(pdf_file),
+                            'pdf_chunks_total': len(pdf_docs),
+                            
+                            # Mark as auto-downloaded
+                            'original_source': 'auto_downloaded',
+                            'auto_downloaded': True
+                        })
+                        
+                        # Sanitize all metadata
+                        for key, value in doc.metadata.items():
+                            doc.metadata[key] = sanitize_value(value)
+                    
+                    documents.extend(pdf_docs)
+                    logger.info(f"✅ Processed auto-downloaded PDF: {pdf_file.name} ({len(pdf_docs)} chunks)")
+                    
+                    # Optionally, add to materials.csv for future reference
+                    # This can be enabled as needed
+                    await add_pdf_to_materials_csv(pdf_file, csv_path, data_path)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing auto-downloaded PDF {pdf_file.name}: {e}")
+                    continue
+        
+        logger.info(f"🎉 Created {len(documents)} total document chunks from PDF materials")
+        logger.info(f"📋 All chunks labeled with document relationships for future summarization")
+        return documents
+        
+    except Exception as e:
+        logger.error(f"💥 Error processing materials CSV at {csv_path}: {e}")
+        return []
+
+async def add_pdf_to_materials_csv(pdf_file, csv_path, data_path):
+    """Add an auto-downloaded PDF to materials.csv for future reference.
+    
+    Args:
+        pdf_file (Path): Path to the PDF file
+        csv_path (Path): Path to materials.csv
+        data_path (Path): Base data path
+    """
+    try:
+        import pandas as pd
+        from datetime import datetime
+        
+        # Create materials.csv if it doesn't exist
+        if not csv_path.exists():
+            # Create directory if needed
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create empty CSV with standard columns
+            df = pd.DataFrame(columns=[
+                'id', 'title', 'description', 'fields', 'file_path', 'created_at'
+            ])
+        else:
+            df = pd.read_csv(csv_path)
+        
+        # Check if this PDF is already in the CSV
+        relative_path = pdf_file.relative_to(data_path / "materials")
+        existing_entry = df[df['file_path'].str.contains(pdf_file.name, na=False)]
+        
+        if len(existing_entry) > 0:
+            logger.info(f"PDF {pdf_file.name} already exists in materials.csv")
+            return
+        
+        # Generate new ID
+        max_id = df['id'].max() if len(df) > 0 and pd.notna(df['id'].max()) else 0
+        new_id = int(max_id) + 1 if pd.notna(max_id) else 1
+        
+        # Create new row for the auto-downloaded PDF
+        new_row = {
+            'id': new_id,
+            'title': f"Auto-downloaded: {pdf_file.stem}",
+            'description': f"Automatically downloaded PDF from URL processing: {pdf_file.name}",
+            'fields': 'auto-downloaded',
+            'file_path': str(relative_path),
+            'created_at': datetime.now().isoformat()
+        }
+        
+        # Add the new row
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        
+        # Save back to CSV
+        df.to_csv(csv_path, index=False)
+        logger.info(f"✅ Added auto-downloaded PDF to materials.csv: {pdf_file.name}")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Could not add PDF to materials.csv: {e}")
+
+def should_rebuild_vector_stores(data_path):
+    """
+    Check if vector stores need rebuilding based on content changes.
+    This function now checks all CSV files mentioned in analysis-tasks-config.json
+    
+    Args:
+        data_path: Path to data directory
+        
+    Returns:
+        Dict with rebuild decision and reasons
+    """
+    from pathlib import Path
+    
+    logger.info("🔍 Checking if vector stores need rebuilding based on analysis tasks config...")
+    
+    reasons = []
+    force_rebuild = False
+    
+    # Load analysis tasks configuration to check for relevant CSVs
+    tasks_config_path = Path(__file__).parent.parent / "settings" / "analysis-tasks-config.json"
+    content_types = []
+    
+    if tasks_config_path.exists():
+        try:
+            with open(tasks_config_path, 'r', encoding='utf-8') as f:
+                tasks_config = json.load(f)
+            content_types = list(tasks_config.keys())
+            logger.info(f"Checking {len(content_types)} content types from analysis config: {content_types}")
+        except Exception as e:
+            logger.warning(f"Could not load analysis tasks config: {e}")
+            # Fallback to common types
+            content_types = ['definition', 'method', 'project', 'reference', 'link']
+    else:
+        logger.warning("Analysis tasks config not found, using default types")
+        content_types = ['definition', 'method', 'project', 'reference', 'link']
+    
+    # Add materials for PDF processing
+    content_types.append('material')
+    
+    # Check for new or modified CSV files based on content types
+    last_rebuild = get_last_rebuild_time(data_path)
+    for content_type in content_types:
+        csv_name = content_type + 's' if not content_type.endswith('s') else content_type
+        csv_paths = [
+            Path(data_path) / f"{csv_name}.csv",
+            Path(data_path) / "data" / f"{csv_name}.csv",
+            Path(data_path) / "vector_stores" / f"{csv_name}.csv",
+        ]
+        
+        for csv_path in csv_paths:
+            if csv_path.exists():
+                if csv_path.stat().st_mtime > last_rebuild:
+                    reasons.append(f"Modified CSV: {csv_path.name}")
+                    force_rebuild = True
+                break
+    
+    # Check for new or modified PDF files in materials directory
+    materials_path = Path(data_path) / "materials"
+    if materials_path.exists():
+        pdf_files = list(materials_path.glob("*.pdf"))
+        for pdf_file in pdf_files:
+            if pdf_file.stat().st_mtime > last_rebuild:
+                reasons.append(f"New/Modified PDF: {pdf_file.name}")
+                force_rebuild = True
+    
+    # Check if vector stores exist
+    vector_stores_path = Path(data_path) / "vector_stores" / "default"
+    if not vector_stores_path.exists():
+        reasons.append("Vector stores directory missing")
+        force_rebuild = True
+    else:
+        # Check for missing essential stores
+        essential_stores = ["content_store", "reference_store"]
+        for store in essential_stores:
+            store_path = vector_stores_path / store
+            if not (store_path.exists() and (store_path / "index.faiss").exists()):
+                reasons.append(f"Missing vector store: {store}")
+                force_rebuild = True
+    
+    return {
+        "should_rebuild": force_rebuild,
+        "reasons": reasons,
+        "last_rebuild_time": last_rebuild,
+        "checked_files": len(content_types),
+        "content_types_checked": content_types
+    }
+
+def get_last_rebuild_time(data_path):
+    """Get the timestamp of the last rebuild."""
+    rebuild_info_file = Path(data_path) / "vector_stores" / "last_rebuild.json"
+    if rebuild_info_file.exists():
+        try:
+            with open(rebuild_info_file, 'r') as f:
+                info = json.load(f)
+                return datetime.fromisoformat(info["timestamp"]).timestamp()
+        except Exception as e:
+            logger.warning(f"Could not read last rebuild info: {e}")
+    return 0  # Force rebuild if no info available
+
+def update_last_rebuild_time(data_path):
+    """Update the timestamp of the last rebuild."""
+    rebuild_info_file = Path(data_path) / "vector_stores" / "last_rebuild.json"
+    rebuild_info_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    info = {
+        "timestamp": datetime.now().isoformat(),
+        "completed_at": datetime.now().isoformat()
+    }
+    
+    with open(rebuild_info_file, 'w') as f:
+        json.dump(info, f, indent=2)
 
 def get_data_path_from_config():
     """Get data path from config file."""
@@ -899,12 +1358,185 @@ def process_csv_to_documents(csv_path: Path, content_type: str, field_mappings: 
         logger.error(f"❌ Error processing {csv_path}: {e}")
         return []
 
+def validate_and_cleanup_vector_stores(data_path):
+    """
+    Validate existing vector stores and clean up any corrupted or inconsistent data.
+    This ensures a clean slate before rebuilding.
+    
+    Args:
+        data_path: Path to data directory
+        
+    Returns:
+        Dict with cleanup results
+    """
+    from pathlib import Path
+    import shutil
+    
+    logger.info("🔧 Validating and cleaning up existing vector stores...")
+    
+    cleanup_results = {
+        "stores_checked": 0,
+        "stores_cleaned": 0,
+        "corrupted_stores_removed": 0,
+        "empty_stores_removed": 0,
+        "issues_found": []
+    }
+    
+    vector_stores_path = Path(data_path) / "vector_stores" / "default"
+    
+    if not vector_stores_path.exists():
+        logger.info("No existing vector stores found - starting fresh")
+        return cleanup_results
+    
+    try:
+        # Check each store directory
+        for store_dir in vector_stores_path.iterdir():
+            if not store_dir.is_dir():
+                continue
+                
+            cleanup_results["stores_checked"] += 1
+            store_name = store_dir.name
+            
+            # Check for required files
+            documents_json = store_dir / "documents.json"
+            index_faiss = store_dir / "index.faiss"
+            index_pkl = store_dir / "index.pkl"
+            
+            store_corrupted = False
+            store_empty = False
+            
+            # Validate documents.json
+            if documents_json.exists():
+                try:
+                    with open(documents_json, 'r', encoding='utf-8') as f:
+                        docs = json.load(f)
+                        if not isinstance(docs, list):
+                            cleanup_results["issues_found"].append(f"{store_name}: documents.json is not a list")
+                            store_corrupted = True
+                        elif len(docs) == 0:
+                            store_empty = True
+                            logger.info(f"Store {store_name} is empty")
+                        else:
+                            logger.info(f"Store {store_name} has {len(docs)} documents")
+                except Exception as e:
+                    cleanup_results["issues_found"].append(f"{store_name}: corrupted documents.json - {e}")
+                    store_corrupted = True
+            else:
+                cleanup_results["issues_found"].append(f"{store_name}: missing documents.json")
+                store_corrupted = True
+            
+            # Check FAISS index files consistency
+            if index_faiss.exists() and not index_pkl.exists():
+                cleanup_results["issues_found"].append(f"{store_name}: has index.faiss but missing index.pkl")
+                store_corrupted = True
+            elif index_pkl.exists() and not index_faiss.exists():
+                cleanup_results["issues_found"].append(f"{store_name}: has index.pkl but missing index.faiss")
+                store_corrupted = True
+            
+            # Clean up corrupted or empty stores
+            if store_corrupted:
+                logger.warning(f"🗑️ Removing corrupted store: {store_name}")
+                shutil.rmtree(store_dir)
+                cleanup_results["corrupted_stores_removed"] += 1
+                cleanup_results["stores_cleaned"] += 1
+            elif store_empty:
+                logger.info(f"🧹 Removing empty store: {store_name}")
+                shutil.rmtree(store_dir)
+                cleanup_results["empty_stores_removed"] += 1
+                cleanup_results["stores_cleaned"] += 1
+        
+        # Log cleanup summary
+        if cleanup_results["stores_cleaned"] > 0:
+            logger.info(f"✅ Cleanup complete: removed {cleanup_results['corrupted_stores_removed']} corrupted and {cleanup_results['empty_stores_removed']} empty stores")
+        else:
+            logger.info("✅ All existing stores are valid - no cleanup needed")
+            
+        if cleanup_results["issues_found"]:
+            logger.info(f"Issues addressed: {len(cleanup_results['issues_found'])}")
+            for issue in cleanup_results["issues_found"]:
+                logger.debug(f"  - {issue}")
+        
+        return cleanup_results
+        
+    except Exception as e:
+        logger.error(f"Error during vector store cleanup: {e}")
+        cleanup_results["issues_found"].append(f"Cleanup error: {e}")
+        return cleanup_results
+
+def create_processing_summary(data_path, processing_results):
+    """
+    Create a comprehensive summary of the processing results and save it to a file.
+    
+    Args:
+        data_path: Path to data directory
+        processing_results: Dict with all processing results
+    """
+    try:
+        summary = {
+            "processing_timestamp": datetime.now().isoformat(),
+            "processing_results": processing_results,
+            "data_path": str(data_path),
+            "system_info": {
+                "python_version": sys.version,
+                "platform": os.name
+            }
+        }
+        
+        # Save summary to file
+        summary_path = Path(data_path) / "vector_stores" / "last_processing_summary.json"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"📊 Processing summary saved to: {summary_path}")
+        
+        # Also create a human-readable summary
+        readable_summary_path = Path(data_path) / "vector_stores" / "processing_summary.txt"
+        with open(readable_summary_path, 'w', encoding='utf-8') as f:
+            f.write("OATFLAKE Knowledge Processing Summary\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"Processing Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Data Path: {data_path}\n\n")
+            
+            # Write processing results
+            if "status" in processing_results:
+                f.write(f"Overall Status: {processing_results['status']}\n\n")
+            
+            if "stores_rebuilt" in processing_results:
+                f.write(f"Vector Stores Rebuilt: {len(processing_results['stores_rebuilt'])}\n")
+                for store in processing_results["stores_rebuilt"]:
+                    f.write(f"  - {store}\n")
+                f.write("\n")
+            
+            if "document_counts" in processing_results:
+                f.write("Document Counts by Store:\n")
+                for store, count in processing_results["document_counts"].items():
+                    f.write(f"  - {store}: {count} documents\n")
+                f.write("\n")
+            
+            if "total_documents" in processing_results:
+                f.write(f"Total Documents Processed: {processing_results['total_documents']}\n\n")
+            
+            # Add recommendations
+            f.write("Next Steps:\n")
+            f.write("- Use document_summarizer.py to generate PDF summaries\n")
+            f.write("- Check for duplicate URLs in resources.csv if needed\n")
+            f.write("- Monitor processing logs for any warnings\n")
+        
+        logger.info(f"📝 Human-readable summary saved to: {readable_summary_path}")
+        
+    except Exception as e:
+        logger.error(f"Error creating processing summary: {e}")
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Rebuild FAISS indexes for vector stores")
     parser.add_argument("--data-path", type=str, help="Path to data directory (defaults to config.json setting)")
     parser.add_argument("--rebuild-all", action="store_true", help="Force complete rebuild of all vector stores")
     parser.add_argument("--rebuild-reference", action="store_true", help="Force complete rebuild of reference store with all document types")
+    parser.add_argument('--force', action='store_true', help='Force rebuild even if no changes detected')
+    parser.add_argument('--check-only', action='store_true', help='Only check if rebuild is needed, don\'t rebuild')
     
     args = parser.parse_args()
     
@@ -916,15 +1548,60 @@ def main():
     
     logger.info(f"Using data path: {data_path}")
     
+    # Check if rebuild is needed (unless forcing a complete rebuild)
+    if not args.rebuild_all and not args.rebuild_reference and not args.force:
+        rebuild_check = should_rebuild_vector_stores(data_path)
+        
+        logger.info(f"📊 Rebuild Check Results:")
+        logger.info(f"   Should rebuild: {rebuild_check['should_rebuild']}")
+        logger.info(f"   Reasons: {', '.join(rebuild_check['reasons']) if rebuild_check['reasons'] else 'None'}")
+        logger.info(f"   Files checked: {rebuild_check['checked_files']}")
+        
+        if args.check_only:
+            return 0 if rebuild_check['should_rebuild'] else 1
+        
+        if not rebuild_check['should_rebuild']:
+            logger.info("✅ Vector stores are up to date, no rebuild needed")
+            return 0
+    
+    if args.force:
+        logger.info("🔄 Force rebuild requested")
+    
     # Run the rebuild process
-    if asyncio.run(rebuild_indexes(data_path, rebuild_all=args.rebuild_all, rebuild_reference=args.rebuild_reference)):
-        if args.rebuild_reference:
-            logger.info("🎉 Complete rebuild successful")
+    try:
+        # Validate and clean up existing vector stores first
+        cleanup_results = validate_and_cleanup_vector_stores(data_path)
+        
+        logger.info(f"🔧 Cleanup Results: {cleanup_results}")
+        
+        result = asyncio.run(rebuild_indexes(data_path, rebuild_all=args.rebuild_all, rebuild_reference=args.rebuild_reference))
+        
+        if result:
+            # Update rebuild timestamp on success
+            update_last_rebuild_time(data_path)
+            
+            if args.rebuild_reference:
+                logger.info("🎉 Complete rebuild successful")
+            else:
+                logger.info("🎉 FAISS index rebuild successful")
+            
+            # Create processing summary
+            processing_results = {
+                "status": "success",
+                "stores_rebuilt": cleanup_results.get("stores_checked", 0),
+                "total_documents": sum(cleanup_results.get("document_counts", {}).values()),
+                "document_counts": cleanup_results.get("document_counts", {})
+            }
+            
+            create_processing_summary(data_path, processing_results)
+            
+            return 0
         else:
-            logger.info("🎉 FAISS index rebuild successful")
-        return 0
-    else:
-        logger.error("💥 FAISS index rebuild failed")
+            logger.error("💥 FAISS index rebuild failed")
+            return 1
+            
+    except Exception as e:
+        logger.error(f"Error during rebuild: {e}")
         return 1
 
 if __name__ == "__main__":
