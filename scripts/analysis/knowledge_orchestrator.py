@@ -1740,12 +1740,12 @@ class KnowledgeOrchestrator:
             url_storage.set_discovery_mode(False)
             
             # Restart conditions:
-            # 1. We processed some content (URL analysis was successful)
-            # 2. We have remaining URLs to process, OR
+            # 1. We processed some content (URL analysis was successful), OR
+            # 2. We have remaining URLs to process (even if previous analysis failed), OR
             # 3. The flow completed successfully and we want to restart for new discoveries
             should_restart = (
-                url_analysis_complete and 
-                (total_pending_urls > 0 or (vector_generation_complete and goal_extraction_complete))
+                (url_analysis_complete and (vector_generation_complete and goal_extraction_complete)) or
+                total_pending_urls > 0
             )
             
             if should_restart:
