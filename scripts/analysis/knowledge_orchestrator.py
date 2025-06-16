@@ -540,11 +540,55 @@ class KnowledgeOrchestrator:
                 rebuild_success = await rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
                 
                 if rebuild_success:
+                    # STEP 5.3: Generate topic stores after successful vector rebuild
+                    logger.info("🏷️ Generating topic stores from content...")
+                    topic_stores_created = 0
+                    
+                    try:
+                        from scripts.storage.vector_store_manager import VectorStoreManager
+                        vector_store_manager = VectorStoreManager(base_path=data_path)
+                        
+                        # Check if content_store exists
+                        stores = vector_store_manager.list_stores()
+                        if "content_store" in [store.get("name") for store in stores]:
+                            logger.info("Content store exists, getting representative docs for topics")
+                            
+                            # Get representative chunks to create topic stores
+                            rep_docs = await vector_store_manager.get_representative_chunks(
+                                store_name="content_store", 
+                                num_chunks=100
+                            )
+                            
+                            if rep_docs:
+                                logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
+                                
+                                # Try to create topic stores from these docs using tag-based approach
+                                topic_results = await vector_store_manager.create_topic_stores(
+                                    rep_docs, 
+                                    use_clustering=False,  # Use individual tag stores instead of clustering
+                                    min_docs_per_topic=1   # Allow single-document topics per tag
+                                )
+                                
+                                if topic_results:
+                                    topic_stores_created = len(topic_results)
+                                    logger.info(f"Created {topic_stores_created} topic stores")
+                                    # Log the created topic stores
+                                    for topic, success in topic_results.items():
+                                        if success:
+                                            logger.info(f"  - Created topic store for: {topic}")
+                            else:
+                                logger.warning("No representative documents found for topic generation")
+                        else:
+                            logger.warning("Content store not found, cannot generate topic stores")
+                    except Exception as e:
+                        logger.warning(f"Topic store generation failed: {e}")
+                    
                     vector_result = {
                         "status": "success", 
                         "message": "Vector stores rebuilt successfully using universal system",
                         "documents_added_from_csv": added_docs,
-                        "rebuild_method": "universal_rebuild_system"
+                        "rebuild_method": "universal_rebuild_system",
+                        "topic_stores_created": topic_stores_created
                     }
                     logger.info("✅ Vector generation completed using universal rebuild system")
                 else:
@@ -552,7 +596,8 @@ class KnowledgeOrchestrator:
                         "status": "error",
                         "message": "Vector store rebuild failed", 
                         "documents_added_from_csv": added_docs,
-                        "rebuild_method": "universal_rebuild_system"
+                        "rebuild_method": "universal_rebuild_system",
+                        "topic_stores_created": 0
                     }
                 
                 # Update result with vector generation results

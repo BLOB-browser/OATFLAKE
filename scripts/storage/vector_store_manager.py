@@ -148,17 +148,15 @@ class VectorStoreManager:
             dimension = len(embeddings[0])
             logger.info(f"Generated {embedding_count} embeddings from {chunk_count} chunks")
             
-            # Create FAISS index
-            import faiss
-            index = faiss.IndexFlatL2(dimension)
+            # Create FAISS vector store using LangChain FAISS to ensure both index.faiss and index.pkl are created
+            vector_store = FAISS.from_embeddings(
+                text_embeddings=list(zip(texts, embeddings)),
+                embedding=self.embeddings,
+                metadatas=metadatas
+            )
             
-            # Add vectors to index
-            index.add(np.array(embeddings, dtype=np.float32))
-            
-            # Save FAISS index
-            faiss.write_index(index, str(store_path / "index.faiss"))
-            
-            # We decided not to use pkl files or symlinks, using only index.faiss
+            # Save the FAISS vector store (creates both index.faiss and index.pkl)
+            vector_store.save_local(str(store_path))
             
             # Save documents metadata - now based on chunks not original documents
             with open(store_path / "documents.json", "w") as f:
@@ -319,18 +317,25 @@ class VectorStoreManager:
                 # Log embedding stats
                 logger.info(f"Generated {embedding_count} embeddings from {chunk_count} chunks")
                 
-                # Check if dimensions match
-                if len(new_embeddings[0]) != existing_index.d:
-                    logger.error(f"Dimension mismatch: existing={existing_index.d}, new={len(new_embeddings[0])}")
-                    return False
+                # Load existing FAISS vector store using LangChain
+                existing_vector_store = FAISS.load_local(
+                    str(store_path),
+                    self.embeddings,
+                    allow_dangerous_deserialization=True
+                )
                 
-                # Add new vectors to index
-                existing_index.add(np.array(new_embeddings, dtype=np.float32))
+                # Create new FAISS store from new documents
+                new_vector_store = FAISS.from_embeddings(
+                    text_embeddings=list(zip(texts, new_embeddings)),
+                    embedding=self.embeddings,
+                    metadatas=metadatas
+                )
                 
-                # Save updated index
-                faiss.write_index(existing_index, str(store_path / "index.faiss"))
+                # Merge the vector stores
+                existing_vector_store.merge_from(new_vector_store)
                 
-                # We decided not to use pkl files or symlinks, using only index.faiss
+                # Save the merged vector store (creates both index.faiss and index.pkl)
+                existing_vector_store.save_local(str(store_path))
                 
                 # Combine document metadata and save - use chunks instead of original documents
                 combined_documents = existing_documents + [{
@@ -511,38 +516,70 @@ class VectorStoreManager:
             return await self._create_individual_topic_stores(documents, group_id)
     
     async def _create_individual_topic_stores(self, documents: List[Document], group_id: str = "default") -> Dict:
-        """Pure tag-based topic store creation method (no LLM or NLP interpretation)"""
+        """Pure tag-based topic store creation method with intelligent fallbacks"""
         try:
             # First, extract topics from document metadata - TAGS ONLY
             topic_docs: Dict[str, List[Document]] = {}
             
-            # Look for explicit tags/topics in metadata - no fallback to NLP
+            # Look for explicit tags/topics in metadata with intelligent fallbacks
             for doc in documents:
-                # Check if document already has topics
-                topics = doc.metadata.get('topics', [])
-                if isinstance(topics, str):
-                    topics = [t.strip() for t in topics.split(',') if t.strip()]
+                topics = []
                 
-                # If no topics found, try using tags
+                # Priority 1: Check if document already has topics
+                explicit_topics = doc.metadata.get('topics', [])
+                if isinstance(explicit_topics, str):
+                    explicit_topics = [t.strip() for t in explicit_topics.split(',') if t.strip()]
+                topics.extend(explicit_topics)
+                
+                # Priority 2: If no topics found, try using tags
                 if not topics:
                     tags = doc.metadata.get('tags', [])
                     if isinstance(tags, str):
                         tags = [t.strip() for t in tags.split(',') if t.strip()]
-                    topics = tags
+                    elif isinstance(tags, list):
+                        tags = [str(t).strip() for t in tags if t and str(t).strip()]
+                    topics.extend(tags)
                     
-                # If still no topics, try fields (some tables use fields instead of tags)
+                # Priority 3: If still no topics, try fields (some tables use fields instead of tags)
                 if not topics:
                     fields = doc.metadata.get('fields', [])
                     if isinstance(fields, str):
                         fields = [t.strip() for t in fields.split(',') if t.strip()]
-                    topics = fields
+                    elif isinstance(fields, list):
+                        fields = [str(f).strip() for f in fields if f and str(f).strip()]
+                    topics.extend(fields)
                 
-                # REMOVED: No LLM/NLP fallback - skip documents without explicit tags
+                # Priority 4: INTELLIGENT FALLBACK - Use content type and source type for topic generation
                 if not topics:
-                    logger.debug(f"Skipping document without explicit tags: {doc.metadata.get('title', 'Unknown')}")
-                    continue
+                    content_type = doc.metadata.get('content_type', '').strip()
+                    source_type = doc.metadata.get('source_type', '').strip()
+                    doc_type = doc.metadata.get('type', '').strip()
+                    
+                    # Create topic from content type
+                    fallback_topic = content_type or source_type or doc_type
+                    if fallback_topic and fallback_topic not in ['unknown', 'general']:
+                        topics.append(fallback_topic)
+                        logger.debug(f"Using fallback topic '{fallback_topic}' for document: {doc.metadata.get('title', 'Unknown')}")
                 
-                # Add document to each topic collection (only if explicit tags found)
+                # Priority 5: If still no topics, create a topic from document title
+                if not topics:
+                    title = doc.metadata.get('title', '').strip()
+                    if title and len(title) > 3:
+                        # Extract meaningful keywords from title
+                        import re
+                        # Remove common stop words and extract meaningful terms
+                        title_words = re.findall(r'\b\w{4,}\b', title.lower())  # Get words 4+ chars
+                        if title_words:
+                            # Use first meaningful word as topic
+                            topics.append(title_words[0])
+                            logger.debug(f"Using title-based topic '{title_words[0]}' for document: {title}")
+                
+                # Final fallback: assign to 'general' topic
+                if not topics:
+                    topics = ['general']
+                    logger.debug(f"Using 'general' topic for document: {doc.metadata.get('title', 'Unknown')}")
+                
+                # Add document to each topic collection
                 for topic in topics:
                     # Sanitize topic name for Windows file systems
                     # Remove invalid characters: [ ] " ' , and other problematic characters
@@ -1061,15 +1098,32 @@ Group semantically related topics together. Consider domain relationships and co
             if not documents:
                 logger.warning(f"No documents found in {store_path / 'documents.json'}")
                 return []
+            
+            # Filter out material documents for topic generation (materials don't have proper tags)
+            filtered_documents = []
+            for i, doc in enumerate(documents):
+                metadata = doc.get("metadata", {})
+                content_type = metadata.get("content_type", "")
+                source_type = metadata.get("source_type", "")
+                doc_type = metadata.get("type", "")
                 
-            # Log details for debugging
-            logger.info(f"Found {len(documents)} documents in {store_name}")
+                # Skip materials - they should stay in content_store, not be used for topic generation
+                if content_type == "material" or source_type == "material" or doc_type == "material":
+                    continue
+                    
+                filtered_documents.append((i, doc))  # Keep original index for vector mapping
+            
+            if not filtered_documents:
+                logger.warning(f"No non-material documents found in {store_name} for topic generation")
+                return []
+            
+            logger.info(f"Found {len(documents)} total documents in {store_name}, using {len(filtered_documents)} non-material documents for topic generation")
             logger.info(f"Index has dimension {index.d} and {index.ntotal} vectors")
             
-            # Perform clustering
-            n_clusters = min(num_chunks, len(documents))
+            # Perform clustering using filtered documents
+            n_clusters = min(num_chunks, len(filtered_documents))
             if n_clusters < 1:
-                logger.warning(f"Not enough documents for clustering in {store_name}")
+                logger.warning(f"Not enough non-material documents for clustering in {store_name}")
                 return []
                 
             kmeans = faiss.Kmeans(index.d, n_clusters)
@@ -1079,38 +1133,47 @@ Group semantically related topics together. Consider domain relationships and co
                 if vectors.shape[0] == 0:
                     logger.warning(f"No vectors found in {store_name} index")
                     return []
-                    
-                logger.info(f"Training K-means with {vectors.shape[0]} vectors")
-                kmeans.train(vectors)
+                
+                # Extract vectors for filtered documents only
+                filtered_indices = [doc_idx for doc_idx, _ in filtered_documents]
+                filtered_vectors = vectors[filtered_indices]
+                
+                logger.info(f"Training K-means with {filtered_vectors.shape[0]} non-material document vectors")
+                kmeans.train(filtered_vectors)
+                
+                # Create a temporary index with only filtered vectors for search
+                temp_index = faiss.IndexFlatL2(index.d)
+                temp_index.add(filtered_vectors)
                 
                 # Get nearest documents to centroids
-                _, I = index.search(kmeans.centroids, 1)
+                _, I = temp_index.search(kmeans.centroids, 1)
                 
                 result_docs = []
-                for idx in I.ravel():
-                    # Make sure the index is valid
-                    if idx < len(documents):
+                for temp_idx in I.ravel():
+                    # Map back to original document using filtered_documents mapping
+                    if temp_idx < len(filtered_documents):
+                        original_idx, doc = filtered_documents[temp_idx]
                         result_docs.append(Document(
-                            page_content=documents[idx]["content"],
-                            metadata=documents[idx]["metadata"]
+                            page_content=doc["content"],
+                            metadata=doc["metadata"]
                         ))
                     else:
-                        logger.warning(f"Invalid document index: {idx} (max: {len(documents)-1})")
+                        logger.warning(f"Invalid filtered document index: {temp_idx} (max: {len(filtered_documents)-1})")
                 
-                logger.info(f"Returning {len(result_docs)} representative documents")
+                logger.info(f"Returning {len(result_docs)} representative non-material documents")
                 return result_docs
             except Exception as cluster_err:
                 logger.error(f"Error during clustering: {cluster_err}")
                 
-                # Fallback: if clustering fails, just return a random sample
+                # Fallback: if clustering fails, just return a random sample from filtered documents
                 import random
-                sample_size = min(num_chunks, len(documents))
-                sample_indices = random.sample(range(len(documents)), sample_size)
+                sample_size = min(num_chunks, len(filtered_documents))
+                sample_indices = random.sample(range(len(filtered_documents)), sample_size)
                 
                 return [
                     Document(
-                        page_content=documents[i]["content"],
-                        metadata=documents[i]["metadata"]
+                        page_content=filtered_documents[i][1]["content"],
+                        metadata=filtered_documents[i][1]["metadata"]
                     )
                     for i in sample_indices
                 ]

@@ -10,12 +10,13 @@ knowledge processing is complete or interrupted, to ensure vector store
 consistency.
 
 Usage:
-    python rebuild_faiss_indexes.py [--data-path PATH] [--rebuild-all] [--rebuild-reference]
+    python rebuild_faiss_indexes.py [--data-path PATH] [--rebuild-all] [--rebuild-reference] [--content-only]
 
 Options:
     --data-path PATH       Path to data directory (defaults to config.json setting)
     --rebuild-all          Force complete rebuild of all vector stores
     --rebuild-reference    Force complete rebuild of reference store with all document types
+    --content-only         Force rebuild of content store only (materials/PDFs)
 """
 
 import asyncio
@@ -27,6 +28,10 @@ import os
 import sys
 import traceback
 import pandas as pd
+import numpy as np
+import math
+import shutil
+import inspect
 from datetime import datetime
 from pathlib import Path
 from langchain.schema import Document
@@ -53,23 +58,362 @@ except ImportError:
     from scripts.data.data_processor import DataProcessor
     use_new_modules = False
 
-async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False):
-    """Rebuild all FAISS indexes from document data.
+async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False, content_only=False):
+    """
+    Completely rebuild FAISS indexes from scratch in a single flow.
+    This function always does a complete rebuild - never incremental.
     
     Args:
         data_path (Path): Path to data directory
-        rebuild_all (bool): Force rebuild of all vector stores
+        rebuild_all (bool): Force rebuild of all vector stores (default behavior)
         rebuild_reference (bool): Force rebuild of reference store with all document types
+        content_only (bool): Force rebuild of content store only (materials/PDFs)
     """
     try:
         start_time = time.time()
         
+        # STEP 1: Complete cleanup - remove ALL existing stores for fresh start
+        logger.info("🔧 STEP 1: Complete cleanup - removing ALL existing stores for fresh rebuild...")
+        cleanup_results = complete_vector_store_cleanup(data_path, content_only=content_only)
+        
+        # Initialize vector store manager
+        from scripts.storage.vector_store_manager import VectorStoreManager
+        vector_store_manager = VectorStoreManager(base_path=data_path)
+        
+        result = {
+            "status": "success",
+            "stores_rebuilt": [],
+            "total_documents": 0,
+            "document_counts": {}
+        }
+        
+        # STEP 2: Rebuild stores based on requested scope
+        if content_only:
+            logger.info("🔄 STEP 2: Rebuilding ONLY content store (materials/PDFs)...")
+            
+            # Process PDF materials for content store
+            test_documents = await process_materials_to_documents(None, data_path)
+            
+            if test_documents:
+                logger.info(f"Creating fresh content_store with {len(test_documents)} material documents")
+                
+                # Create metadata for tracking
+                metadata = {
+                    "data_type": "materials",
+                    "content_type": "material", 
+                    "item_count": len(test_documents),
+                    "source": "rebuild_faiss_indexes_complete",
+                    "added_at": datetime.now().isoformat()
+                }
+                
+                # Create content store from scratch (not add to existing)
+                content_result = await vector_store_manager.create_or_update_store(
+                    "content_store",
+                    test_documents,
+                    metadata=metadata,
+                    update_stats=True
+                )
+                
+                if content_result:
+                    logger.info(f"✅ Successfully created content_store with {len(test_documents)} documents")
+                    result["stores_rebuilt"].append("content_store")
+                    result["document_counts"]["content_store"] = len(test_documents)
+                    result["total_documents"] += len(test_documents)
+                else:
+                    raise Exception("Failed to create content_store")
+        
+        elif rebuild_reference:
+            logger.info("🔄 STEP 2: Rebuilding ONLY reference store with all document types...")
+            
+            # Add all document types to reference store
+            total_docs = await add_document_types(data_path, force_all=True)
+            
+            if total_docs > 0:
+                logger.info(f"✅ Successfully created reference_store with {total_docs} documents")
+                result["stores_rebuilt"].append("reference_store")
+                result["document_counts"]["reference_store"] = total_docs
+                result["total_documents"] += total_docs
+            else:
+                raise Exception("Failed to create reference_store")
+        
+        else:
+            # Default: Rebuild ALL stores (content_store + reference_store + topic_stores)
+            logger.info("🔄 STEP 2: Rebuilding ALL stores (content + reference + topics)...")
+            
+            # 2A: Create content_store with materials
+            test_documents = await process_materials_to_documents(None, data_path)
+            if test_documents:
+                logger.info(f"Creating fresh content_store with {len(test_documents)} material documents")
+                
+                metadata = {
+                    "data_type": "materials",
+                    "content_type": "material",
+                    "item_count": len(test_documents),
+                    "source": "rebuild_faiss_indexes_complete",
+                    "added_at": datetime.now().isoformat()
+                }
+                
+                content_result = await vector_store_manager.create_or_update_store(
+                    "content_store",
+                    test_documents,
+                    metadata=metadata,
+                    update_stats=True
+                )
+                
+                if content_result:
+                    logger.info(f"✅ Successfully created content_store with {len(test_documents)} documents")
+                    result["stores_rebuilt"].append("content_store")
+                    result["document_counts"]["content_store"] = len(test_documents)
+                    result["total_documents"] += len(test_documents)
+            
+            # 2B: Create reference_store with all document types
+            logger.info("Creating fresh reference_store with all document types...")
+            ref_docs = await add_document_types(data_path, force_all=True)
+            
+            if ref_docs > 0:
+                logger.info(f"✅ Successfully created reference_store with {ref_docs} documents")
+                result["stores_rebuilt"].append("reference_store")
+                result["document_counts"]["reference_store"] = ref_docs
+                result["total_documents"] += ref_docs
+        
+        # STEP 3: Generate topic stores from newly created stores
+        # Create topic stores when doing a full rebuild (not content_only and not rebuild_reference only)
+        if not content_only and not rebuild_reference:
+            logger.info("🏷️ STEP 3: Generating topic stores from newly created content...")
+            topic_stores_created = 0
+            
+            try:
+                # Get updated store list after rebuilding
+                stores = vector_store_manager.list_stores()
+                store_names = [store.get("name") for store in stores]
+                
+                # Use reference_store for topic generation (contains documents with proper tags)
+                # content_store contains raw materials without tags - not suitable for topic generation
+                source_store = None
+                if "reference_store" in store_names:
+                    source_store = "reference_store"
+                    logger.info("Using reference_store for topic generation (contains documents with tags)")
+                elif "content_store" in store_names:
+                    source_store = "content_store"
+                    logger.warning("Falling back to content_store for topic generation (may not have proper tags)")
+                
+                if source_store:
+                    logger.info(f"Getting representative docs from {source_store} for topics")
+                    
+                    # Get representative chunks to create topic stores
+                    rep_docs = await vector_store_manager.get_representative_chunks(
+                        store_name=source_store,
+                        num_chunks=100
+                    )
+                    
+                    if rep_docs:
+                        logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
+                        
+                        # Create topic stores using tag-based approach
+                        topic_results = await vector_store_manager.create_topic_stores(
+                            rep_docs,
+                            use_clustering=False,  # Use individual tag stores
+                            min_docs_per_topic=1   # Allow single-document topics per tag
+                        )
+                        
+                        if topic_results:
+                            topic_stores_created = len(topic_results)
+                            logger.info(f"Created {topic_stores_created} topic stores")
+                            
+                            # Add topic stores to results
+                            for topic, success in topic_results.items():
+                                if success:
+                                    topic_store_name = f"topic_{topic}"
+                                    result["stores_rebuilt"].append(topic_store_name)
+                                    logger.info(f"  - Created topic store: {topic_store_name}")
+                        else:
+                            logger.info("No topic stores were created from representative documents")
+                    else:
+                        logger.warning(f"No representative documents found in {source_store} for topic generation")
+                else:
+                    logger.warning("No source store found for topic generation")
+            except Exception as e:
+                logger.warning(f"Topic store generation failed: {e}")
+                logger.debug(f"Topic store generation error details: {traceback.format_exc()}")
+        
+        # STEP 4: Create comprehensive processing summary
+        duration = time.time() - start_time
+        
+        # Combine all results
+        comprehensive_results = {
+            **result,
+            "cleanup_results": cleanup_results,
+            "rebuild_reference": rebuild_reference,
+            "rebuild_all": rebuild_all,
+            "content_only": content_only,
+            "processing_duration_seconds": duration,
+            "topic_stores_created": len([s for s in result["stores_rebuilt"] if s.startswith("topic_")]),
+            "total_stores": len(result["stores_rebuilt"])
+        }
+        
+        # Create processing summary
+        create_processing_summary(data_path, comprehensive_results)
+        
+        # Log completion time
+        logger.info(f"⏱️ Complete rebuild process finished in {duration:.2f} seconds")
+        logger.info(f"📊 Rebuilt {len(result['stores_rebuilt'])} stores with {result['total_documents']} total documents")
+        logger.info("🎉 COMPLETE REBUILD FINISHED - Check processing_summary.txt for details")
+        
+        return comprehensive_results
+        
+    except Exception as e:
+        logger.error(f"❌ Error rebuilding indexes: {e}")
+        logger.error(traceback.format_exc())
+        
+        # Create error summary
+        try:
+            duration = time.time() - start_time
+            error_results = {
+                "status": "exception",
+                "error": str(e),
+                "processing_duration_seconds": duration
+            }
+            create_processing_summary(data_path, error_results)
+        except:
+            pass  # Don't fail on summary creation
+            
+        return {
+            "status": "exception",
+            "error": str(e),
+            "stores_rebuilt": [],
+            "total_documents": 0,
+            "document_counts": {}
+        }
+        start_time = time.time()
+        
         # STEP 1: Validate and cleanup existing vector stores
         logger.info("🔧 STEP 1: Validating and cleaning up existing vector stores...")
-        cleanup_results = validate_and_cleanup_vector_stores(data_path)
+        cleanup_results = validate_and_cleanup_vector_stores(data_path, content_only=content_only)
+        
+        # STEP 2: If we're doing content-only rebuild, handle that first
+        if content_only:
+            logger.info("🔄 STEP 2: Starting content store only rebuild (materials/PDFs)...")
+            from scripts.storage.vector_store_manager import VectorStoreManager
+            
+            # Initialize vector store manager
+            vector_store_manager = VectorStoreManager(base_path=data_path)
+            
+            # Get content store path
+            vector_stores_path = data_path / "vector_stores" / "default"
+            content_store_path = vector_stores_path / "content_store"
+            
+            # Ensure the directory exists
+            content_store_path.mkdir(parents=True, exist_ok=True)
+            
+            # Create a clean content store by removing existing documents.json
+            if (content_store_path / "documents.json").exists():
+                logger.info("Removing existing content store documents")
+                (content_store_path / "documents.json").unlink()
+                
+            # Create empty documents.json
+            with open(content_store_path / "documents.json", "w") as f:
+                json.dump([], f)
+                
+            # Now process only materials (PDFs) for content store
+            logger.info("Creating content store with materials/PDFs from scratch")
+            
+            # Check for materials folder
+            materials_path = data_path / "materials"
+            if not materials_path.exists() or not list(materials_path.glob("*.pdf")):
+                logger.warning("No PDF files found in materials folder for content store creation")
+                # Create a test PDF document for testing
+                logger.info("Creating test PDF document for content store testing...")
+                test_documents = [Document(
+                    page_content="This is a test PDF document for content store testing. It contains sample content to verify that the content store creation process works correctly.",
+                    metadata={
+                        'source_type': 'material',
+                        'content_type': 'material',
+                        'type': 'material',
+                        'title': 'Test PDF Document',
+                        'description': 'Test PDF for content store creation',
+                        'file_path': 'test_document.pdf',
+                        'processed_at': datetime.now().isoformat(),
+                        'document_id': f"test_pdf_{int(datetime.now().timestamp())}",
+                        'chunk_index': 0,
+                        'total_chunks': 1
+                    }
+                )]
+            else:
+                # Process actual PDF materials
+                test_documents = await process_materials_to_documents(None, data_path)
+            
+            if test_documents:
+                logger.info(f"Adding {len(test_documents)} material documents to content store")
+                
+                # Create metadata for tracking
+                metadata = {
+                    "data_type": "materials",
+                    "content_type": "material",
+                    "item_count": len(test_documents),
+                    "source": "rebuild_faiss_indexes_content_only",
+                    "added_at": datetime.now().isoformat()
+                }
+                
+                # Add to content store
+                result = await vector_store_manager.add_documents_to_store(
+                    "content_store",
+                    test_documents,
+                    metadata=metadata,
+                    update_stats=True
+                )
+                
+                if result:
+                    logger.info(f"✅ Successfully created content store with {len(test_documents)} documents")
+                    
+                    # Create comprehensive results for content-only rebuild
+                    duration = time.time() - start_time
+                    comprehensive_results = {
+                        "status": "success",
+                        "stores_rebuilt": ["content_store"],
+                        "total_documents": len(test_documents),
+                        "document_counts": {"content_store": len(test_documents)},
+                        "cleanup_results": cleanup_results,
+                        "content_only": True,
+                        "processing_duration_seconds": duration
+                    }
+                    
+                    # Create processing summary
+                    create_processing_summary(data_path, comprehensive_results)
+                    
+                    logger.info(f"⏱️ Content store rebuild finished in {duration:.2f} seconds")
+                    logger.info("🎉 CONTENT STORE REBUILD COMPLETE")
+                    return comprehensive_results
+                else:
+                    logger.error("❌ Failed to create content store")
+                    error_results = {
+                        "status": "error",
+                        "error": "Failed to create content store",
+                        "stores_rebuilt": [],
+                        "total_documents": 0,
+                        "document_counts": {},
+                        "cleanup_results": cleanup_results,
+                        "content_only": True,
+                        "processing_duration_seconds": time.time() - start_time
+                    }
+                    create_processing_summary(data_path, error_results)
+                    return error_results
+            else:
+                logger.error("❌ No documents to add to content store")
+                error_results = {
+                    "status": "error",
+                    "error": "No documents to add to content store",
+                    "stores_rebuilt": [],
+                    "total_documents": 0,
+                    "document_counts": {},
+                    "cleanup_results": cleanup_results,
+                    "content_only": True,
+                    "processing_duration_seconds": time.time() - start_time
+                }
+                create_processing_summary(data_path, error_results)
+                return error_results
         
         # STEP 2: If we're doing a complete reference store rebuild, handle that first
-        if rebuild_reference:
+        elif rebuild_reference:
             logger.info("🔄 STEP 2: Starting complete reference store rebuild with all document types...")
             from scripts.storage.vector_store_manager import VectorStoreManager
             
@@ -100,133 +444,189 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
             # The FAISS index is automatically built when documents are added
             logger.info("Reference store FAISS index has been rebuilt successfully")
         
-        # STEP 3: Rebuild all existing stores (or if --rebuild-reference isn't specified)
-        logger.info("🔄 STEP 3: Rebuilding vector stores using modular architecture...")
-        if use_new_modules:
-            logger.info("Using new modular architecture for rebuilding")
-            faiss_builder = FAISSBuilder(data_path)
-            # Check if FAISSBuilder has a rebuild_all_indexes method with a rebuild_all parameter
-            import inspect
-            faiss_rebuild_params = inspect.signature(faiss_builder.rebuild_all_indexes).parameters
-            if 'rebuild_all' in faiss_rebuild_params:
-                result = await faiss_builder.rebuild_all_indexes(rebuild_all=rebuild_all)
-            else:
-                # Fallback if the parameter isn't supported
-                result = await faiss_builder.rebuild_all_indexes()
-        else:
-            logger.info("Using legacy DataProcessor for rebuilding")
-            data_processor = DataProcessor(data_path)
-            # Check if DataProcessor has a rebuild_all_vector_stores method with a rebuild_all parameter
-            import inspect
-            data_processor_params = inspect.signature(data_processor.rebuild_all_vector_stores).parameters
-            if 'rebuild_all' in data_processor_params:
-                result = await data_processor.rebuild_all_vector_stores(rebuild_all=rebuild_all)
-            else:
-                # Fallback if the parameter isn't supported
-                result = await data_processor.rebuild_all_vector_stores()
+        # STEP 3: Create missing stores (content_store if not exists) without redundant rebuilding
+        logger.info("🔄 STEP 3: Creating missing stores and adding missing document types...")
         
-        if result and result.get("status") == "success":
-            logger.info("✅ Successfully rebuilt all FAISS indexes")
-            logger.info(f"Rebuilt {len(result.get('stores_rebuilt', []))} stores")
-            logger.info(f"Total documents indexed: {result.get('total_documents', 0)}")
+        # Import vector store manager
+        from scripts.storage.vector_store_manager import VectorStoreManager
+        vector_store_manager = VectorStoreManager(base_path=data_path)
+        
+        # Check which stores exist
+        stores = vector_store_manager.list_stores()
+        store_names = [store.get("name") for store in stores]
+        
+        result = {
+            "status": "success",
+            "stores_rebuilt": [],
+            "total_documents": 0,
+            "document_counts": {}
+        }
+        
+        # Create content_store if it doesn't exist or is empty
+        if "content_store" not in store_names or rebuild_all:
+            logger.info("Creating content_store with PDF materials...")
             
-            # Show individual store stats
-            for store_name, doc_count in result.get('document_counts', {}).items():
-                logger.info(f"  - {store_name}: {doc_count} documents")
+            # Process PDF materials for content store
+            test_documents = await process_materials_to_documents(None, data_path)
+            
+            if test_documents:
+                # Create metadata for tracking
+                metadata = {
+                    "data_type": "materials",
+                    "content_type": "material",
+                    "item_count": len(test_documents),
+                    "source": "rebuild_faiss_indexes_materials",
+                    "added_at": datetime.now().isoformat()
+                }
                 
-            # STEP 4: If we're not forcing a complete rebuild of the reference store,
-            # check for missing document types and add them
-            if not rebuild_reference:
-                logger.info("🔍 STEP 4: Checking for missing document types...")
-                added_missing = await add_document_types(data_path, check_existing=True)
-                if added_missing > 0:
-                    logger.info(f"Successfully added {added_missing} missing documents to reference_store")
+                # Add to content store (will create if not exists)
+                content_result = await vector_store_manager.add_documents_to_store(
+                    "content_store",
+                    test_documents,
+                    metadata=metadata,
+                    update_stats=True
+                )
+                
+                if content_result:
+                    logger.info(f"✅ Successfully created content_store with {len(test_documents)} documents")
+                    result["stores_rebuilt"].append("content_store")
+                    result["document_counts"]["content_store"] = len(test_documents)
+                    result["total_documents"] += len(test_documents)
+        
+        # Use existing modular architecture only for reference_store if needed
+        if "reference_store" not in store_names or rebuild_all:
+            logger.info("Creating/rebuilding reference_store using modular architecture...")
+            if use_new_modules:
+                logger.info("Using new modular architecture for reference store")
+                faiss_builder = FAISSBuilder(data_path)
+                # Check if FAISSBuilder has a rebuild_all_indexes method with a rebuild_all parameter
+                import inspect
+                faiss_rebuild_params = inspect.signature(faiss_builder.rebuild_all_indexes).parameters
+                if 'rebuild_all' in faiss_rebuild_params:
+                    ref_result = await faiss_builder.rebuild_all_indexes(rebuild_all=rebuild_all)
                 else:
-                    logger.info("No missing document types needed to be added")
+                    # Fallback if the parameter isn't supported
+                    ref_result = await faiss_builder.rebuild_all_indexes()
+            else:
+                logger.info("Using legacy DataProcessor for reference store")
+                data_processor = DataProcessor(data_path)
+                # Check if DataProcessor has a rebuild_all_vector_stores method with a rebuild_all parameter
+                import inspect
+                data_processor_params = inspect.signature(data_processor.rebuild_all_vector_stores).parameters
+                if 'rebuild_all' in data_processor_params:
+                    ref_result = await data_processor.rebuild_all_vector_stores(rebuild_all=rebuild_all)
+                else:
+                    # Fallback if the parameter isn't supported
+                    ref_result = await data_processor.rebuild_all_vector_stores()
             
-            # STEP 5: Check if we need to generate topic stores
-            # Count how many topic stores were rebuilt
-            topic_stores = [store for store in result.get('stores_rebuilt', []) if store.startswith("topic_")]
+            # Merge results
+            if ref_result and ref_result.get("status") == "success":
+                for store in ref_result.get("stores_rebuilt", []):
+                    if store not in result["stores_rebuilt"]:
+                        result["stores_rebuilt"].append(store)
+                
+                for store, count in ref_result.get("document_counts", {}).items():
+                    result["document_counts"][store] = count
+                    result["total_documents"] += count
+        
+        # STEP 4: Add missing document types to reference_store (not rebuild_reference case)
+        if not rebuild_reference:
+            logger.info("🔍 STEP 4: Checking for missing document types...")
+            added_missing = await add_document_types(data_path, check_existing=True)
+            if added_missing > 0:
+                logger.info(f"Successfully added {added_missing} missing documents to reference_store")
+                # Update results
+                if "reference_store" in result["document_counts"]:
+                    result["document_counts"]["reference_store"] += added_missing
+                else:
+                    result["document_counts"]["reference_store"] = added_missing
+                result["total_documents"] += added_missing
+            else:
+                logger.info("No missing document types needed to be added")
+        
+        # STEP 5: Generate topic stores from existing content (without rebuilding content stores)
+        logger.info(f"🏷️ STEP 5: Generating topic stores from existing content")
+        topic_stores_created = 0
+        
+        try:
+            # Get updated store list after our changes
+            stores = vector_store_manager.list_stores()
+            store_names = [store.get("name") for store in stores]
             
-            if len(topic_stores) < 3:
-                logger.info(f"🏷️ STEP 5: Few topic stores created ({len(topic_stores)}), attempting to generate topic stores")
+            # Try reference_store first (has documents with tags), then content_store as fallback
+            source_store = None
+            if "reference_store" in store_names:
+                source_store = "reference_store"
+                logger.info("Using reference_store for topic generation (contains documents with tags)")
+            elif "content_store" in store_names:
+                source_store = "content_store"
+                logger.warning("Falling back to content_store for topic generation (may not have proper tags)")
+            
+            if source_store:
+                logger.info(f"Getting representative docs from {source_store} for topics")
                 
-                # Import vector store manager for topic store generation
-                from scripts.storage.vector_store_manager import VectorStoreManager
+                # Get representative chunks to create topic stores
+                rep_docs = await vector_store_manager.get_representative_chunks(
+                    store_name=source_store, 
+                    num_chunks=100
+                )
                 
-                # Initialize with the data path
-                vector_store_manager = VectorStoreManager(base_path=data_path)
-                
-                # Check if content_store exists
-                stores = vector_store_manager.list_stores()
-                if "content_store" in [store.get("name") for store in stores]:
-                    logger.info("Content store exists, getting representative docs for topics")
+                if rep_docs:
+                    logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
                     
-                    # Get representative chunks to create topic stores
-                    rep_docs = await vector_store_manager.get_representative_chunks(
-                        store_name="content_store", 
-                        num_chunks=100
+                    # Try to create topic stores from these docs using tag-based approach
+                    topic_results = await vector_store_manager.create_topic_stores(
+                        rep_docs, 
+                        use_clustering=False,  # Use individual tag stores instead of clustering
+                        min_docs_per_topic=1   # Allow single-document topics per tag
                     )
                     
-                    if rep_docs:
-                        logger.info(f"Got {len(rep_docs)} representative documents for topic generation")
-                        
-                        # Try to create topic stores from these docs using tag-based approach
-                        topic_results = await vector_store_manager.create_topic_stores(
-                            rep_docs, 
-                            use_clustering=False,  # Use individual tag stores instead of clustering
-                            min_docs_per_topic=1   # Allow single-document topics per tag
-                        )
-                        
-                        if topic_results:
-                            logger.info(f"Created {len(topic_results)} additional topic stores")
-                            # Log the created topic stores
-                            for topic, success in topic_results.items():
-                                if success:
-                                    logger.info(f"  - Created topic store for: {topic}")
+                    if topic_results:
+                        topic_stores_created = len(topic_results)
+                        logger.info(f"Created {topic_stores_created} topic stores")
+                        # Log the created topic stores
+                        for topic, success in topic_results.items():
+                            if success:
+                                logger.info(f"  - Created topic store for: {topic}")
                     else:
-                        logger.warning("No representative documents found for topic generation")
+                        logger.info("No topic stores were created from representative documents")
                 else:
-                    logger.warning("Content store not found, cannot generate topic stores")
+                    logger.warning(f"No representative documents found in {source_store} for topic generation")
             else:
-                logger.info(f"Found {len(topic_stores)} topic stores, no need to generate more")
-            
-            # STEP 6: Create comprehensive processing summary
-            duration = time.time() - start_time
-            
-            # Combine all results
-            comprehensive_results = {
-                **result,
-                "cleanup_results": cleanup_results,
-                "rebuild_reference": rebuild_reference,
-                "rebuild_all": rebuild_all,
-                "processing_duration_seconds": duration,
-                "missing_documents_added": added_missing if not rebuild_reference else 0,
-                "topic_stores_generated": len(topic_stores)
-            }
-            
-            # Create processing summary
-            create_processing_summary(data_path, comprehensive_results)
-            
-            # Log completion time
-            logger.info(f"⏱️ Complete rebuild process finished in {duration:.2f} seconds")
-            logger.info("🎉 REBUILD COMPLETE - Check processing_summary.txt for details")
-            return True
-        else:
-            error_msg = result.get("message", "Unknown error") if result else "No result returned"
-            logger.error(f"❌ Failed to rebuild indexes: {error_msg}")
-            
-            # Still create a summary for failed processing
-            duration = time.time() - start_time
-            error_results = {
-                "status": "error",
-                "error": error_msg,
-                "cleanup_results": cleanup_results,
-                "processing_duration_seconds": duration
-            }
-            create_processing_summary(data_path, error_results)
-            
-            return False
+                logger.warning("Neither content_store nor reference_store found, cannot generate topic stores")
+        except Exception as e:
+            logger.warning(f"Topic store generation failed: {e}")
+            logger.debug(f"Topic store generation error details: {traceback.format_exc()}")
+        
+        # STEP 6: Create comprehensive processing summary
+        duration = time.time() - start_time
+        
+        # Count existing topic stores for reporting
+        existing_topic_stores = [store for store in result.get('stores_rebuilt', []) if store.startswith("topic_")]
+        total_topic_stores = len(existing_topic_stores) + topic_stores_created
+        
+        # Combine all results
+        comprehensive_results = {
+            **result,
+            "cleanup_results": cleanup_results,
+            "rebuild_reference": rebuild_reference,
+            "rebuild_all": rebuild_all,
+            "processing_duration_seconds": duration,
+            "missing_documents_added": added_missing if not rebuild_reference else 0,
+            "existing_topic_stores_rebuilt": len(existing_topic_stores),
+            "new_topic_stores_created": topic_stores_created,
+            "total_topic_stores": total_topic_stores
+        }
+        
+        # Create processing summary
+        create_processing_summary(data_path, comprehensive_results)
+        
+        # Log completion time with topic store information
+        logger.info(f"⏱️ Complete rebuild process finished in {duration:.2f} seconds")
+        logger.info(f"🏷️ Topic stores: {len(existing_topic_stores)} existing + {topic_stores_created} newly created = {total_topic_stores} total")
+        logger.info("🎉 REBUILD COMPLETE - Check processing_summary.txt for details")
+        return comprehensive_results
+        
     except Exception as e:
         logger.error(f"❌ Error rebuilding indexes: {e}")
         import traceback
@@ -244,7 +644,13 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False)
         except:
             pass  # Don't fail on summary creation
             
-        return False
+        return {
+            "status": "exception",
+            "error": str(e),
+            "stores_rebuilt": [],
+            "total_documents": 0,
+            "document_counts": {}
+        }
 
 def sanitize_value(value):
     """Sanitize a value to ensure it's JSON-serializable and handles all types of NaN/null values."""
@@ -729,8 +1135,8 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
                     "added_at": datetime.now().isoformat()
                 }
                 
-                # Add to appropriate vector store
-                result = await vector_store_manager.add_documents_to_store(
+                # Create fresh vector store (not add to existing)
+                result = await vector_store_manager.create_or_update_store(
                     target_store,
                     documents,
                     metadata=metadata,
@@ -756,225 +1162,106 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
         return 0
 
 async def process_materials_to_documents(csv_path, data_path):
-    """Process materials.csv to create PDF documents using PyPDFLoader with consistent chunking.
-    Also handles PDFs in materials folder that don't appear in materials.csv (auto-downloaded ones).
+    """Process all PDF files in the materials folder directly.
+    No longer requires materials.csv - processes all PDFs found in the materials directory.
     
     Args:
-        csv_path (Path): Path to materials.csv file
+        csv_path (Path): Path to materials.csv file (ignored - kept for compatibility)
         data_path (Path): Base data path for finding PDF files
         
     Returns:
         list: List of Document objects from PDF processing
     """
     try:
-        import pandas as pd
-        
         documents = []
         materials_path = data_path / "materials"
-        processed_pdfs = set()  # Track which PDFs we've processed
         
-        # First, process PDFs listed in materials.csv
-        if csv_path.exists():
-            df = pd.read_csv(csv_path)
-            logger.info(f"Processing {len(df)} PDF materials from {csv_path}")
-            logger.info(f"Materials CSV columns: {list(df.columns)}")
-            
-            for _, row in df.iterrows():
-                try:
-                    # Get PDF file path from the CSV
-                    file_path_str = row.get('file_path', '')
-                    if not file_path_str:
-                        logger.warning(f"No file_path for material: {row.get('title', 'Unknown')}")
-                        continue
-                    
-                    # Handle both absolute and relative paths
-                    file_path = Path(file_path_str)
-                    if not file_path.is_absolute():
-                        # Try relative to materials folder first
-                        file_path = materials_path / file_path_str
-                        if not file_path.exists():
-                            # Try relative to data path
-                            file_path = data_path / file_path_str
-                    
-                    if not file_path.exists():
-                        logger.warning(f"PDF file not found: {file_path}")
-                        continue
-                    
-                    if not file_path.suffix.lower() == '.pdf':
-                        logger.warning(f"File is not a PDF: {file_path}")
-                        continue
-                    
-                    # Mark this PDF as processed from CSV
-                    processed_pdfs.add(str(file_path.resolve()))
-                    
-                    logger.info(f"Processing PDF from CSV: {file_path}")
-                    
-                    # Use PyPDFLoader to extract content
-                    loader = PyPDFLoader(str(file_path))
-                    pdf_docs = loader.load()
-                    
-                    # Apply consistent chunking to match reference store settings
-                    from langchain.text_splitter import RecursiveCharacterTextSplitter
-                    text_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=1500,    # Consistent with reference store chunking
-                        chunk_overlap=200,  # Consistent with reference store chunking
-                        separators=["\n\n", "\n", ". ", ", ", " ", ""]
-                    )
-                    
-                    # Re-chunk PDF documents for consistency with reference store
-                    chunked_docs = text_splitter.split_documents(pdf_docs)
-                    pdf_docs = chunked_docs
-                    
-                    # Generate unique document ID for relationship tracking
-                    material_id = row.get('id', '')
-                    document_id = f"material_{material_id}_pdf_{file_path.name}"
-                    document_title = row.get('title', file_path.stem)
-                    
-                    # Add comprehensive metadata to each document chunk for relationship tracking
-                    for i, doc in enumerate(pdf_docs):
-                        # Create enhanced metadata with document relationship labeling
-                        doc.metadata.update({
-                            # Core identification
-                            'source_type': 'material',
-                            'content_type': 'material',
-                            'type': 'material',
-                            'title': document_title,
-                            'description': row.get('description', ''),
-                            'fields': row.get('fields', '').split(',') if row.get('fields') else [],
-                            'file_path': str(file_path),
-                            'created_at': row.get('created_at', ''),
-                            'processed_at': datetime.now().isoformat(),
-                            'csv_source': str(csv_path),
-                            
-                            # Document relationship labeling for chunk grouping (CRITICAL FOR SUMMARIZATION)
-                            'document_id': document_id,
-                            'document_name': file_path.name,
-                            'document_title': document_title,
-                            'material_id': material_id,
-                            'material_title': document_title,
-                            
-                            # Chunk relationship metadata for document summaries
-                            'total_chunks': len(pdf_docs),
-                            'chunk_index': i,
-                            'chunk_id': f"{document_id}_chunk_{i}",
-                            
-                            # PDF-specific metadata
-                            'pdf_page': doc.metadata.get('page', 0),
-                            'pdf_source': str(file_path),
-                            'pdf_chunks_total': len(pdf_docs),
-                            
-                            # Additional material-specific metadata
-                            'original_source': 'materials_csv'
-                        })
-                        
-                        # Sanitize all metadata to ensure JSON serialization
-                        for key, value in doc.metadata.items():
-                            doc.metadata[key] = sanitize_value(value)
-                    
-                    documents.extend(pdf_docs)
-                    logger.info(f"✅ Extracted {len(pdf_docs)} chunks from PDF: {file_path.name} (chunks sized ~1500 chars for consistency)")
-                    logger.info(f"📊 Document ID for summarization: {document_id}")
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error processing PDF material {row.get('title', 'Unknown')}: {e}")
-                    continue
-        else:
-            logger.info(f"materials.csv not found at {csv_path}, will only process PDFs in materials folder")
+        # Check if materials folder exists
+        if not materials_path.exists():
+            logger.info(f"Materials folder not found at {materials_path}, creating it")
+            materials_path.mkdir(parents=True, exist_ok=True)
+            return documents
         
-        # Second, process any PDFs in materials folder that weren't in materials.csv
-        # (These are typically auto-downloaded PDFs from URL processing)
-        if materials_path.exists():
-            logger.info(f"🔍 Scanning materials folder for additional PDFs: {materials_path}")
-            
-            # Find all PDF files in materials directory
-            pdf_files = list(materials_path.glob("*.pdf"))
-            logger.info(f"Found {len(pdf_files)} PDF files in materials folder")
-            
-            # Filter out PDFs we already processed from CSV
-            unprocessed_pdfs = []
-            for pdf_file in pdf_files:
-                pdf_path_str = str(pdf_file.resolve())
-                if pdf_path_str not in processed_pdfs:
-                    unprocessed_pdfs.append(pdf_file)
-            
-            logger.info(f"Found {len(unprocessed_pdfs)} PDFs not in materials.csv that need processing")
-            
-            # Process unprocessed PDFs
-            for pdf_file in unprocessed_pdfs:
-                try:
-                    logger.info(f"Processing auto-downloaded PDF: {pdf_file.name}")
-                    
-                    # Use PyPDFLoader to extract content
-                    loader = PyPDFLoader(str(pdf_file))
-                    pdf_docs = loader.load()
-                    
-                    # Apply consistent chunking
-                    from langchain.text_splitter import RecursiveCharacterTextSplitter
-                    text_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=1500,    # Consistent with reference store chunking
-                        chunk_overlap=200,  # Consistent with reference store chunking
-                        separators=["\n\n", "\n", ". ", ", ", " ", ""]
-                    )
-                    
-                    # Re-chunk PDF documents for consistency
-                    chunked_docs = text_splitter.split_documents(pdf_docs)
-                    pdf_docs = chunked_docs
-                    
-                    # Generate document ID for auto-downloaded PDFs
-                    document_id = f"auto_pdf_{pdf_file.stem}_{int(datetime.now().timestamp())}"
-                    document_title = pdf_file.stem
-                    
-                    # Add metadata for auto-downloaded PDFs
-                    for i, doc in enumerate(pdf_docs):
-                        doc.metadata.update({
-                            # Core identification
-                            'source_type': 'auto_downloaded_pdf',
-                            'content_type': 'material',
-                            'type': 'material',
-                            'title': document_title,
-                            'description': f"Auto-downloaded PDF: {pdf_file.name}",
-                            'fields': [],
-                            'file_path': str(pdf_file),
-                            'created_at': '',
-                            'processed_at': datetime.now().isoformat(),
-                            'csv_source': 'not_in_csv',
-                            
-                            # Document relationship labeling
-                            'document_id': document_id,
-                            'document_name': pdf_file.name,
-                            'document_title': document_title,
-                            'material_id': '',
-                            'material_title': document_title,
-                            
-                            # Chunk relationship metadata
-                            'total_chunks': len(pdf_docs),
-                            'chunk_index': i,
-                            'chunk_id': f"{document_id}_chunk_{i}",
-                            
-                            # PDF-specific metadata
-                            'pdf_page': doc.metadata.get('page', 0),
-                            'pdf_source': str(pdf_file),
-                            'pdf_chunks_total': len(pdf_docs),
-                            
-                            # Mark as auto-downloaded
-                            'original_source': 'auto_downloaded',
-                            'auto_downloaded': True
-                        })
+        # Find all PDF files in materials directory
+        pdf_files = list(materials_path.glob("*.pdf"))
+        logger.info(f"📂 Found {len(pdf_files)} PDF files in materials folder: {materials_path}")
+        
+        if not pdf_files:
+            logger.info("No PDF files found in materials folder")
+            return documents
+        
+        # Process all PDFs found in materials folder
+        for pdf_file in pdf_files:
+            try:
+                logger.info(f"📄 Processing PDF: {pdf_file.name}")
+                
+                # Use PyPDFLoader to extract content
+                loader = PyPDFLoader(str(pdf_file))
+                pdf_docs = loader.load()
+                
+                # Apply consistent chunking
+                from langchain.text_splitter import RecursiveCharacterTextSplitter
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=1500,    # Consistent with reference store chunking
+                    chunk_overlap=200,  # Consistent with reference store chunking
+                    separators=["\n\n", "\n", ". ", ", ", " ", ""]
+                )
+                
+                # Re-chunk PDF documents for consistency
+                chunked_docs = text_splitter.split_documents(pdf_docs)
+                pdf_docs = chunked_docs
+                
+                # Generate document ID
+                document_id = f"pdf_{pdf_file.stem}_{int(datetime.now().timestamp())}"
+                document_title = pdf_file.stem.replace('_', ' ').title()
+                
+                # Add metadata for all PDFs (no distinction between manual/auto-downloaded)
+                for i, doc in enumerate(pdf_docs):
+                    doc.metadata.update({
+                        # Core identification
+                        'source_type': 'material',
+                        'content_type': 'material',
+                        'type': 'material',
+                        'title': document_title,
+                        'description': f"PDF Document: {pdf_file.name}",
+                        'fields': [],
+                        'file_path': str(pdf_file),
+                        'created_at': '',
+                        'processed_at': datetime.now().isoformat(),
+                        'csv_source': 'direct_pdf_processing',
                         
-                        # Sanitize all metadata
-                        for key, value in doc.metadata.items():
-                            doc.metadata[key] = sanitize_value(value)
+                        # Document relationship labeling
+                        'document_id': document_id,
+                        'document_name': pdf_file.name,
+                        'document_title': document_title,
+                        'material_id': '',
+                        'material_title': document_title,
+                        
+                        # Chunk relationship metadata
+                        'total_chunks': len(pdf_docs),
+                        'chunk_index': i,
+                        'chunk_id': f"{document_id}_chunk_{i}",
+                        
+                        # PDF-specific metadata
+                        'pdf_page': doc.metadata.get('page', 0),
+                        'pdf_source': str(pdf_file),
+                        'pdf_chunks_total': len(pdf_docs),
+                        
+                        # Mark as processed
+                        'original_source': 'materials_folder',
+                        'auto_downloaded': False  # All PDFs treated equally now
+                    })
                     
-                    documents.extend(pdf_docs)
-                    logger.info(f"✅ Processed auto-downloaded PDF: {pdf_file.name} ({len(pdf_docs)} chunks)")
-                    
-                    # Optionally, add to materials.csv for future reference
-                    # This can be enabled as needed
-                    await add_pdf_to_materials_csv(pdf_file, csv_path, data_path)
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error processing auto-downloaded PDF {pdf_file.name}: {e}")
-                    continue
+                    # Sanitize all metadata
+                    for key, value in doc.metadata.items():
+                        doc.metadata[key] = sanitize_value(value)
+                
+                documents.extend(pdf_docs)
+                logger.info(f"✅ Processed PDF: {pdf_file.name} ({len(pdf_docs)} chunks)")
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing PDF {pdf_file.name}: {e}")
+                continue
         
         logger.info(f"🎉 Created {len(documents)} total document chunks from PDF materials")
         logger.info(f"📋 All chunks labeled with document relationships for future summarization")
@@ -1118,6 +1405,20 @@ def should_rebuild_vector_stores(data_path):
             if not (store_path.exists() and (store_path / "index.faiss").exists()):
                 reasons.append(f"Missing vector store: {store}")
                 force_rebuild = True
+        
+        # Check for topic stores - if content_store or reference_store exists but no topic stores, we should rebuild
+        if vector_stores_path.exists():
+            existing_stores = [d.name for d in vector_stores_path.iterdir() if d.is_dir()]
+            topic_stores = [store for store in existing_stores if store.startswith("topic_")]
+            
+            # If we have content/reference stores but no topic stores, force rebuild for topic generation
+            has_main_stores = any(store in existing_stores for store in ["content_store", "reference_store"])
+            if has_main_stores and not topic_stores:
+                reasons.append("Topic stores missing - need to generate topic stores from existing content")
+                force_rebuild = True
+                logger.info(f"Found main stores {[s for s in essential_stores if s in existing_stores]} but no topic stores")
+            elif topic_stores:
+                logger.info(f"Found {len(topic_stores)} topic stores: {topic_stores[:3]}{'...' if len(topic_stores) > 3 else ''}")
     
     return {
         "should_rebuild": force_rebuild,
@@ -1358,13 +1659,14 @@ def process_csv_to_documents(csv_path: Path, content_type: str, field_mappings: 
         logger.error(f"❌ Error processing {csv_path}: {e}")
         return []
 
-def validate_and_cleanup_vector_stores(data_path):
+def complete_vector_store_cleanup(data_path, content_only=False):
     """
-    Validate existing vector stores and clean up any corrupted or inconsistent data.
-    This ensures a clean slate before rebuilding.
+    Completely remove all existing vector stores for a fresh start.
+    This ensures we always do a complete rebuild, never incremental.
     
     Args:
         data_path: Path to data directory
+        content_only (bool): If True, only remove content_store, preserve others
         
     Returns:
         Dict with cleanup results
@@ -1372,7 +1674,64 @@ def validate_and_cleanup_vector_stores(data_path):
     from pathlib import Path
     import shutil
     
-    logger.info("🔧 Validating and cleaning up existing vector stores...")
+    logger.info("🧹 Performing complete vector store cleanup for fresh rebuild...")
+    
+    cleanup_results = {
+        "stores_removed": 0,
+        "stores_preserved": 0,
+        "action": "complete_cleanup",
+        "issues_found": []
+    }
+    
+    vector_stores_path = Path(data_path) / "vector_stores" / "default"
+    
+    if not vector_stores_path.exists():
+        logger.info("No existing vector stores found - starting completely fresh")
+        return cleanup_results
+    
+    try:
+        # Remove all store directories for fresh start
+        for store_dir in vector_stores_path.iterdir():
+            if not store_dir.is_dir():
+                continue
+                
+            store_name = store_dir.name
+            
+            # If content_only mode, only remove content_store, preserve all other stores
+            if content_only and store_name != "content_store":
+                logger.info(f"🔒 Content-only mode: Preserving {store_name}")
+                cleanup_results["stores_preserved"] += 1
+                continue
+            
+            # Remove this store completely for fresh rebuild
+            logger.info(f"🗑️ Removing {store_name} for fresh rebuild")
+            shutil.rmtree(store_dir)
+            cleanup_results["stores_removed"] += 1
+        
+        logger.info(f"✅ Cleanup complete: removed {cleanup_results['stores_removed']} stores, preserved {cleanup_results['stores_preserved']} stores")
+        return cleanup_results
+        
+    except Exception as e:
+        logger.error(f"Error during complete vector store cleanup: {e}")
+        cleanup_results["issues_found"].append(f"Cleanup error: {e}")
+        return cleanup_results
+
+def validate_and_cleanup_vector_stores(data_path, content_only=False):
+    """
+    Validate existing vector stores and clean up ONLY corrupted or inconsistent data.
+    Preserves working stores to avoid unnecessary rebuilds.
+    
+    Args:
+        data_path: Path to data directory
+        content_only (bool): If True, only validate content_store, preserve all others
+        
+    Returns:
+        Dict with cleanup results
+    """
+    from pathlib import Path
+    import shutil
+    
+    logger.info("🔧 Validating existing vector stores (removing only corrupted stores)...")
     
     cleanup_results = {
         "stores_checked": 0,
@@ -1396,6 +1755,11 @@ def validate_and_cleanup_vector_stores(data_path):
                 
             cleanup_results["stores_checked"] += 1
             store_name = store_dir.name
+            
+            # If content_only mode, only clean up content_store, preserve all other stores
+            if content_only and store_name != "content_store":
+                logger.info(f"🔒 Content-only mode: Preserving {store_name} (not cleaning)")
+                continue
             
             # Check for required files
             documents_json = store_dir / "documents.json"
@@ -1511,8 +1875,16 @@ def create_processing_summary(data_path, processing_results):
             
             if "document_counts" in processing_results:
                 f.write("Document Counts by Store:\n")
-                for store, count in processing_results["document_counts"].items():
-                    f.write(f"  - {store}: {count} documents\n")
+                document_counts = processing_results["document_counts"]
+                
+                # Handle different types of document_counts data
+                if isinstance(document_counts, dict):
+                    for store, count in document_counts.items():
+                        f.write(f"  - {store}: {count} documents\n")
+                elif isinstance(document_counts, (int, float)):
+                    f.write(f"  - Total: {document_counts} documents\n")
+                else:
+                    f.write(f"  - Document counts: {document_counts}\n")
                 f.write("\n")
             
             if "total_documents" in processing_results:
@@ -1535,6 +1907,7 @@ def main():
     parser.add_argument("--data-path", type=str, help="Path to data directory (defaults to config.json setting)")
     parser.add_argument("--rebuild-all", action="store_true", help="Force complete rebuild of all vector stores")
     parser.add_argument("--rebuild-reference", action="store_true", help="Force complete rebuild of reference store with all document types")
+    parser.add_argument("--content-only", action="store_true", help="Force rebuild of content store only (materials/PDFs)")
     parser.add_argument('--force', action='store_true', help='Force rebuild even if no changes detected')
     parser.add_argument('--check-only', action='store_true', help='Only check if rebuild is needed, don\'t rebuild')
     
@@ -1570,11 +1943,11 @@ def main():
     # Run the rebuild process
     try:
         # Validate and clean up existing vector stores first
-        cleanup_results = validate_and_cleanup_vector_stores(data_path)
+        cleanup_results = validate_and_cleanup_vector_stores(data_path, content_only=args.content_only)
         
         logger.info(f"🔧 Cleanup Results: {cleanup_results}")
         
-        result = asyncio.run(rebuild_indexes(data_path, rebuild_all=args.rebuild_all, rebuild_reference=args.rebuild_reference))
+        result = asyncio.run(rebuild_indexes(data_path, rebuild_all=args.rebuild_all, rebuild_reference=args.rebuild_reference, content_only=args.content_only))
         
         if result:
             # Update rebuild timestamp on success
@@ -1582,15 +1955,18 @@ def main():
             
             if args.rebuild_reference:
                 logger.info("🎉 Complete rebuild successful")
+            elif args.content_only:
+                logger.info("🎉 Content store rebuild successful")
             else:
                 logger.info("🎉 FAISS index rebuild successful")
             
-            # Create processing summary
+            # Create processing summary using the actual rebuild results, not cleanup results
             processing_results = {
                 "status": "success",
-                "stores_rebuilt": cleanup_results.get("stores_checked", 0),
-                "total_documents": sum(cleanup_results.get("document_counts", {}).values()),
-                "document_counts": cleanup_results.get("document_counts", {})
+                "stores_rebuilt": result.get("stores_rebuilt", []),
+                "total_documents": result.get("total_documents", 0),
+                "document_counts": result.get("document_counts", {}),
+                "cleanup_results": cleanup_results  # Include cleanup info separately
             }
             
             create_processing_summary(data_path, processing_results)
