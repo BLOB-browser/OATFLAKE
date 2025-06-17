@@ -153,6 +153,12 @@
             </svg>
             Connect
         </button>
+        <!-- Temporary test button for browser modal (small and discrete) -->
+        <button onclick="window.testSearchResultModal && window.testSearchResultModal()" 
+                title="Test Browser Modal"
+                class="px-1 py-1 text-xs bg-gray-600 hover:bg-gray-500 rounded text-white">
+            ↗
+        </button>
     </div>
     
     <!-- Combined Action Bar with View Switch -->
@@ -241,6 +247,12 @@
         <div id="settingsContainer"></div>
   
     </div>
+
+    <!-- Browser Modal Component -->
+    <browser-modal id="globalBrowserModal"></browser-modal>
+    
+    <!-- PDF Viewer Modal Component -->
+    <pdf-viewer-modal id="globalPDFViewer"></pdf-viewer-modal>
         
         <!-- Widget scripts -->
         <script src="/static/js/widgets/ollama-widget.js"></script>
@@ -259,6 +271,8 @@
         <script src="/static/js/components/switch.js"></script>
         <script src="/static/js/components/action-bar.js"></script>
         <script src="/static/js/components/response-box.js"></script>
+        <script src="/static/js/components/browser-modal.js"></script>
+        <script src="/static/js/components/pdf-viewer-modal.js"></script>
         <!-- search-box.js is loaded dynamically by search.js -->
         <script src="/static/js/components/system-settings.js"></script>
         

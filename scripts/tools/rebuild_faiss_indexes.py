@@ -92,7 +92,8 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False,
             logger.info("🔄 STEP 2: Rebuilding ONLY content store (materials/PDFs)...")
             
             # Process PDF materials for content store
-            test_documents = await process_materials_to_documents(None, data_path)
+            materials_csv_path = data_path / "materials.csv"
+            test_documents = await process_materials_to_documents(materials_csv_path, data_path)
             
             if test_documents:
                 logger.info(f"Creating fresh content_store with {len(test_documents)} material documents")
@@ -141,7 +142,8 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False,
             logger.info("🔄 STEP 2: Rebuilding ALL stores (content + reference + topics)...")
             
             # 2A: Create content_store with materials
-            test_documents = await process_materials_to_documents(None, data_path)
+            materials_csv_path = data_path / "materials.csv"
+            test_documents = await process_materials_to_documents(materials_csv_path, data_path)
             if test_documents:
                 logger.info(f"Creating fresh content_store with {len(test_documents)} material documents")
                 
@@ -340,7 +342,8 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False,
                 )]
             else:
                 # Process actual PDF materials
-                test_documents = await process_materials_to_documents(None, data_path)
+                materials_csv_path = data_path / "materials.csv"
+                test_documents = await process_materials_to_documents(materials_csv_path, data_path)
             
             if test_documents:
                 logger.info(f"Adding {len(test_documents)} material documents to content store")
@@ -467,7 +470,8 @@ async def rebuild_indexes(data_path, rebuild_all=False, rebuild_reference=False,
             logger.info("Creating content_store with PDF materials...")
             
             # Process PDF materials for content store
-            test_documents = await process_materials_to_documents(None, data_path)
+            materials_csv_path = data_path / "materials.csv"
+            test_documents = await process_materials_to_documents(materials_csv_path, data_path)
             
             if test_documents:
                 # Create metadata for tracking
@@ -706,7 +710,7 @@ def create_universal_field_mappings():
         'title': 'TITLE',
         'description': 'DESCRIPTION',
         'content_type': 'CONTENT_TYPE',
-        'origin_url': 'SOURCE_URL',
+        'origin_url': 'ORIGIN_URL',  # Keep as ORIGIN_URL, not SOURCE_URL
         'related_url': 'RELATED_URL',
         'tags': 'TAGS',
         'purpose': 'PURPOSE',
@@ -1162,11 +1166,11 @@ async def add_document_types(data_path, force_all=False, check_existing=False):
         return 0
 
 async def process_materials_to_documents(csv_path, data_path):
-    """Process all PDF files in the materials folder directly.
-    No longer requires materials.csv - processes all PDFs found in the materials directory.
+    """Process PDF files that are referenced in materials.csv.
+    Only processes PDFs that have entries in the materials.csv file for proper cataloguing.
     
     Args:
-        csv_path (Path): Path to materials.csv file (ignored - kept for compatibility)
+        csv_path (Path): Path to materials.csv file (now required!)
         data_path (Path): Base data path for finding PDF files
         
     Returns:
@@ -1182,18 +1186,48 @@ async def process_materials_to_documents(csv_path, data_path):
             materials_path.mkdir(parents=True, exist_ok=True)
             return documents
         
-        # Find all PDF files in materials directory
-        pdf_files = list(materials_path.glob("*.pdf"))
-        logger.info(f"📂 Found {len(pdf_files)} PDF files in materials folder: {materials_path}")
-        
-        if not pdf_files:
-            logger.info("No PDF files found in materials folder")
+        # Check if materials.csv exists
+        if not csv_path or not csv_path.exists():
+            logger.warning(f"materials.csv not found at {csv_path}")
+            logger.info("📋 No materials.csv found - skipping PDF processing")
+            logger.info("💡 Create materials.csv to catalog PDFs for processing")
             return documents
         
-        # Process all PDFs found in materials folder
-        for pdf_file in pdf_files:
+        # Read materials.csv to get list of PDFs to process
+        import pandas as pd
+        try:
+            materials_df = pd.read_csv(csv_path)
+            logger.info(f"📋 Found materials.csv with {len(materials_df)} entries")
+        except Exception as e:
+            logger.error(f"❌ Error reading materials.csv: {e}")
+            return documents
+        
+        if materials_df.empty:
+            logger.info("📋 materials.csv is empty - no PDFs to process")
+            return documents
+        
+        # Get list of PDF files from CSV
+        pdf_files_to_process = []
+        for _, row in materials_df.iterrows():
+            file_path = row.get('file_path', '')
+            if file_path and file_path.lower().endswith('.pdf'):
+                full_pdf_path = materials_path / file_path
+                if full_pdf_path.exists():
+                    pdf_files_to_process.append((full_pdf_path, row))
+                    logger.info(f"✅ Found PDF to process: {file_path}")
+                else:
+                    logger.warning(f"⚠️ PDF listed in CSV but not found: {file_path}")
+        
+        if not pdf_files_to_process:
+            logger.info("📂 No valid PDF files found from materials.csv entries")
+            return documents
+        
+        logger.info(f"📂 Processing {len(pdf_files_to_process)} PDFs from materials.csv")
+        
+        # Process PDFs that are catalogued in materials.csv
+        for pdf_file, csv_row in pdf_files_to_process:
             try:
-                logger.info(f"📄 Processing PDF: {pdf_file.name}")
+                logger.info(f"📄 Processing catalogued PDF: {pdf_file.name}")
                 
                 # Use PyPDFLoader to extract content
                 loader = PyPDFLoader(str(pdf_file))
@@ -1213,9 +1247,15 @@ async def process_materials_to_documents(csv_path, data_path):
                 
                 # Generate document ID
                 document_id = f"pdf_{pdf_file.stem}_{int(datetime.now().timestamp())}"
-                document_title = pdf_file.stem.replace('_', ' ').title()
                 
-                # Add metadata for all PDFs (no distinction between manual/auto-downloaded)
+                # Use metadata from CSV if available, otherwise use filename
+                document_title = csv_row.get('title', pdf_file.stem.replace('_', ' ').title())
+                material_description = csv_row.get('description', f"PDF Document: {pdf_file.name}")
+                material_fields = csv_row.get('fields', '')
+                created_at = csv_row.get('created_at', '')
+                material_id = csv_row.get('id', '')
+                
+                # Add metadata combining CSV data with PDF processing
                 for i, doc in enumerate(pdf_docs):
                     doc.metadata.update({
                         # Core identification
@@ -1223,18 +1263,21 @@ async def process_materials_to_documents(csv_path, data_path):
                         'content_type': 'material',
                         'type': 'material',
                         'title': document_title,
-                        'description': f"PDF Document: {pdf_file.name}",
-                        'fields': [],
+                        'description': material_description,
+                        'fields': material_fields,  # Keep as string for consistency
                         'file_path': str(pdf_file),
-                        'created_at': '',
+                        'created_at': created_at,
                         'processed_at': datetime.now().isoformat(),
-                        'csv_source': 'direct_pdf_processing',
+                        'csv_source': 'materials_csv',
+                        
+                        # URL for accessing the PDF via the API
+                        'origin_url': f"/api/data/materials/pdf/{pdf_file.name}",
                         
                         # Document relationship labeling
                         'document_id': document_id,
                         'document_name': pdf_file.name,
                         'document_title': document_title,
-                        'material_id': '',
+                        'material_id': str(material_id),
                         'material_title': document_title,
                         
                         # Chunk relationship metadata
@@ -1247,9 +1290,9 @@ async def process_materials_to_documents(csv_path, data_path):
                         'pdf_source': str(pdf_file),
                         'pdf_chunks_total': len(pdf_docs),
                         
-                        # Mark as processed
-                        'original_source': 'materials_folder',
-                        'auto_downloaded': False  # All PDFs treated equally now
+                        # Mark as processed from CSV
+                        'original_source': 'materials_csv',
+                        'auto_downloaded': False
                     })
                     
                     # Sanitize all metadata
@@ -1257,14 +1300,25 @@ async def process_materials_to_documents(csv_path, data_path):
                         doc.metadata[key] = sanitize_value(value)
                 
                 documents.extend(pdf_docs)
-                logger.info(f"✅ Processed PDF: {pdf_file.name} ({len(pdf_docs)} chunks)")
+                logger.info(f"✅ Processed catalogued PDF: {pdf_file.name} ({len(pdf_docs)} chunks)")
                 
             except Exception as e:
                 logger.error(f"❌ Error processing PDF {pdf_file.name}: {e}")
                 continue
         
-        logger.info(f"🎉 Created {len(documents)} total document chunks from PDF materials")
-        logger.info(f"📋 All chunks labeled with document relationships for future summarization")
+        # Check for uncatalogued PDFs and report them
+        all_pdfs_in_folder = list(materials_path.glob("*.pdf"))
+        catalogued_filenames = {pdf_file.name for pdf_file, _ in pdf_files_to_process}
+        uncatalogued_pdfs = [pdf for pdf in all_pdfs_in_folder if pdf.name not in catalogued_filenames]
+        
+        if uncatalogued_pdfs:
+            logger.info(f"📋 Found {len(uncatalogued_pdfs)} uncatalogued PDFs in materials folder:")
+            for pdf in uncatalogued_pdfs:
+                logger.info(f"   📄 {pdf.name} (not in materials.csv)")
+            logger.info("💡 Add these PDFs to materials.csv to include them in search results")
+        
+        logger.info(f"🎉 Created {len(documents)} total document chunks from {len(pdf_files_to_process)} catalogued PDF materials")
+        logger.info(f"📋 All chunks labeled with document relationships and CSV metadata")
         return documents
         
     except Exception as e:
@@ -1491,7 +1545,7 @@ def create_universal_field_mappings():
         'purpose': 'PURPOSE',
         'location': 'LOCATION', 
         'tags': 'TAGS',
-        'origin_url': 'SOURCE_URL',
+        'origin_url': 'ORIGIN_URL',  # Keep as ORIGIN_URL, not SOURCE_URL
         'related_url': 'RELATED_URL',
         'status': 'STATUS',
         'creator_id': 'CREATOR',

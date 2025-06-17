@@ -10,9 +10,11 @@ class SearchResultsDisplay extends HTMLElement {
         this.references = [];
         this.content = [];
         this.expandedItems = new Set();
+        this.itemDataCache = {}; // Cache for storing item data
     }
 
     connectedCallback() {
+        console.log('🔄 SearchResultsDisplay connected to DOM');
         this.render();
     }
 
@@ -34,6 +36,12 @@ class SearchResultsDisplay extends HTMLElement {
      * @param {Object} data - Search results from /api/references
      */
     setSearchData(data) {
+        console.log('🔄 SearchResultsDisplay.setSearchData called with:', {
+            references: data.references?.length || 0,
+            content: data.content?.length || 0,
+            hasMetadata: !!data.metadata
+        });
+        
         this.setResults(
             data.references || [],
             data.content || [],
@@ -118,17 +126,80 @@ class SearchResultsDisplay extends HTMLElement {
     }
 
     /**
+     * Check if a URL is valid and can be opened
+     * @param {string} url - URL to validate
+     * @returns {boolean} True if valid URL
+     */
+    isValidUrl(url) {
+        if (!url || typeof url !== 'string') return false;
+        
+        try {
+            // Handle relative URLs by assuming they're valid
+            if (url.startsWith('/') || url.startsWith('./') || url.startsWith('../')) {
+                return true;
+            }
+            
+            // Validate absolute URLs
+            const urlObj = new URL(url);
+            return ['http:', 'https:'].includes(urlObj.protocol);
+        } catch {
+            return false;
+        }
+    }
+
+    /**
      * Get the best clickable link from an item
      * @param {Object} item - The search result item
      * @returns {string|null} URL or null
      */
     getClickableLink(item) {
-        const linkCandidates = ['origin_url', 'resource_url', 'source_url', 'url', 'link'];
+        // First check direct URL fields (both lowercase and uppercase)
+        const linkCandidates = [
+            'origin_url', 'ORIGIN_URL',
+            'resource_url', 'RESOURCE_URL', 
+            'source_url', 'SOURCE_URL',
+            'url', 'URL',
+            'link', 'LINK'
+        ];
+        
         for (const candidate of linkCandidates) {
             if (item[candidate]) {
                 return item[candidate];
             }
         }
+        
+        // If no direct URL field found, try to extract URL from content/description
+        const contentFields = ['content', 'description', 'text', 'definition'];
+        for (const field of contentFields) {
+            if (item[field]) {
+                const content = item[field];
+                
+                // Look for ORIGIN_URL: pattern (new format)
+                const originUrlMatch = content.match(/ORIGIN_URL:\s*(https?:\/\/[^\s\n]+)/i);
+                if (originUrlMatch) {
+                    return originUrlMatch[1];
+                }
+                
+                // Look for SOURCE_URL: pattern (backwards compatibility)
+                const sourceUrlMatch = content.match(/SOURCE_URL:\s*(https?:\/\/[^\s\n]+)/i);
+                if (sourceUrlMatch) {
+                    return sourceUrlMatch[1];
+                }
+                
+                // Look for other URL patterns in content
+                const urlMatch = content.match(/(?:URL|LINK):\s*(https?:\/\/[^\s\n]+)/i);
+                if (urlMatch) {
+                    return urlMatch[1];
+                }
+                
+                // Look for any standalone URLs
+                const standaloneUrlMatch = content.match(/(https?:\/\/[^\s\n]+)/);
+                if (standaloneUrlMatch) {
+                    return standaloneUrlMatch[1];
+                }
+            }
+        }
+        
         return null;
     }
 
@@ -148,31 +219,224 @@ class SearchResultsDisplay extends HTMLElement {
     }
 
     /**
-     * Get display content from an item
+     * Get clean display content from an item (without labels)
      * @param {Object} item - The search result item
-     * @returns {string} Display content
+     * @returns {string} Clean display content
      */
-    getDisplayContent(item) {
-        const contentCandidates = ['content', 'description', 'text', 'definition'];
-        for (const candidate of contentCandidates) {
-            if (item[candidate]) {
-                return item[candidate];
+    getCleanDisplayContent(item) {
+        // Try to get clean description first
+        const description = item.description || item.text || item.definition;
+        if (description && description.length > 10 && !description.startsWith('TITLE:') && !description.startsWith('DESCRIPTION:')) {
+            return description;
+        }
+        
+        // If we have formatted content with labels, try to extract clean description
+        const content = item.content || '';
+        if (content.includes('DESCRIPTION:')) {
+            const descMatch = content.match(/DESCRIPTION:\s*([^\n]+)/i);
+            if (descMatch && descMatch[1]) {
+                return descMatch[1].trim();
             }
         }
-        return 'No content available';
+        
+        // Try to extract purpose or other meaningful content
+        if (content.includes('PURPOSE:')) {
+            const purposeMatch = content.match(/PURPOSE:\s*([^\n]+)/i);
+            if (purposeMatch && purposeMatch[1]) {
+                return purposeMatch[1].trim();
+            }
+        }
+        
+        // Fallback to raw content but clean it up
+        if (content) {
+            // Remove label-style formatting and take first meaningful line
+            const lines = content.split('\n').filter(line => line.trim());
+            for (const line of lines) {
+                if (!line.match(/^[A-Z_]+:\s/) && line.length > 20) {
+                    return line.trim();
+                }
+            }
+            // If no clean line found, return first non-label line
+            for (const line of lines) {
+                if (!line.match(/^[A-Z_]+:\s/)) {
+                    return line.trim();
+                }
+            }
+        }
+        
+        return 'No description available';
     }
 
     /**
-     * Toggle expansion of an item
-     * @param {string} itemId - Unique item identifier
+     * Check if an item is a PDF material
+     * @param {Object} item - The search result item
+     * @returns {boolean} True if item is a PDF material
      */
-    toggleExpansion(itemId) {
-        if (this.expandedItems.has(itemId)) {
-            this.expandedItems.delete(itemId);
-        } else {
-            this.expandedItems.add(itemId);
+    isPDFMaterial(item) {
+        console.log('🔍 Checking if item is PDF material:', {
+            title: item.title,
+            source_type: item.source_type,
+            content_type: item.content_type,
+            type: item.type,
+            source: item.source,
+            metadata: item.metadata
+        });
+        
+        // Check for material type indicators - includes actual API response fields
+        const isMaterial = item.source_type === 'material' || 
+                          item.content_type === 'material' ||
+                          item.type === 'material' ||
+                          (item.metadata && item.metadata.content_type === 'material');
+        
+        // Check for PDF file indicators in multiple fields based on actual API response
+        const hasPdfIndicator = 
+            // Source field (actual API field)
+            (item.source && item.source.includes('.pdf')) ||
+            // Legacy fields for compatibility
+            (item.file_path && item.file_path.includes('.pdf')) ||
+            (item.document_name && item.document_name.includes('.pdf')) ||
+            item.pdf_source ||
+            // Origin URL pointing to PDF endpoint
+            (item.origin_url && item.origin_url.includes('/pdf/'));
+        
+        const result = isMaterial && hasPdfIndicator;
+        console.log('📊 PDF Material detection result:', { 
+            isMaterial, 
+            hasPdfIndicator, 
+            result,
+            checks: {
+                type_material: item.type === 'material',
+                content_type_material: item.content_type === 'material',
+                metadata_content_type: item.metadata && item.metadata.content_type === 'material',
+                source_pdf: item.source && item.source.includes('.pdf'),
+                file_path_pdf: item.file_path && item.file_path.includes('.pdf'),
+                document_name_pdf: item.document_name && item.document_name.includes('.pdf')
+            }
+        });
+        return result;
+    }
+
+    /**
+     * Get PDF path for a material item
+     * @param {Object} item - The search result item
+     * @returns {string|null} PDF file path relative to materials folder
+     */
+    getPDFPath(item) {
+        console.log('🔍 Getting PDF path for item:', {
+            title: item.title,
+            source: item.source,
+            document_name: item.document_name,
+            file_path: item.file_path,
+            origin_url: item.origin_url
+        });
+        
+        // First try the source field (actual API response field)
+        if (item.source && item.source.includes('.pdf')) {
+            const path = item.source;
+            // Extract filename from full path
+            const filename = path.replace(/^.*[\/\\]/, '');
+            console.log('📄 Found PDF path via source:', filename);
+            return filename;
         }
-        this.render();
+        
+        // Try document_name (if available)
+        if (item.document_name && item.document_name.includes('.pdf')) {
+            const filename = item.document_name;
+            console.log('📄 Found PDF path via document_name:', filename);
+            return filename;
+        }
+        
+        // Try file_path and extract filename
+        if (item.file_path && item.file_path.includes('.pdf')) {
+            const path = item.file_path;
+            // Extract filename from full path
+            const filename = path.replace(/^.*[\/\\]/, '');
+            console.log('📄 Found PDF path via file_path:', filename);
+            return filename;
+        }
+        
+        // Try extracting from origin_url
+        if (item.origin_url && item.origin_url.includes('/pdf/')) {
+            const urlParts = item.origin_url.split('/pdf/');
+            if (urlParts.length > 1) {
+                const filename = urlParts[1];
+                console.log('📄 Found PDF path via origin_url:', filename);
+                return filename;
+            }
+        }
+        
+        // Fallback to pdf_source
+        if (item.pdf_source) {
+            const filename = item.pdf_source.replace(/^.*[\/\\]/, '');
+            console.log('📄 Found PDF path via pdf_source:', filename);
+            return filename;
+        }
+        
+        console.log('❌ No PDF path found for item');
+        return null;
+    }
+
+    /**
+     * Open item in appropriate modal (PDF viewer for materials, browser modal for URLs)
+     * @param {string} urlOrPath - URL to open or PDF path
+     * @param {string} title - Title for the modal
+     * @param {Object} item - The original item (optional, for detecting PDF materials)
+     */
+    openItemInModal(urlOrPath, title, item = null) {
+        console.log('🔧 Opening item in modal:', { 
+            urlOrPath: urlOrPath.substring(0, 100) + '...', 
+            title, 
+            item,
+            isPDF: item ? this.isPDFMaterial(item) : false 
+        });
+        
+        // If we have the original item and it's a PDF material, use PDF viewer
+        if (item && this.isPDFMaterial(item)) {
+            const pdfPath = this.getPDFPath(item);
+            if (pdfPath) {
+                console.log('📚 Opening PDF material in PDF viewer:', { pdfPath, title });
+                
+                // Extract metadata for PDF viewer
+                const metadata = {
+                    fields: item.fields || item.material_fields || item.description || '',
+                    created_at: item.created_at || item.processed_at || '',
+                    file_size: item.file_size || null,
+                    description: item.description || item.material_title || item.title || ''
+                };
+                
+                // Use the correct function signature: openPDFViewer(pdfPath, title, metadata)
+                if (window.openPDFViewer) {
+                    console.log('✅ Calling window.openPDFViewer with:', { pdfPath, title, metadata });
+                    window.openPDFViewer(pdfPath, title, metadata);
+                } else {
+                    console.warn('❌ PDF viewer not available, falling back to browser modal');
+                    this.fallbackToBrowserModal(urlOrPath, title);
+                }
+                return;
+            } else {
+                console.warn('⚠️ PDF material detected but no PDF path found');
+            }
+        }
+        
+        // Default to browser modal for URLs and non-PDF content
+        console.log('🌐 Opening in browser modal (not a PDF material)');
+        this.fallbackToBrowserModal(urlOrPath, title);
+    }
+
+    /**
+     * Fallback to browser modal
+     * @param {string} url - URL to open
+     * @param {string} title - Title for the modal
+     */
+    fallbackToBrowserModal(url, title) {
+        console.log('🌐 Opening in browser modal:', { url: url.substring(0, 100) + '...', title });
+        
+        if (window.openBrowserModal) {
+            window.openBrowserModal(url, title || 'Search Result');
+        } else {
+            console.warn('Browser modal not available, opening in new tab');
+            window.open(url, '_blank');
+        }
     }
 
     /**
@@ -254,7 +518,8 @@ class SearchResultsDisplay extends HTMLElement {
     createItemCard(item, category, index, totalItems) {
         const title = item.title || item.term || item.name || 'Untitled';
         const content = item.content || item.description || item.text || '';
-        const truncatedContent = content.length > 120 ? content.substring(0, 120) + '...' : content;
+        // Use clean content for display (no labels)
+        const cleanContent = this.getCleanDisplayContent(item);
         
         const tags = this.formatTags(item.tags);
         const relevance = this.getRelevanceIndicator(item);
@@ -263,24 +528,93 @@ class SearchResultsDisplay extends HTMLElement {
         const categoryInfo = item.categoryInfo || this.getCategoryInfo(category, item);
         const typeColors = this.getTypeColors(item.type);
         
+        // Check if item has a clickable URL
+        const url = this.getClickableLink(item);
+        const hasUrl = url && this.isValidUrl(url);
+        
+        // Debug logging for URL detection
+        if (hasUrl) {
+            console.log(`🔗 Found URL for item "${title}": ${url}`);
+        } else {
+            console.log(`📄 No URL found for item "${title}". Checked content for URLs but none found.`);
+            // Log the item data to help debug
+            console.log('Item data for debugging:', {
+                title,
+                url_fields: {
+                    origin_url: item.origin_url,
+                    ORIGIN_URL: item.ORIGIN_URL,
+                    source_url: item.source_url,
+                    SOURCE_URL: item.SOURCE_URL,
+                    url: item.url,
+                    URL: item.URL
+                },
+                content_sample: (item.content || item.description || '').substring(0, 200)
+            });
+        }
+        
         // Calculate relevance-based positioning
         const score = item.relevance_score || item.hybrid_score || item.vector_score || 0;
         const position = this.calculateFloatingPosition(score, index, totalItems);
         
         // Size based on relevance (more relevant = larger)
-        const sizeClass = score > 0.8 ? 'w-72 h-40' : 
-                         score > 0.6 ? 'w-64 h-36' : 
-                         score > 0.4 ? 'w-56 h-32' : 'w-48 h-28';
+        const sizeClass = score > 0.8 ? 'w-72 h-44' : 
+                         score > 0.6 ? 'w-64 h-40' : 
+                         score > 0.4 ? 'w-56 h-36' : 'w-48 h-32';
         
         // Opacity and z-index based on relevance
         const opacity = Math.max(0.7, score);
-        const zIndex = Math.round(score * 50) + 10; // Lower z-index range to stay behind content
+        const zIndex = Math.round(score * 50) + 10;
         
+        // All cards are clickable and show open link button
+        const clickableClass = 'cursor-pointer hover:ring-2 hover:ring-blue-400';
+        
+        // Generate unique ID for this card
+        const cardId = `card-${item.id || Math.random().toString(36).substr(2, 9)}`;
+        
+        // Prepare data for browser modal
+        const escapedUrl = hasUrl ? url.replace(/'/g, "\\'").replace(/"/g, '\\"') : '';
+        const escapedTitle = title.replace(/'/g, "\\'").replace(/"/g, '\\"');
+        const escapedContent = content.replace(/'/g, "\\'").replace(/"/g, '\\"'); // Use full content for modal
+        const escapedCleanContent = cleanContent.replace(/'/g, "\\'").replace(/"/g, '\\"'); // Use clean content for card
+        
+        // Create data URI for content if no URL
+        const modalUrl = hasUrl ? escapedUrl : `data:text/html;charset=utf-8,${encodeURIComponent(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>${title}</title>
+                <style>
+                    body { font-family: system-ui, -apple-system, sans-serif; padding: 2rem; line-height: 1.6; max-width: 800px; margin: 0 auto; }
+                    h1 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 0.5rem; }
+                    .content { white-space: pre-wrap; background: #f9f9f9; padding: 1rem; border-radius: 8px; border-left: 4px solid #007acc; }
+                    .metadata { margin-top: 2rem; padding: 1rem; background: #f0f8ff; border-radius: 8px; font-size: 0.9em; }
+                </style>
+            </head>
+            <body>
+                <h1>${title}</h1>
+                <div class="content">${content}</div>
+                <div class="metadata">
+                    <strong>Category:</strong> ${categoryInfo.label}<br>
+                    <strong>Type:</strong> ${item.type || 'Unknown'}<br>
+                    <strong>Relevance:</strong> ${Math.round(score * 100)}%
+                </div>
+            </body>
+            </html>
+        `)}`;
+        
+        // Store the item data for later retrieval
+        const itemKey = `item_${item.id || Math.random()}`;
+        this.itemDataCache = this.itemDataCache || {};
+        this.itemDataCache[itemKey] = item;
+
         return `
             <div class="floating-card absolute ${sizeClass} ${typeColors.bg} ${typeColors.border} border rounded-xl p-3 
-                        hover:scale-105 transition-all duration-300 cursor-pointer backdrop-blur-sm
-                        hover:shadow-xl" 
+                        hover:scale-105 transition-all duration-300 ${clickableClass} backdrop-blur-sm
+                        hover:shadow-xl hover:bg-opacity-90" 
                  data-item-id="${item.id || Math.random()}"
+                 data-card-id="${cardId}"
+                 data-item-key="${itemKey}"
+                 onclick="this.closest('search-results-display').handleCardClick(this)"
                  style="left: ${position.x}%; top: ${position.y}%; opacity: ${opacity}; z-index: ${zIndex};">
                 
                 <div class="flex items-start justify-between mb-2">
@@ -293,9 +627,22 @@ class SearchResultsDisplay extends HTMLElement {
                     </div>
                 </div>
                 
-                <div class="text-xs ${typeColors.text} mb-2 leading-relaxed line-clamp-3">
-                    ${truncatedContent}
+                <div class="text-xs ${typeColors.text} mb-2 leading-relaxed" style="overflow: hidden; word-wrap: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;">
+                    <span class="whitespace-pre-wrap">${cleanContent.substring(0, 120)}${cleanContent.length > 120 ? '...' : ''}</span>
                 </div>
+                
+                <!-- Always show open link button -->
+                <button class="open-link-btn text-xs text-blue-400 hover:text-blue-300 mb-2 transition-colors flex items-center gap-1" 
+                        onclick="event.stopPropagation(); this.closest('search-results-display').handleButtonClick(this)">
+                    <span>${hasUrl ? 'Open Link' : 'View Details'}</span>
+                    <span class="text-sm">↗</span>
+                </button>
+                
+                ${hasUrl && (!cleanContent || cleanContent === 'No description available' || cleanContent.length < 20) ? `
+                    <div class="text-xs text-blue-400 mb-1 truncate" title="${url}">
+                        ${url.length > 30 ? url.substring(0, 30) + '...' : url}
+                    </div>
+                ` : ''}
                 
                 <div class="absolute bottom-2 left-3 right-3 flex items-center justify-between text-xs">
                     <span class="${typeColors.accent} font-medium text-xs">${categoryInfo.label}</span>
@@ -536,18 +883,65 @@ class SearchResultsDisplay extends HTMLElement {
             });
         }
 
-        // Item click handlers
+        // Item click handlers - all items now use browser modal
         this.querySelectorAll('[data-item-id]').forEach(card => {
             card.addEventListener('click', (e) => {
+                // Don't trigger on button clicks (but open-link-btn is fine since it does the same thing)
+                if (e.target.closest('.generate-btn') || 
+                    e.target.closest('#generateResponseBtn')) {
+                    return;
+                }
+                
                 const itemId = e.currentTarget.dataset.itemId;
-                this.dispatchEvent(new CustomEvent('item-selected', {
-                    detail: { 
-                        itemId,
-                        references: this.references,
-                        content: this.content,
-                        metadata: this.metadata
+                
+                // Find the item by ID
+                const allItems = [...(this.references || []), ...(this.content || [])];
+                const clickedItem = allItems.find(item => 
+                    (item.id || Math.random()).toString() === itemId
+                );
+                
+                if (clickedItem) {
+                    // Get the actual URL first, if available
+                    const url = this.getClickableLink(clickedItem);
+                    const title = clickedItem.title || clickedItem.term || clickedItem.name || 'Search Result';
+                    
+                    // Prioritize real URLs over content display
+                    if (url && this.isValidUrl(url)) {
+                        console.log('Opening real URL in browser modal via card click:', url);
+                        this.openItemInModal(url, title, clickedItem);
+                    } else {
+                        // Create data URI for content display only if no real URL exists
+                        const content = clickedItem.content || clickedItem.description || clickedItem.text || '';
+                        const categoryInfo = this.getCategoryInfo('other', clickedItem);
+                        const score = clickedItem.relevance_score || clickedItem.hybrid_score || clickedItem.vector_score || 0;
+                        
+                        const modalUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`
+                            <!DOCTYPE html>
+                            <html>
+                            <head>
+                                <title>${title}</title>
+                                <style>
+                                    body { font-family: system-ui, -apple-system, sans-serif; padding: 2rem; line-height: 1.6; max-width: 800px; margin: 0 auto; }
+                                    h1 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 0.5rem; }
+                                    .content { white-space: pre-wrap; background: #f9f9f9; padding: 1rem; border-radius: 8px; border-left: 4px solid #007acc; }
+                                    .metadata { margin-top: 2rem; padding: 1rem; background: #f0f8ff; border-radius: 8px; font-size: 0.9em; }
+                                </style>
+                            </head>
+                            <body>
+                                <h1>${title}</h1>
+                                <div class="content">${content}</div>
+                                <div class="metadata">
+                                    <strong>Category:</strong> ${categoryInfo.label}<br>
+                                    <strong>Type:</strong> ${clickedItem.type || 'Unknown'}<br>
+                                    <strong>Relevance:</strong> ${Math.round(score * 100)}%
+                                </div>
+                            </body>
+                            </html>
+                        `)}`;
+                        console.log('Opening content in browser modal via card click for item:', title);
+                        this.openItemInModal(modalUrl, title, clickedItem);
                     }
-                }));
+                }
             });
         });
 
@@ -661,6 +1055,111 @@ class SearchResultsDisplay extends HTMLElement {
             y: Math.max(10, Math.min(85, centerY + Math.sin(angle) * radius * 0.8))
         };
     }
+
+    /**
+     * Handle card click events with proper item data retrieval
+     * @param {HTMLElement} cardElement - The clicked card element
+     */
+    handleCardClick(cardElement) {
+        const itemKey = cardElement.dataset.itemKey;
+        const item = this.itemDataCache[itemKey];
+        
+        if (!item) {
+            console.warn('Item data not found for key:', itemKey);
+            return;
+        }
+
+        console.log('🖱️ Card clicked for item:', {
+            title: item.title,
+            source_type: item.source_type,
+            content_type: item.content_type,
+            type: item.type,
+            document_name: item.document_name,
+            origin_url: item.origin_url
+        });
+        
+        const title = item.title || item.term || item.name || 'Search Result';
+        
+        // Check if this is a PDF material first
+        if (this.isPDFMaterial(item)) {
+            console.log('📚 Item detected as PDF material, opening PDF viewer');
+            const pdfPath = this.getPDFPath(item);
+            if (pdfPath) {
+                // Create metadata for PDF viewer
+                const metadata = {
+                    fields: item.fields || item.material_fields || item.description || '',
+                    created_at: item.created_at || item.processed_at || '',
+                    file_size: item.file_size || null,
+                    description: item.description || item.material_title || item.title || ''
+                };
+                
+                console.log('✅ Opening PDF viewer directly with:', { pdfPath, title, metadata });
+                
+                if (window.openPDFViewer) {
+                    window.openPDFViewer(pdfPath, title, metadata);
+                    return;
+                } else {
+                    console.warn('❌ PDF viewer not available');
+                }
+            } else {
+                console.warn('⚠️ PDF material detected but no PDF path found');
+            }
+        }
+        
+        // Fallback to URL-based opening
+        const url = this.getClickableLink(item);
+        
+        if (url && this.isValidUrl(url)) {
+            console.log('🔗 Opening real URL in browser modal via card click:', url);
+            this.openItemInModal(url, title, item);
+        } else {
+            // Create data URI for content display only if no real URL exists
+            const content = item.content || item.description || item.text || '';
+            const cleanContent = this.getCleanDisplayContent(item);
+            const categoryInfo = this.getCategoryInfo('other', item);
+            const score = item.relevance_score || item.hybrid_score || item.vector_score || 0;
+            
+            const modalUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>${title}</title>
+                    <style>
+                        body { font-family: system-ui, -apple-system, sans-serif; padding: 2rem; line-height: 1.6; max-width: 800px; margin: 0 auto; }
+                        h1 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 0.5rem; }
+                        .content { white-space: pre-wrap; background: #f9f9f9; padding: 1rem; border-radius: 8px; border-left: 4px solid #007acc; }
+                        .metadata { margin-top: 2rem; padding: 1rem; background: #f0f8ff; border-radius: 8px; font-size: 0.9em; }
+                    </style>
+                </head>
+                <body>
+                    <h1>${title}</h1>
+                    <div class="content">${cleanContent || 'No content available'}</div>
+                    <div class="metadata">
+                        <strong>Category:</strong> ${categoryInfo.name}<br>
+                        <strong>Type:</strong> ${item.source_type || item.type || 'Unknown'}<br>
+                        <strong>Relevance:</strong> ${Math.round(score * 100)}%
+                    </div>
+                </body>
+                </html>
+            `)}`;
+            
+            console.log('📄 Opening content in browser modal via card click for item:', title);
+            this.openItemInModal(modalUrl, title, item);
+        }
+    }
+
+    /**
+     * Handle button click events with proper item data retrieval
+     * @param {HTMLElement} buttonElement - The clicked button element
+     */
+    handleButtonClick(buttonElement) {
+        const cardElement = buttonElement.closest('[data-item-key]');
+        if (cardElement) {
+            this.handleCardClick(cardElement);
+        }
+    }
+
+    // ...existing code...
 }
 
 // Register the custom element
