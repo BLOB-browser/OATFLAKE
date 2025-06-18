@@ -825,7 +825,7 @@ class KnowledgeOrchestrator:
                 "error": str(e)
             }
     
-    async def process_urls_at_level(self, level: int, batch_size: int = 1, delay_seconds: float = 2.0, max_urls_per_phase: int = 50) -> Dict[str, Any]:
+    async def process_urls_at_level(self, level: int, batch_size: int = 1, delay_seconds: float = 2.0, max_urls_per_phase: int = 200) -> Dict[str, Any]:
         """
         Process all pending URLs at a specific level ONE AT A TIME for better observation.
         LIMITED TO max_urls_per_phase URLs per processing cycle.
@@ -1091,7 +1091,7 @@ class KnowledgeOrchestrator:
                     continue
                 
                 # Check if max attempts reached, but DON'T mark as processed if not analyzed
-                max_attempts = 3
+                max_attempts = 3  # 🔧 CONFIGURABLE: Change this to adjust max retry attempts
                 if attempt_count >= max_attempts:
                     logger.warning(f"URL {url_to_process} has reached max attempts ({max_attempts}), skipping")
                     # Just remove from pending list but don't mark as processed
@@ -1124,6 +1124,43 @@ class KnowledgeOrchestrator:
                     )
                     
                     success = success_result.get('success', False)
+                    
+                    # 🚫 FORBIDDEN URL DETECTION AND CLEANUP
+                    # Check if this is a forbidden URL (403/404) that should be removed immediately
+                    if not success:
+                        error_message = success_result.get('error', '')
+                        is_forbidden_url = False
+                        
+                        # Check for common forbidden URL patterns
+                        forbidden_patterns = [
+                            'HTTP 403',
+                            'HTTP 404', 
+                            'Access Denied',
+                            'Not Found',
+                            'Client Error: 403',
+                            'Client Error: 404',
+                            'Forbidden',
+                            'Unauthorized'
+                        ]
+                        
+                        for pattern in forbidden_patterns:
+                            if pattern in error_message:
+                                is_forbidden_url = True
+                                logger.warning(f"🚫 FORBIDDEN URL DETECTED: {url_to_process} - {pattern}")
+                                break
+                        
+                        # If it's a forbidden URL, remove it immediately instead of retrying
+                        if is_forbidden_url:
+                            logger.warning(f"🗑️ IMMEDIATE REMOVAL: Removing forbidden URL from pending queue: {url_to_process}")
+                            url_storage.remove_pending_url(url_to_process)
+                            # Mark as processed with error to prevent re-queueing
+                            url_storage.save_processed_url(url_to_process, error=True, resource_id=resource_for_origin.get('id', ''))
+                            failed_urls.append(url_to_process)
+                            error_count += 1
+                            processed_urls_count += 1
+                            
+                            # Continue to next URL instead of normal retry logic
+                            continue
                     
                     if success:
                         logger.info(f"✅ Successfully processed URL: {url_to_process}")

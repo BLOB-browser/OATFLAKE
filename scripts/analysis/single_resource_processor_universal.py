@@ -329,9 +329,37 @@ class SingleResourceProcessorUniversal:
                 success, page_data = content_result
                 if not success:
                     logger.warning(f"[Resource: {logging_resource_id}] Content fetch failed for URL: {url}")
-                    result["error"] = page_data.get("error", "Failed to fetch page content")
+                    error_message = page_data.get("error", "Failed to fetch page content")
+                    result["error"] = error_message
                     
-                    # Handle fetch failure with retry logic
+                    # 🚫 FORBIDDEN URL DETECTION - Check if this is a forbidden URL that should be removed immediately
+                    forbidden_patterns = [
+                        'HTTP 403 Access Denied',
+                        'HTTP 404 Not Found',
+                        'HTTP 403',
+                        'HTTP 404', 
+                        'Access Denied',
+                        'Not Found',
+                        'Client Error: 403',
+                        'Client Error: 404',
+                        '404 Client Error: Not Found',
+                        'Forbidden',
+                        'Unauthorized'
+                    ]
+                    
+                    is_forbidden_url = any(pattern in error_message for pattern in forbidden_patterns)
+                    
+                    if is_forbidden_url:
+                        logger.warning(f"🚫 [Resource: {logging_resource_id}] FORBIDDEN URL DETECTED: {url} - removing immediately")
+                        logger.warning(f"🗑️ [Resource: {logging_resource_id}] Error pattern: {error_message}")
+                        # Mark as processed with error and remove from pending immediately
+                        self.url_storage.save_processed_url(url, error=True, resource_id=final_resource_id)
+                        self.url_storage.remove_pending_url(url)
+                        result["success"] = False
+                        result["forbidden_url_removed"] = True
+                        return result
+                    
+                    # Handle fetch failure with retry logic for non-forbidden URLs
                     if attempt_count >= 2:  # After 3 attempts, mark as processed with error
                         logger.warning(f"[Resource: {logging_resource_id}] URL {url} failed to fetch content after {attempt_count+1} attempts, marking as processed with error")
                         self.url_storage.save_processed_url(url, error=True, resource_id=final_resource_id)

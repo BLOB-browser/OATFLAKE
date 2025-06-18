@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, File, UploadFile, Form, Request
+from fastapi.responses import FileResponse, Response
 from typing import List
 from scripts.services import storage
 import logging
@@ -7,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import json
+import os
 from utils.config import BACKEND_CONFIG
 
 router = APIRouter(prefix="/api/data/materials", tags=["materials"])
@@ -101,3 +103,75 @@ async def list_materials(request: Request):
     except Exception as e:
         logger.error(f"Error listing materials: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/pdf/{file_path:path}")
+async def serve_pdf(file_path: str, download: bool = False):
+    """Serve PDF files from the materials folder
+    
+    Args:
+        file_path: Path to the PDF file
+        download: If True, force download. If False, try to display inline.
+    """
+    try:
+        data_path = Path(BACKEND_CONFIG['data_path'])
+        materials_path = data_path / "materials"
+        
+        # Clean the file path and prevent directory traversal
+        clean_file_path = os.path.normpath(file_path).lstrip('/')
+        full_pdf_path = materials_path / clean_file_path
+        
+        # Security check: ensure the file is within the materials directory
+        try:
+            full_pdf_path.resolve().relative_to(materials_path.resolve())
+        except ValueError:
+            logger.warning(f"Attempted access outside materials directory: {file_path}")
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Check if file exists
+        if not full_pdf_path.exists():
+            logger.warning(f"PDF file not found: {full_pdf_path}")
+            raise HTTPException(status_code=404, detail="PDF file not found")
+        
+        # Check if it's actually a PDF file
+        if not full_pdf_path.suffix.lower() == '.pdf':
+            logger.warning(f"Requested file is not a PDF: {full_pdf_path}")
+            raise HTTPException(status_code=400, detail="File is not a PDF")
+        
+        logger.info(f"Serving PDF file: {full_pdf_path} (download={download})")
+        
+        # Use different response headers based on download parameter
+        if download:
+            # Force download
+            return FileResponse(
+                path=str(full_pdf_path),
+                media_type='application/pdf',
+                filename=full_pdf_path.name
+            )
+        else:
+            # Try to display inline
+            from fastapi.responses import Response
+            
+            # Read the file content
+            pdf_content = full_pdf_path.read_bytes()
+            
+            return Response(
+                content=pdf_content,
+                media_type='application/pdf',
+                headers={
+                    'Content-Disposition': f'inline; filename="{full_pdf_path.name}"',
+                    'Content-Length': str(len(pdf_content)),
+                    'Accept-Ranges': 'bytes',
+                    'Cache-Control': 'public, max-age=3600',
+                    'X-Frame-Options': 'SAMEORIGIN',  # Allow iframe from same origin
+                    'Content-Security-Policy': "frame-ancestors 'self'",  # Allow iframe from same origin
+                    'Access-Control-Allow-Origin': '*',  # Allow cross-origin access
+                    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Accept'
+                }
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving PDF {file_path}: {e}")
+        raise HTTPException(status_code=500, detail="Error serving PDF file")

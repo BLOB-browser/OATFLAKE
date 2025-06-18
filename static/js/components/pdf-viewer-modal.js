@@ -64,11 +64,37 @@ class PDFViewerModal extends HTMLElement {
                     </div>
 
                     <!-- PDF Content Area -->
-                    <div class="flex-1 overflow-hidden">
+                    <div class="flex-1 overflow-hidden relative">
+                        <!-- Loading Indicator -->
+                        <div id="pdfLoadingIndicator" class="absolute inset-0 flex items-center justify-center bg-gray-800">
+                            <div class="text-center">
+                                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-white mb-4"></div>
+                                <div id="pdfLoadingStatus" class="text-white">Loading PDF...</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Error Fallback -->
+                        <div id="pdfErrorFallback" class="absolute inset-0 flex items-center justify-center bg-gray-800 hidden">
+                            <div class="text-center max-w-md">
+                                <div class="text-red-400 mb-4">
+                                    <svg class="w-16 h-16 mx-auto" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M12,2L13.09,8.26L22,9L13.09,9.74L12,16L10.91,9.74L2,9L10.91,8.26L12,2Z" />
+                                    </svg>
+                                </div>
+                                <h3 class="text-white text-lg font-medium mb-2">PDF Display Issue</h3>
+                                <p class="text-gray-300 mb-4">The PDF cannot be displayed inline. You can download it instead.</p>
+                                <button id="pdfFallbackDownload" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition-colors">
+                                    Download PDF
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- PDF Iframe -->
                         <iframe id="pdfViewerFrame" 
                                 class="w-full h-full border-none" 
                                 frameborder="0"
                                 allowfullscreen
+                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
                                 title="PDF Document Viewer">
                         </iframe>
                     </div>
@@ -115,6 +141,12 @@ class PDFViewerModal extends HTMLElement {
         const downloadBtn = this.querySelector('#pdfDownload');
         if (downloadBtn) {
             downloadBtn.addEventListener('click', () => this.downloadPdf());
+        }
+
+        // Fallback download
+        const fallbackDownloadBtn = this.querySelector('#pdfFallbackDownload');
+        if (fallbackDownloadBtn) {
+            fallbackDownloadBtn.addEventListener('click', () => this.downloadPdf());
         }
 
         // Keyboard shortcuts
@@ -166,12 +198,25 @@ class PDFViewerModal extends HTMLElement {
         if (loadingStatus) loadingStatus.textContent = 'Loading PDF...';
         if (loadingIndicator) loadingIndicator.classList.remove('hidden');
 
+        // Hide error fallback
+        const errorFallback = this.querySelector('#pdfErrorFallback');
+        if (errorFallback) errorFallback.classList.add('hidden');
+
         // Construct PDF URL - serve through the backend API
-        this.currentPdfUrl = `/api/materials/pdf/${encodeURIComponent(pdfPath)}`;
+        this.currentPdfUrl = `/api/data/materials/pdf/${encodeURIComponent(pdfPath)}`;
         
         if (iframe) {
-            // Use browser's built-in PDF viewer for now
-            iframe.src = this.currentPdfUrl;
+            // Clear any previous content
+            iframe.src = 'about:blank';
+            
+            // Set up timeout for loading
+            this.loadingTimeout = setTimeout(() => {
+                console.warn('📚 PDF loading timeout, showing fallback');
+                this.onPdfError();
+            }, 10000); // 10 second timeout
+            
+            // Load PDF with proper headers
+            iframe.src = this.currentPdfUrl + '#toolbar=1&navpanes=1&scrollbar=1';
         }
 
         // Show modal
@@ -195,6 +240,12 @@ class PDFViewerModal extends HTMLElement {
      * Hide the PDF viewer modal
      */
     hide() {
+        // Clear any loading timeout
+        if (this.loadingTimeout) {
+            clearTimeout(this.loadingTimeout);
+            this.loadingTimeout = null;
+        }
+        
         const overlay = this.querySelector('#pdfViewerModalOverlay');
         if (overlay && this.isVisible) {
             overlay.style.opacity = '0';
@@ -332,8 +383,10 @@ class PDFViewerModal extends HTMLElement {
      */
     downloadPdf() {
         if (this.currentPdfUrl) {
+            // Use the download parameter to force download
+            const downloadUrl = this.currentPdfUrl + (this.currentPdfUrl.includes('?') ? '&' : '?') + 'download=true';
             const link = document.createElement('a');
-            link.href = this.currentPdfUrl;
+            link.href = downloadUrl;
             link.download = this.currentTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '.pdf';
             document.body.appendChild(link);
             link.click();
@@ -345,26 +398,38 @@ class PDFViewerModal extends HTMLElement {
      * Handle PDF load completion
      */
     onPdfLoaded() {
+        console.log('📚 PDF loaded successfully');
+        
+        // Clear timeout
+        if (this.loadingTimeout) {
+            clearTimeout(this.loadingTimeout);
+            this.loadingTimeout = null;
+        }
+        
         const loadingStatus = this.querySelector('#pdfLoadingStatus');
         const loadingIndicator = this.querySelector('#pdfLoadingIndicator');
         
         if (loadingStatus) loadingStatus.textContent = 'Ready';
         if (loadingIndicator) loadingIndicator.classList.add('hidden');
-
-        console.log('📚 PDF loaded successfully');
     }
 
     /**
      * Handle PDF load error
      */
     onPdfError() {
-        const loadingStatus = this.querySelector('#pdfLoadingStatus');
-        const loadingIndicator = this.querySelector('#pdfLoadingIndicator');
+        console.error('📚 Error loading PDF, showing fallback');
         
-        if (loadingStatus) loadingStatus.textContent = 'Error loading PDF';
+        // Clear timeout
+        if (this.loadingTimeout) {
+            clearTimeout(this.loadingTimeout);
+            this.loadingTimeout = null;
+        }
+        
+        const loadingIndicator = this.querySelector('#pdfLoadingIndicator');
+        const errorFallback = this.querySelector('#pdfErrorFallback');
+        
         if (loadingIndicator) loadingIndicator.classList.add('hidden');
-
-        console.error('📚 Error loading PDF');
+        if (errorFallback) errorFallback.classList.remove('hidden');
     }
 
     /**

@@ -110,7 +110,8 @@ class ContentAnalyzer:
             
             if not success:
                 logger.warning(f"Failed to fetch content for {url}")
-                return False, {"error": "Failed to fetch page content"}
+                # Pass through the detailed error message from WebFetcher for forbidden URL detection
+                return False, {"error": html_content if html_content else "Failed to fetch page content"}
             
             # Return just the content without any link discovery
             return True, {'main': html_content}

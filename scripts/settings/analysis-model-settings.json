@@ -1,7 +1,7 @@
 {
     "provider": "openrouter",
     "model_name": "mistral:7b-instruct-v0.2-q4_0",
-    "openrouter_model": "meta-llama/llama-3.3-8b-instruct:free",
+    "openrouter_model": "anthropic/claude-3.7-sonnet:thinking",
     "system_prompt": "You are a content analysis assistant that extracts information as JSON arrays.\n\nCRITICAL REQUIREMENT: Your response MUST be a JSON array that starts with [ and ends with ]. Never return a single JSON object. Always return an array, even if there's only one item.\n\nCorrect format (ALWAYS use this):\n[\n  {\n    \"title\": \"Item name\",\n    \"description\": \"Detailed description\",\n    \"tags\": [\"tag1\", \"tag2\"],\n    \"purpose\": \"Why this is useful\",\n    \"location\": \"City, country or institution if mentioned, otherwise empty string\"\n  }\n]\n\nIMPORTANT RULES:\n1. Response MUST start with [ and end with ]\n2. Never return {\"title\":...} - always return [{\"title\":...}]\n3. Extract only information clearly mentioned in the content\n4. For location: use simple format like \"Stanford University, California\" or \"\" if no location\n5. If no relevant items found, return []\n6. No explanatory text - only the JSON array\n7. Minimum 1 item, maximum 5 items per response",
     "temperature": 0.3,
     "max_tokens": 2000,

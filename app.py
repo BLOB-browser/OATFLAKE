@@ -45,6 +45,7 @@ from api.routes.search import router as search_router
 # Add these imports for the missing routers
 from api.routes.definitions import router as definitions_router
 from api.routes.projects import router as projects_router
+from api.routes.materials import router as materials_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -280,6 +281,7 @@ app.include_router(goals_router)  # Add goals router
 # Add these lines to include the missing routers
 app.include_router(definitions_router)
 app.include_router(projects_router)
+app.include_router(materials_router)  # Add materials router
 
 # Include analysis settings router
 app.include_router(analysis_settings_router)
